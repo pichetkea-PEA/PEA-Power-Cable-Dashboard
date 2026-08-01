@@ -1,5 +1,6 @@
 import { db, auth } from './firebaseAuth';
 import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
+import { setLocalIndexedDBItem, getLocalIndexedDBItem, generateAssetsHash } from './localCache';
 
 export enum OperationType {
   CREATE = 'create',
@@ -48,40 +49,55 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
+// In-memory cache variables for Firestore query deduplication
+let inMemoryAssetsCache: any[] | null = null;
+let inMemorySectorsCache: { [area: string]: { spreadsheetId: string, folderId: string } } | null = null;
+let inMemoryAdminConfigCache: CentralAdminConfig | null = null;
+
 export async function getSectorSpreadsheet(interestArea: string): Promise<{ spreadsheetId: string, folderId: string } | null> {
   if (!interestArea) return null;
+  // 1. Check local cache first
+  const allSectors = await getAllSectorSpreadsheets();
+  if (allSectors && allSectors[interestArea]) {
+    return allSectors[interestArea];
+  }
+
   const path = `sector_spreadsheets/${interestArea}`;
   try {
     const docRef = doc(db, 'sector_spreadsheets', interestArea);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
       const data = docSnap.data();
-      return {
+      const res = {
         spreadsheetId: data.spreadsheetId,
-        folderId: data.folderId
+        folderId: data.folderId || ''
       };
+      if (inMemorySectorsCache) inMemorySectorsCache[interestArea] = res;
+      return res;
     }
     return null;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
-    return null; // unreachable due to handleFirestoreError throw
+    console.warn(`Firestore getSectorSpreadsheet error for ${interestArea}:`, error);
+    return null;
   }
 }
 
-// In-memory cache variables for Firestore query deduplication and quota conservation
-let inMemoryAssetsCache: any[] | null = null;
-let inMemoryAssetsCacheTime = 0;
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes cache TTL
-
-let inMemorySectorsCache: { [area: string]: { spreadsheetId: string, folderId: string } } | null = null;
-let inMemorySectorsCacheTime = 0;
-
-let inMemoryAdminConfigCache: CentralAdminConfig | null = null;
-let inMemoryAdminConfigCacheTime = 0;
-
 export async function getAllSectorSpreadsheets(forceRefresh: boolean = false): Promise<{ [area: string]: { spreadsheetId: string, folderId: string } }> {
-  const now = Date.now();
-  if (!forceRefresh && inMemorySectorsCache && (now - inMemorySectorsCacheTime < CACHE_TTL_MS)) {
+  // 1. Memory check
+  if (!forceRefresh && inMemorySectorsCache && Object.keys(inMemorySectorsCache).length > 0) {
+    return inMemorySectorsCache;
+  }
+
+  // 2. IndexedDB check
+  if (!forceRefresh) {
+    const localSectors = await getLocalIndexedDBItem<{ [area: string]: { spreadsheetId: string, folderId: string } }>('pea_sector_spreadsheets');
+    if (localSectors && Object.keys(localSectors).length > 0) {
+      inMemorySectorsCache = localSectors;
+      return localSectors;
+    }
+  }
+
+  if ((window as any).firestoreQuotaExceeded && inMemorySectorsCache) {
     return inMemorySectorsCache;
   }
 
@@ -98,30 +114,39 @@ export async function getAllSectorSpreadsheets(forceRefresh: boolean = false): P
         };
       }
     });
-    inMemorySectorsCache = result;
-    inMemorySectorsCacheTime = now;
+    if (Object.keys(result).length > 0) {
+      inMemorySectorsCache = result;
+      await setLocalIndexedDBItem('pea_sector_spreadsheets', result);
+    }
     return result;
-  } catch (error) {
+  } catch (error: any) {
     console.warn('Failed to fetch all sector spreadsheets from Firestore:', error);
+    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
+      (window as any).firestoreQuotaExceeded = true;
+    }
     return inMemorySectorsCache || result;
   }
 }
 
 export async function saveSectorSpreadsheet(interestArea: string, spreadsheetId: string, folderId: string): Promise<void> {
   if (!interestArea || !spreadsheetId) return;
+
+  // Update memory & local IndexedDB cache immediately
+  const currentSectors = (await getAllSectorSpreadsheets()) || {};
+  currentSectors[interestArea] = { spreadsheetId, folderId };
+  inMemorySectorsCache = currentSectors;
+  await setLocalIndexedDBItem('pea_sector_spreadsheets', currentSectors);
+
   if ((window as any).firestoreQuotaExceeded) {
     console.warn('Skipping Firestore save Sector Spreadsheet due to active quota exhaustion');
     return;
   }
-  const path = `sector_spreadsheets/${interestArea}`;
+
   try {
     const docRef = doc(db, 'sector_spreadsheets', interestArea);
     await setDoc(docRef, { spreadsheetId, folderId });
-    if (inMemorySectorsCache) {
-      inMemorySectorsCache[interestArea] = { spreadsheetId, folderId };
-    }
   } catch (error: any) {
-    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted' || error?.message?.includes('resource-exhausted')) {
+    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
       (window as any).firestoreQuotaExceeded = true;
     }
     console.warn('Sector Spreadsheet write failed:', error);
@@ -136,30 +161,32 @@ export interface CentralAdminConfig {
 }
 
 export async function saveCentralAdminDatabaseConfig(config: CentralAdminConfig): Promise<void> {
+  // Always store locally first
   inMemoryAdminConfigCache = config;
-  inMemoryAdminConfigCacheTime = Date.now();
+  await setLocalIndexedDBItem('pea_central_config', config);
 
   if ((window as any).firestoreQuotaExceeded) {
     console.warn('Skipping Firestore save Central Admin Config due to active quota exhaustion');
     return;
   }
 
-  const path = 'admin_central_db/config';
   try {
     const docRef = doc(db, 'admin_central_db', 'config');
     await setDoc(docRef, config);
 
-    // Also save individual sector documents
+    // Also update local sector map
     if (config.spreadsheetsByArea) {
+      const currentSectors = (await getAllSectorSpreadsheets()) || {};
       for (const [area, sId] of Object.entries(config.spreadsheetsByArea)) {
-        if (sId && !(window as any).firestoreQuotaExceeded) {
-          const docRefArea = doc(db, 'sector_spreadsheets', area);
-          await setDoc(docRefArea, { spreadsheetId: sId, folderId: config.foldersByArea?.[area] || '' });
+        if (sId) {
+          currentSectors[area] = { spreadsheetId: sId, folderId: config.foldersByArea?.[area] || '' };
         }
       }
+      inMemorySectorsCache = currentSectors;
+      await setLocalIndexedDBItem('pea_sector_spreadsheets', currentSectors);
     }
   } catch (error: any) {
-    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted' || error?.message?.includes('resource-exhausted')) {
+    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
       (window as any).firestoreQuotaExceeded = true;
     }
     console.warn('Failed to save central admin DB config to Firestore:', error);
@@ -167,9 +194,18 @@ export async function saveCentralAdminDatabaseConfig(config: CentralAdminConfig)
 }
 
 export async function getCentralAdminDatabaseConfig(forceRefresh: boolean = false): Promise<CentralAdminConfig | null> {
-  const now = Date.now();
-  if (!forceRefresh && inMemoryAdminConfigCache && (now - inMemoryAdminConfigCacheTime < CACHE_TTL_MS)) {
+  // 1. Memory check
+  if (!forceRefresh && inMemoryAdminConfigCache) {
     return inMemoryAdminConfigCache;
+  }
+
+  // 2. IndexedDB check
+  if (!forceRefresh) {
+    const localConfig = await getLocalIndexedDBItem<CentralAdminConfig>('pea_central_config');
+    if (localConfig) {
+      inMemoryAdminConfigCache = localConfig;
+      return localConfig;
+    }
   }
 
   if ((window as any).firestoreQuotaExceeded && inMemoryAdminConfigCache) {
@@ -182,61 +218,67 @@ export async function getCentralAdminDatabaseConfig(forceRefresh: boolean = fals
     if (snap.exists()) {
       const data = snap.data() as CentralAdminConfig;
       inMemoryAdminConfigCache = data;
-      inMemoryAdminConfigCacheTime = now;
+      await setLocalIndexedDBItem('pea_central_config', data);
       return data;
     }
   } catch (error: any) {
     console.warn('Failed to fetch central admin DB config from Firestore:', error);
-    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted' || error?.message?.includes('resource-exhausted')) {
+    if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
       (window as any).firestoreQuotaExceeded = true;
     }
   }
   return inMemoryAdminConfigCache;
 }
 
-export async function saveCentralAssetsCache(assets: any[]): Promise<void> {
+export async function saveCentralAssetsCache(assets: any[], syncToFirestore: boolean = false): Promise<void> {
   if (!assets || assets.length === 0) return;
 
-  // 1. Immediately update in-memory and local storage cache so UI responds with 0 delay
+  // 1. Always update in-memory and local IndexedDB cache instantly (0 latency, 0 quota)
   inMemoryAssetsCache = assets;
-  inMemoryAssetsCacheTime = Date.now();
-  try {
-    localStorage.setItem('pea_central_assets_backup', JSON.stringify(assets));
-    localStorage.setItem('pea_central_assets_timestamp', String(Date.now()));
-  } catch (e) {}
+  await setLocalIndexedDBItem('pea_central_assets', assets);
+  
+  const newHash = generateAssetsHash(assets);
+  const prevHash = await getLocalIndexedDBItem<string>('pea_assets_hash');
+  
+  // If hash hasn't changed and syncToFirestore isn't explicitly forced, skip Firestore write entirely!
+  if (newHash === prevHash && !syncToFirestore) {
+    return;
+  }
+  
+  await setLocalIndexedDBItem('pea_assets_hash', newHash);
 
-  if ((window as any).firestoreQuotaExceeded) {
-    console.warn('Skipping Firestore save central assets cache due to active quota exhaustion');
+  // If syncToFirestore is false or quota is already flagged, skip Firestore writes to save daily quota
+  if (!syncToFirestore || (window as any).firestoreQuotaExceeded) {
     return;
   }
 
   try {
-    const CHUNK_SIZE = 800; // ~200KB per chunk, well within Firestore 1MB per document limit
+    const CHUNK_SIZE = 800; // ~200KB per chunk
     const totalChunks = Math.ceil(assets.length / CHUNK_SIZE);
     
-    // Save metadata first
+    // Save metadata
     const metaRef = doc(db, 'admin_central_db', 'assets_cache_meta');
     await setDoc(metaRef, {
       totalAssets: assets.length,
       totalChunks,
       chunkSize: CHUNK_SIZE,
+      hash: newHash,
       updatedAt: new Date().toISOString()
     });
 
-    // Save chunks sequentially to avoid overflowing Firestore write stream buffer queue
+    // Save chunks sequentially
     for (let i = 0; i < totalChunks; i++) {
       if ((window as any).firestoreQuotaExceeded) break;
       const chunkData = assets.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
       const chunkRef = doc(db, 'admin_central_db', `assets_cache_chunk_${i}`);
       await setDoc(chunkRef, { chunkIndex: i, assets: chunkData });
     }
-    console.log(`Firestore: Successfully saved ${assets.length} central assets across ${totalChunks} chunks!`);
+    console.log(`Firestore: Saved ${assets.length} assets across ${totalChunks} chunks.`);
   } catch (error: any) {
-    console.warn('Failed to save chunked central assets cache to Firestore:', error);
+    console.warn('Failed to save central assets cache to Firestore:', error);
     if (
       error?.message?.includes('Quota limit exceeded') || 
       error?.message?.includes('resource-exhausted') || 
-      error?.message?.includes('Write stream exhausted') || 
       error?.code === 'resource-exhausted'
     ) {
       (window as any).firestoreQuotaExceeded = true;
@@ -245,51 +287,32 @@ export async function saveCentralAssetsCache(assets: any[]): Promise<void> {
 }
 
 export async function getCentralAssetsCache(forceRefresh: boolean = false): Promise<any[]> {
-  const now = Date.now();
-
   // 1. Quick in-memory cache return (0 network calls)
-  if (!forceRefresh && inMemoryAssetsCache && inMemoryAssetsCache.length > 0 && (now - inMemoryAssetsCacheTime < CACHE_TTL_MS)) {
-    console.log(`Cache Hit (In-Memory): Loaded ${inMemoryAssetsCache.length} assets with 0 Firestore reads.`);
+  if (!forceRefresh && inMemoryAssetsCache && inMemoryAssetsCache.length > 0) {
     return inMemoryAssetsCache;
   }
 
-  // 2. LocalStorage fast return if within 10-minute TTL (0 network calls)
+  // 2. IndexedDB local return (0 network calls, zero quota usage)
   if (!forceRefresh) {
-    try {
-      const localTimeStr = localStorage.getItem('pea_central_assets_timestamp');
-      const backup = localStorage.getItem('pea_central_assets_backup');
-      if (localTimeStr && backup) {
-        const localTime = parseInt(localTimeStr, 10);
-        if (!isNaN(localTime) && (now - localTime < CACHE_TTL_MS)) {
-          const parsed = JSON.parse(backup);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            console.log(`Cache Hit (LocalStorage): Loaded ${parsed.length} assets with 0 Firestore reads.`);
-            inMemoryAssetsCache = parsed;
-            inMemoryAssetsCacheTime = localTime;
-            return parsed;
-          }
-        }
-      }
-    } catch (e) {}
+    const localAssets = await getLocalIndexedDBItem<any[]>('pea_central_assets');
+    if (Array.isArray(localAssets) && localAssets.length > 0) {
+      console.log(`Cache Hit (IndexedDB Client Storage): Loaded ${localAssets.length} assets with 0 Firestore reads.`);
+      inMemoryAssetsCache = localAssets;
+      return localAssets;
+    }
   }
 
   // If quota is already flagged as exceeded, skip network calls and use local backup
   if ((window as any).firestoreQuotaExceeded) {
-    try {
-      const backup = localStorage.getItem('pea_central_assets_backup');
-      if (backup) {
-        const parsed = JSON.parse(backup);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          inMemoryAssetsCache = parsed;
-          inMemoryAssetsCacheTime = now;
-          return parsed;
-        }
-      }
-    } catch (e) {}
+    const localAssets = await getLocalIndexedDBItem<any[]>('pea_central_assets');
+    if (Array.isArray(localAssets) && localAssets.length > 0) {
+      inMemoryAssetsCache = localAssets;
+      return localAssets;
+    }
     return inMemoryAssetsCache || [];
   }
 
-  // 3. Fetch from Firestore if cache expired or forceRefresh requested
+  // 3. Fetch from Firestore only if forceRefresh requested or local cache is empty
   try {
     const metaRef = doc(db, 'admin_central_db', 'assets_cache_meta');
     const metaSnap = await getDoc(metaRef);
@@ -315,25 +338,10 @@ export async function getCentralAssetsCache(forceRefresh: boolean = false): Prom
         if (allAssets.length > 0) {
           console.log(`Firestore: Loaded ${allAssets.length} central assets from ${totalChunks} chunks.`);
           inMemoryAssetsCache = allAssets;
-          inMemoryAssetsCacheTime = now;
-          try {
-            localStorage.setItem('pea_central_assets_backup', JSON.stringify(allAssets));
-            localStorage.setItem('pea_central_assets_timestamp', String(now));
-          } catch (e) {}
+          await setLocalIndexedDBItem('pea_central_assets', allAssets);
+          if (meta.hash) await setLocalIndexedDBItem('pea_assets_hash', meta.hash);
           return allAssets;
         }
-      }
-    }
-
-    // Legacy fallback: single document
-    const docRef = doc(db, 'admin_central_db', 'assets_cache');
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data();
-      if (Array.isArray(data.assets) && data.assets.length > 0) {
-        inMemoryAssetsCache = data.assets;
-        inMemoryAssetsCacheTime = now;
-        return data.assets;
       }
     }
   } catch (error: any) {
@@ -341,26 +349,19 @@ export async function getCentralAssetsCache(forceRefresh: boolean = false): Prom
     if (
       error?.message?.includes('Quota limit exceeded') || 
       error?.message?.includes('resource-exhausted') || 
-      error?.message?.includes('Write stream exhausted') || 
       error?.code === 'resource-exhausted'
     ) {
       (window as any).firestoreQuotaExceeded = true;
     }
   }
 
-  // 4. LocalStorage fallback if Firestore is unreachable or quota exhausted
-  try {
-    const backup = localStorage.getItem('pea_central_assets_backup');
-    if (backup) {
-      const parsed = JSON.parse(backup);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        console.log(`LocalStorage Fallback: Loaded ${parsed.length} central assets from local backup.`);
-        inMemoryAssetsCache = parsed;
-        inMemoryAssetsCacheTime = now;
-        return parsed;
-      }
-    }
-  } catch (e) {}
+  // 4. Fallback to local storage if Firestore failed
+  const localAssets = await getLocalIndexedDBItem<any[]>('pea_central_assets');
+  if (Array.isArray(localAssets) && localAssets.length > 0) {
+    inMemoryAssetsCache = localAssets;
+    return localAssets;
+  }
 
   return inMemoryAssetsCache || [];
 }
+

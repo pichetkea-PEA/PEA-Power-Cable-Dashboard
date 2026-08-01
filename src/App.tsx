@@ -30,7 +30,8 @@ import {
   X,
   User,
   ShieldAlert,
-  ChevronRight
+  ChevronRight,
+  Clock
 } from 'lucide-react';
 
 export default function App() {
@@ -52,6 +53,32 @@ export default function App() {
   const [isCreatingSheet, setIsCreatingSheet] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [firestoreQuotaExceeded, setFirestoreQuotaExceeded] = useState<boolean>(false);
+  const [lastFetchedTime, setLastFetchedTime] = useState<string | null>(() => localStorage.getItem('pea_last_fetched_time'));
+
+  const updateLastFetchedTimestamp = (ts?: string) => {
+    const timestamp = ts || new Date().toISOString();
+    localStorage.setItem('pea_last_fetched_time', timestamp);
+    setLastFetchedTime(timestamp);
+  };
+
+  const formatLastFetchedTime = (isoString: string | null) => {
+    if (!isoString) return null;
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      return d.toLocaleString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+    } catch (e) {
+      return isoString;
+    }
+  };
 
   // Video Game Loading & Page Transition states
   const [showGameLoading, setShowGameLoading] = useState<boolean>(false);
@@ -521,6 +548,7 @@ export default function App() {
         try {
           localStorage.setItem('pea_central_assets_backup', JSON.stringify(allAssets));
         } catch (e) {}
+        updateLastFetchedTimestamp();
         setSyncSuccessMessage(`Central Database Synchronized! Loaded ${allAssets.length.toLocaleString()} cable assets from Admin Google Sheets across ${uniqueIds.length} sectors.`);
       } else {
         let loaded = false;
@@ -760,11 +788,11 @@ export default function App() {
     setIsCreatingSheet(true);
     setErrorMessage('');
     try {
-      const areaToUse = user.role === 'Admin' ? 'ALL' : user.interestArea;
+      const areaToUse = (user.role === 'Admin' || user.role === 'Manager') ? 'ALL' : user.interestArea;
       const { spreadsheetId: newSheetId, folderId: newFolderId } = await createSheetsTemplate(googleToken, areaToUse);
       
       // Persist spreadsheet associations
-      if (user.role === 'Admin') {
+      if (user.role === 'Admin' || user.role === 'Manager') {
         setSpreadsheetIds(prev => [...prev, newSheetId]);
       } else {
         setSpreadsheetId(newSheetId);
@@ -1306,7 +1334,17 @@ export default function App() {
                 </div>
 
                 {/* Right Status Badges */}
-                <div className="flex items-center gap-2.5">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 justify-end">
+                  {lastFetchedTime && (
+                    <div 
+                      className="flex items-center gap-1.5 text-[10px] sm:text-[11px] bg-slate-100/90 text-slate-700 border border-slate-200/90 px-2.5 py-1.5 rounded-xl font-medium shrink-0"
+                      title="Exact date and time central asset database was last fetched / synchronized"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span>Last Fetched: <strong className="font-bold text-slate-900">{formatLastFetchedTime(lastFetchedTime)}</strong></span>
+                    </div>
+                  )}
+
                   {googleToken ? (
                     (spreadsheetId || spreadsheetIds.length > 0) ? (
                       <div className="flex items-center gap-1.5 text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold">

@@ -90,7 +90,7 @@ export default function AssetRecord({
   onRefresh
 }: AssetRecordProps) {
   // --- Filter State ---
-  const [filterArea, setFilterArea] = useState<string>(user.role === 'Admin' ? 'All' : user.interestArea);
+  const [filterArea, setFilterArea] = useState<string>((user.role === 'Admin' || user.role === 'Manager') ? 'All' : user.interestArea);
   const [filterCity, setFilterCity] = useState<string>('All');
   const [filterVoltage, setFilterVoltage] = useState<string>('All');
   const [filterEqType, setFilterEqType] = useState<string>('All');
@@ -483,9 +483,9 @@ export default function AssetRecord({
   const [showNoEquipmentPopup, setShowNoEquipmentPopup] = useState<boolean>(false);
   const [showSaveChoiceModal, setShowSaveChoiceModal] = useState<boolean>(false);
 
-  // Auto-restrict area for standard users
+  // Auto-restrict area for standard single-area users
   useEffect(() => {
-    if (user.role !== 'Admin') {
+    if (user.role !== 'Admin' && user.role !== 'Manager' && user.interestArea !== 'ALL' && user.interestArea !== 'All') {
       setFilterArea(user.interestArea);
     }
   }, [user]);
@@ -597,6 +597,13 @@ export default function AssetRecord({
     setFilterCity('All');
   }, [filterArea]);
 
+  // Auto-run initial lookup when assets finish loading if no asset is selected
+  useEffect(() => {
+    if (!selectedAsset && latestAssets.length > 0) {
+      handleSearch();
+    }
+  }, [latestAssets]);
+
   // Get list of available cities based on area filter
   const availableCities = useMemo(() => {
     if (filterArea === 'All') {
@@ -612,8 +619,8 @@ export default function AssetRecord({
 
     if (searchValue.trim()) {
       // 1. Direct Lookup Mode: Ignore dropdown filters (City, Voltage, EqType) to avoid conflicts when searching specific identifiers.
-      // We only enforce the user interest area check for regular non-Admin users to preserve access rules.
-      if (user.role !== 'Admin') {
+      // We only enforce the user interest area check for regular non-Admin/non-Manager single-area users.
+      if (user.role !== 'Admin' && user.role !== 'Manager' && user.interestArea !== 'ALL' && user.interestArea !== 'All') {
         const userArea = user.interestArea;
         list = list.filter(a => {
           const part = a.equipmentId?.split('-')[0]?.trim();
@@ -654,13 +661,13 @@ export default function AssetRecord({
       list = matchedList;
     } else {
       // 3. General Browsing Mode: Apply all hierarchical structural and dropdown filters when search input is empty.
-      if (user.role !== 'Admin') {
+      if (user.role !== 'Admin' && user.role !== 'Manager' && user.interestArea !== 'ALL' && user.interestArea !== 'All') {
         const userArea = user.interestArea;
         list = list.filter(a => {
           const part = a.equipmentId?.split('-')[0]?.trim();
           return part === userArea;
         });
-      } else if (filterArea !== 'All') {
+      } else if (filterArea !== 'All' && filterArea !== 'ALL') {
         list = list.filter(a => {
           const part = a.equipmentId?.split('-')[0]?.trim();
           return part === filterArea;
@@ -1256,10 +1263,10 @@ export default function AssetRecord({
             <select
               value={filterArea}
               onChange={e => setFilterArea(e.target.value)}
-              disabled={user.role !== 'Admin'}
+              disabled={user.role !== 'Admin' && user.role !== 'Manager'}
               className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden disabled:bg-gray-100 disabled:text-gray-400"
             >
-              {user.role === 'Admin' && <option value="All">All Regions (Admin Mode)</option>}
+              {(user.role === 'Admin' || user.role === 'Manager') && <option value="All">All Regions (Executive Mode)</option>}
               {PEA_AREAS.map(area => (
                 <option key={area} value={area}>Area {area} - {PEA_AREA_NAMES[area]}</option>
               ))}
@@ -1357,6 +1364,7 @@ export default function AssetRecord({
                 placeholder={`Type the ${searchType} to look up...`}
                 value={searchValue}
                 onChange={e => setSearchValue(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSearch(); }}
                 className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white grow"
               />
               <button
@@ -1410,7 +1418,7 @@ export default function AssetRecord({
                 <p className="text-xs text-purple-200 font-mono mt-0.5">
                   ID: {selectedAsset.equipmentId}
                 </p>
-                {user.role === 'Admin' && (
+                {(user.role === 'Admin' || user.role === 'Manager') && (
                   <p className="text-[10px] text-purple-200 font-semibold mt-1">
                     Current Version Editor: {selectedAsset.operatorName || 'System'} at {selectedAsset.timestamp || 'No Timestamp'}
                   </p>
@@ -1441,7 +1449,7 @@ export default function AssetRecord({
                 </span>
               </div>
 
-              {user.role === 'Admin' ? (
+              {(user.role === 'Admin' || user.role === 'Manager') ? (
                 <div className="flex items-center gap-2">
                   <label className="font-bold text-gray-700">Jump to Version/Edit Time:</label>
                   <select
@@ -2127,8 +2135,8 @@ export default function AssetRecord({
             </div>
           </div>
 
-          {/* ADMIN-ONLY ENGINEERING DIAGNOSTICS */}
-          {user.role === 'Admin' && (
+          {/* ADMIN & MANAGER ENGINEERING DIAGNOSTICS */}
+          {(user.role === 'Admin' || user.role === 'Manager') && (
             <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm space-y-6 mt-6 animate-fadeIn" id="admin-diagnostics-card">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-100 pb-4 gap-4">
                 <div>
