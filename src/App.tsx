@@ -941,6 +941,7 @@ export default function App() {
                 <PeaLogo variant="full" className="h-12 sm:h-14" />
               </div>
               <p className="text-[11px] text-purple-900 font-black tracking-widest uppercase">Provincial Electricity Authority</p>
+              <p className="text-[11px] text-purple-700 font-bold tracking-tight">Cable management web application</p>
             </div>
 
             {/* Single Latest Notification Callout on Login Screen */}
@@ -1293,7 +1294,7 @@ export default function App() {
                   <PeaLogo className="w-9 h-9" />
                   <div>
                     <h1 className="text-sm font-black text-purple-950 uppercase tracking-tight flex items-center gap-2">
-                      PEA CABLE ASSET INTEGRITY CONTROL
+                      PEA-PSMD Cable Management
                       <span className="text-[9px] font-extrabold bg-purple-50 text-purple-700 border border-purple-200/60 rounded-full px-2 py-0.5 normal-case">
                         {activeTab === 'admin' ? 'Board Portfolio' : activeTab === 'area' ? 'Area Telemetry' : activeTab === 'input' ? 'Submit Log' : activeTab === 'registration' ? 'Asset Registration' : 'Asset Catalog'}
                       </span>

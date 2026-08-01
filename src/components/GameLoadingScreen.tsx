@@ -29,7 +29,7 @@ const LOADING_STAGES = [
 
 export default function GameLoadingScreen({ 
   onComplete, 
-  title = "PSMD CABLE ASSET INTEGRITY SYSTEM", 
+  title = "PEA-PSMD Cable Management", 
   subtitle = "Power System Management Division",
   isOverlay = false,
   isConnecting
