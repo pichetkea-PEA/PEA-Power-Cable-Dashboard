@@ -1,0 +1,6 @@
+{
+  "name": "Cable Asset Monitoring",
+  "description": "Interactive multi-page dashboard for monitoring and tracking PEA cable asset health, powered by Google Sheets, Google Drive, and Gemini API reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

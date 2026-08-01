@@ -1,0 +1,1159 @@
+import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
+import { calculateHealth, generateEquipmentId } from './peaData';
+import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
+
+// Helper to set public write permissions on Google Drive files so all authorized users can sync
+export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
+  if (!accessToken || !fileId) return;
+  try {
+    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        role: 'writer',
+        type: 'anyone'
+      })
+    });
+  } catch (e) {
+    console.warn(`Failed to set public write permission on file ${fileId}:`, e);
+  }
+}
+
+// Master Spreadsheet mapping retriever combining Firestore Central DB config and Drive discovery
+export async function getMasterSpreadsheetsMap(accessToken?: string | null): Promise<{
+  spreadsheets: { [area: string]: string };
+  folders: { [area: string]: string };
+}> {
+  const spreadsheets: { [area: string]: string } = {};
+  const folders: { [area: string]: string } = {};
+
+  // 1. Fetch from Firestore Central Config
+  try {
+    const config = await getCentralAdminDatabaseConfig();
+    if (config?.spreadsheetsByArea) {
+      Object.assign(spreadsheets, config.spreadsheetsByArea);
+    }
+    if (config?.foldersByArea) {
+      Object.assign(folders, config.foldersByArea);
+    }
+  } catch (e) {
+    console.warn("Error getting central config for spreadsheets map:", e);
+  }
+
+  // 2. Fetch from sector_spreadsheets Firestore collection
+  try {
+    const sectorSheets = await getAllSectorSpreadsheets();
+    for (const [area, item] of Object.entries(sectorSheets)) {
+      if (item.spreadsheetId) spreadsheets[area.toUpperCase()] = item.spreadsheetId;
+      if (item.folderId) folders[area.toUpperCase()] = item.folderId;
+    }
+  } catch (e) {
+    console.warn("Error getting sector spreadsheets from Firestore:", e);
+  }
+
+  // 3. Auto discover from Drive if token is available
+  if (accessToken) {
+    try {
+      const discovered = await autoDiscoverAndSync(accessToken);
+      if (discovered.spreadsheets) {
+        Object.assign(spreadsheets, discovered.spreadsheets);
+      }
+      if (discovered.folders) {
+        Object.assign(folders, discovered.folders);
+      }
+    } catch (e) {
+      console.warn("Auto discover spreadsheets error:", e);
+    }
+  }
+
+  return { spreadsheets, folders };
+}
+
+// Helper to list existing spreadsheets matching our pattern
+export async function listSpreadsheets(accessToken: string): Promise<{ name: string; id: string }[]> {
+  const query = encodeURIComponent("name contains 'PEA Cable Asset Database -' and mimeType = 'application/vnd.google-apps.spreadsheet'");
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id, name)`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!res.ok) throw new Error('Failed to list spreadsheets');
+  const data = await res.json();
+  return data.files || [];
+}
+
+// Helper to automatically discover all existing spreadsheets and image folders in Google Drive
+export async function autoDiscoverAndSync(accessToken: string): Promise<{
+  spreadsheets: { [area: string]: string };
+  folders: { [area: string]: string };
+}> {
+  const spreadsheets: { [area: string]: string } = {};
+  const folders: { [area: string]: string } = {};
+
+  try {
+    // 1. List all spreadsheets containing the pattern
+    const sheetQuery = encodeURIComponent("name contains 'PEA Cable Asset Database' and mimeType = 'application/vnd.google-apps.spreadsheet'");
+    const sheetRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${sheetQuery}&fields=files(id, name)&pageSize=100`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (sheetRes.ok) {
+      const sheetData = await sheetRes.json();
+      const files = sheetData.files || [];
+      files.forEach((file: any) => {
+        const match = file.name.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
+                      file.name.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+        if (match) {
+          const area = match[1].trim().toUpperCase();
+          spreadsheets[area] = file.id;
+          makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
+        }
+      });
+    }
+
+    // 2. List all folders containing the pattern
+    const folderQuery = encodeURIComponent("name contains 'PEA Cable Asset Images' and mimeType = 'application/vnd.google-apps.folder'");
+    const folderRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${folderQuery}&fields=files(id, name)&pageSize=100`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (folderRes.ok) {
+      const folderData = await folderRes.json();
+      const files = folderData.files || [];
+      files.forEach((file: any) => {
+        const match = file.name.match(/PEA\s+Cable\s+Asset\s+Images\s*-\s*([A-Za-z0-9]+)/i) ||
+                      file.name.match(/PEA\s+Cable\s+Asset\s+Images\s+([A-Za-z0-9]+)/i);
+        if (match) {
+          const area = match[1].trim().toUpperCase();
+          folders[area] = file.id;
+        }
+      });
+    }
+
+    // Create folder on-demand for any mapped spreadsheet if a folder is missing
+    const areas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+    for (const area of areas) {
+      const sheetId = spreadsheets[area];
+      if (sheetId && !folders[area]) {
+        try {
+          const folderMetadata = {
+            name: `PEA Cable Asset Images - ${area}`,
+            mimeType: 'application/vnd.google-apps.folder'
+          };
+          const fRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(folderMetadata)
+          });
+          if (fRes.ok) {
+            const fData = await fRes.json();
+            const folderId = fData.id;
+            folders[area] = folderId;
+            
+            // Set Folder Permission to public reader
+            await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}/permissions`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                role: 'reader',
+                type: 'anyone'
+              })
+            });
+          }
+        } catch (err) {
+          console.error(`Failed to create missing image folder for ${area}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error in autoDiscoverAndSync:", err);
+  }
+
+  return { spreadsheets, folders };
+}
+
+// Helper to create a new spreadsheet template
+export async function createSheetsTemplate(accessToken: string, interestArea?: string): Promise<{ spreadsheetId: string; folderId: string }> {
+  // First check for existing
+  const existingSheets = await listSpreadsheets(accessToken);
+  const areaSuffix = interestArea && interestArea !== 'ALL' ? ` - ${interestArea}` : '';
+  const sheetName = `PEA Cable Asset Database${areaSuffix}`;
+  
+  const existing = existingSheets.find(s => s.name === sheetName);
+  
+  if (existing) {
+    // In a real app we might need to find the corresponding folder ID too,
+    // but for now let's assume we can re-create the folder or it's linked in firestore
+    // For now, return existing sheet and create a new folder just to be safe, 
+    // or better: search for folder too.
+    return { spreadsheetId: existing.id, folderId: '' }; // Folder handling needs refinement
+  }
+  
+  // 1. Create Folder in Google Drive for Images
+  const folderMetadata = {
+    name: `PEA Cable Asset Images${areaSuffix}`,
+    mimeType: 'application/vnd.google-apps.folder'
+  };
+
+  const folderRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(folderMetadata)
+  });
+
+  if (!folderRes.ok) {
+    const errorBody = await folderRes.text();
+    if (folderRes.status === 403 && errorBody.includes('API has not been used in project')) {
+      throw new Error('The Google Drive API is not enabled in your Google Cloud Project. Please enable it in the Google Cloud Console.');
+    }
+    throw new Error('Failed to create image folder in Google Drive. Details: ' + errorBody);
+  }
+  const folderData = await folderRes.json();
+  const folderId = folderData.id;
+
+  // Set Folder Permission to anyone reader so images can load in the dashboard
+  await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}/permissions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      role: 'reader',
+      type: 'anyone'
+    })
+  });
+
+  // 2. Create Google Sheet
+  const sheetMetadata = {
+    properties: {
+      title: `PEA Cable Asset Database${areaSuffix}`
+    },
+    sheets: [
+      { properties: { title: 'General Information' } },
+      { properties: { title: 'Engineering Information' } },
+      { properties: { title: 'Visual & Thermal Images' } }
+    ]
+  };
+
+  const sheetRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(sheetMetadata)
+  });
+
+  if (!sheetRes.ok) {
+    const errorBody = await sheetRes.text();
+    if (sheetRes.status === 403 && errorBody.includes('API has not been used in project')) {
+      throw new Error('The Google Sheets API is not enabled in your Google Cloud Project. Please enable it in the Google Cloud Console.');
+    }
+    throw new Error('Failed to create spreadsheet in Google Sheets. Details: ' + errorBody);
+  }
+
+  const sheetData = await sheetRes.json();
+  const spreadsheetId = sheetData.spreadsheetId;
+
+  // Set file permission to public reader so all roles can read Google Sheet data
+  await makeFileReadableByAnyone(accessToken, spreadsheetId);
+
+  // 3. Write Headers to each sheet
+  const headers = {
+    valueInputOption: 'USER_ENTERED',
+    data: [
+      {
+        range: "'General Information'!A1:AF1",
+        values: [[
+          'Number', 'Timestamp', 'Name of user or admin', 'Voltage Level (kV)', 'City', 
+          'Equipment type', 'Product Manufacturer', 'Country of Origin', 'Location type', 
+          'Substation', 'Landmark Location', 'GPS', 'Year of registration', 'PEA Number (ID)', 
+          'Equipment Number ADS', 'Account Asset Number (AA)', 'Production Month', 'Installation Date', 
+          'WBS', 'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number', 
+          'Feeder', 'Substation ID', 'Operate ID', 'Serial Number', 'Model', 'Work Order', 
+          'Size', 'Equipment ID'
+        ]]
+      },
+      {
+        range: "'Engineering Information'!A1:M1",
+        values: [[
+          'Number', 'Timestamp', 'Name of user or admin', 'Equipment ID', 'Load current (Amps)', 
+          'Sheath Current(Amps)', 'Surface Temperature (Celsius)', 'External Discharge (pC)', 
+          'Online PD Result', 'Online PD amplitude (pC)', 'Insulation Resistance (GOhm)', 
+          'Tan Delta Result', 'Tan delta amplitude'
+        ]]
+      },
+      {
+        range: "'Visual & Thermal Images'!A1:F1",
+        values: [[
+          'Number', 'Timestamp', 'Name of user or admin', 'Equipment ID', 'Visual Picture', 'Thermal image'
+        ]]
+      }
+    ]
+  };
+
+  const headersRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(headers)
+  });
+
+  if (!headersRes.ok) {
+    throw new Error('Failed to initialize headers in the spreadsheet');
+  }
+
+  // 4. Seed with some initial mock data so the Sheet is populated nicely!
+  const seedData = {
+    valueInputOption: 'USER_ENTERED',
+    data: [
+      {
+        range: "'General Information'!A2:AF3",
+        values: [
+          [
+            1, '2026-07-15 10:30:00', 'Somsak PEA', '115', 'Chiang Mai', 'Underground Cable', 
+            'Prysmian Group', 'Germany', 'Transmission Line', 'Chiang Mai 2 Substation', 
+            'Main Highway Road 107', '18.7883, 98.9853', '2018', 'PEA-N1-UG01', 'SAP-9081234', 
+            'ADS-1001', '07/2018', '2018-07-15', 'WBS-N1-001', 'Utility', 'CC-N1-908', 'GIS-N1-UG01', 
+            'Class A', 'CN-2018-001', 'FDR-501', 'SUB-CM2', 'OP-N1-01', 'SN-Pry-001', 'Model A', 'WO-99881', '3x240 sq.mm', 'N1-115kV-2018-UND-PEA-N1-UG01'
+          ],
+          [
+            2, '2026-07-16 11:24:00', 'Somsak PEA', '115', 'Chiang Mai', 'Termination', 
+            'ABB Hitachi', 'Sweden', 'Substation', 'Chiang Mai 2 Substation', 'Substation Bay 04', 
+            '18.7905, 98.9950', '2018', 'PEA-N1-TR01', 'SAP-9081235', 'ADS-1002', '07/2018', '2018-07-16', 
+            'WBS-N1-002', 'Utility', 'CC-N1-908', 'GIS-N1-TR01', 'Class A', 'CN-2018-002', 'FDR-501', 'SUB-CM2', 
+            'OP-N1-02', 'SN-ABB-001', 'Model B', 'WO-99882', '115kV Plug-in', 'N1-115kV-2018-TER-PEA-N1-TR01'
+          ]
+        ]
+      },
+      {
+        range: "'Engineering Information'!A2:M3",
+        values: [
+          [
+            1, '2026-07-15 10:35:00', 'Somsak PEA', 'N1-115kV-2018-UND-PEA-N1-UG01', 
+            '180', '12', '45', '8', 'None', '5', '12.5', 'No Action Required', '0.05'
+          ],
+          [
+            2, '2026-07-16 11:30:00', 'Somsak PEA', 'N1-115kV-2018-TER-PEA-N1-TR01', 
+            '180', '42', '58', '80', 'Corona', '75', '8.2', 'Further Study Advised', '0.18'
+          ]
+        ]
+      },
+      {
+        range: "'Visual & Thermal Images'!A2:F3",
+        values: [
+          [
+            1, '2026-07-15 10:30:00', 'Somsak PEA', 'N1-115kV-2018-UND-PEA-N1-UG01', 
+            'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400', 
+            'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'
+          ],
+          [
+            2, '2026-07-16 11:24:00', 'Somsak PEA', 'N1-115kV-2018-TER-PEA-N1-TR01', 
+            'https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=400', 
+            'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=400'
+          ]
+        ]
+      }
+    ]
+  };
+
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(seedData)
+  });
+
+  return { spreadsheetId, folderId };
+}
+
+// Upload file to specific Google Drive Folder and return publicly accessible direct URL
+export async function uploadImageToDrive(accessToken: string, folderId: string, file: File): Promise<string> {
+  const metadata = {
+    name: `${Date.now()}_${file.name}`,
+    parents: [folderId],
+    mimeType: file.type
+  };
+
+  const formData = new FormData();
+  formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  formData.append('file', file);
+
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: formData
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to upload image to Google Drive: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  const fileId = data.id;
+
+  // Set file permission to public readers
+  await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      role: 'reader',
+      type: 'anyone'
+    })
+  });
+
+  // Use the standard direct hotlink URL for Google Drive images
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+}
+
+// Helper to normalize sheet headers
+export function normalizeHeader(h: string): string {
+  if (!h) return '';
+  return String(h).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+}
+
+// Helper to align data object with current spreadsheet headers
+export function alignRowWithHeaders(headers: string[], data: Record<string, any>, defaultValues: any[] = []): any[] {
+  return headers.map((header, idx) => {
+    const norm = normalizeHeader(header);
+    
+    // Standard General Information
+    if (norm === 'number' || norm === 'no') return data.number ?? defaultValues[idx] ?? '';
+    if (norm === 'timestamp' || norm === 'date' || norm === 'time') return data.timestamp ?? defaultValues[idx] ?? '';
+    if (norm === 'nameofuseroradmin' || norm === 'operatorname' || norm === 'operator') return data.operatorName ?? defaultValues[idx] ?? '';
+    if (norm === 'voltagelevelkv' || norm === 'voltagelevel' || norm === 'voltage') return data.voltageLevel ?? defaultValues[idx] ?? '';
+    if (norm === 'city' || norm === 'province') return data.city ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmenttype') return data.equipmentType ?? defaultValues[idx] ?? '';
+    if (norm === 'productmanufacturer' || norm === 'manufacturer' || norm === 'brand') return data.manufacturer ?? defaultValues[idx] ?? '';
+    if (norm === 'countryoforigin' || norm === 'country') return data.country ?? defaultValues[idx] ?? '';
+    if (norm === 'locationtype') return data.locationType ?? defaultValues[idx] ?? '';
+    if (norm === 'substation' || norm === 'substationname') return data.substationName ?? defaultValues[idx] ?? '';
+    if (norm === 'landmarklocation' || norm === 'landmark') return data.landmark ?? defaultValues[idx] ?? '';
+    if (norm === 'gps' || norm === 'coordinates') {
+      if (data.gps) {
+        if (typeof data.gps === 'string') return data.gps;
+        return `${data.gps.lat}, ${data.gps.lng}`;
+      }
+      return defaultValues[idx] ?? '';
+    }
+    if (norm === 'yearofregistration' || norm === 'registrationyear') return data.yearOfRegistration ?? defaultValues[idx] ?? '';
+    if (norm === 'peanumberid' || norm === 'peanumber') return data.peaNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmentnumberads' || norm === 'assetnumber') return data.assetNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'accountassetnumberaa' || norm === 'adsnumber' || norm === 'aanumber') return data.adsNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'productionmonth') return data.productionMonth ?? defaultValues[idx] ?? '';
+    if (norm === 'installationdate') return data.installationDate ?? defaultValues[idx] ?? '';
+    if (norm === 'wbs' || norm === 'wbscode') return data.wbs ?? defaultValues[idx] ?? '';
+    if (norm === 'businesstype') return data.businessType ?? defaultValues[idx] ?? '';
+    if (norm === 'costcenter') return data.costCenter ?? defaultValues[idx] ?? '';
+    if (norm === 'gistag') return data.gistag ?? defaultValues[idx] ?? '';
+    if (norm === 'class') return data.class ?? defaultValues[idx] ?? '';
+    if (norm === 'contractnumber') return data.contractNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'feeder') return data.feeder ?? defaultValues[idx] ?? '';
+    if (norm === 'substationid') return data.substationId ?? defaultValues[idx] ?? '';
+    if (norm === 'operateid') return data.operateId ?? defaultValues[idx] ?? '';
+    if (norm === 'serialnumber') return data.serialNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'model') return data.model ?? defaultValues[idx] ?? '';
+    if (norm === 'workorder') return data.workOrder ?? defaultValues[idx] ?? '';
+    if (norm === 'size') return data.size ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmentid') return data.equipmentId ?? defaultValues[idx] ?? '';
+    
+    // Standard Engineering Information
+    if (norm === 'loadcurrentamps' || norm === 'loadcurrent') return data.loadCurrent ?? defaultValues[idx] ?? '';
+    if (norm === 'sheathcurrentamps' || norm === 'sheathcurrent') return data.sheathCurrent ?? defaultValues[idx] ?? '';
+    if (norm === 'surfacetemperaturecelsius' || norm === 'surfacetemperature') return data.surfaceTemperature ?? defaultValues[idx] ?? '';
+    if (norm === 'externaldischargepc' || norm === 'externaldischarge') return data.externalDischarge ?? defaultValues[idx] ?? '';
+    if (norm === 'onlinepdresult' || norm === 'pdresult') return data.pdResult ?? defaultValues[idx] ?? '';
+    if (norm === 'onlinepdamplitudepc' || norm === 'onlinepdamplitude') return data.onlinePdAmplitude ?? defaultValues[idx] ?? '';
+    if (norm === 'insulationresistancegohm' || norm === 'insulationresistance') return data.insulationResistance ?? defaultValues[idx] ?? '';
+    if (norm === 'tandeltaresult' || norm === 'tandelta') return data.tanDelta ?? defaultValues[idx] ?? '';
+    if (norm === 'tandeltaamplitude') return data.tanDeltaAmplitude ?? defaultValues[idx] ?? '';
+
+    // Custom properties / newly added columns
+    if (data.customFields && data.customFields[header]) return data.customFields[header];
+    if (data.customFields && data.customFields[norm]) return data.customFields[norm];
+    if (data[header] !== undefined) return data[header];
+    if (data[norm] !== undefined) return data[norm];
+
+    return defaultValues[idx] ?? '';
+  });
+}
+
+export async function fetchWithRetry(url: string, options: RequestInit, retries = 3, initialDelayMs = 1000): Promise<Response> {
+  let delay = initialDelayMs;
+  for (let i = 0; i < retries; i++) {
+    const res = await fetch(url, options);
+    if (res.status === 429) {
+      console.warn(`Google API rate limit (429) encountered. Retrying after ${delay}ms... (Attempt ${i + 1}/${retries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2;
+      continue;
+    }
+    return res;
+  }
+  return fetch(url, options);
+}
+
+// Fetch all sheets from the spreadsheet, join columns and output parsed CableAsset array
+export async function fetchSheetsData(accessToken: string, spreadsheetId: string): Promise<CableAsset[]> {
+  // Determine if this spreadsheet is targeted to a specific PEA area via its title
+  let allowedArea: string | null = null;
+  try {
+    const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (metaRes.ok) {
+      const meta = await metaRes.json();
+      const title = meta.properties?.title || '';
+      const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
+                    title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+      if (match) {
+        allowedArea = match[1].trim().toUpperCase();
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to fetch spreadsheet title metadata:", err);
+  }
+
+  // Fetch wider range A1:AZ to include the header row (1) and any new columns!
+  const ranges = [
+    "'General Information'!A1:AZ",
+    "'Engineering Information'!A1:AZ",
+    "'Visual & Thermal Images'!A1:AZ"
+  ];
+
+  const res = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text();
+    console.error('Spreadsheet fetch error:', res.status, res.statusText, errorBody);
+    
+    let advice = "Please verify file access permissions.";
+    if (res.status === 403 && errorBody.includes('API has not been used in project')) {
+      advice = "The Google Sheets API is not enabled in your Google Cloud Project. Please enable it in the Google Cloud Console.";
+    } else if (res.status === 404) {
+      advice = "The spreadsheet could not be found. It may have been deleted. Please click 'Disconnect' in the top right to reset your connection and create a new one.";
+    } else if (res.status === 403) {
+      advice = "You don't have permission to access this spreadsheet. You might be signed into a different Google account. Try clicking 'Disconnect' to reset.";
+    } else if (res.status === 429) {
+      advice = "Google API rate limit reached. The system will retry shortly or use locally synced database cache.";
+    }
+    
+    throw new Error(`Failed to fetch spreadsheet data (Status: ${res.status}). ${advice}`);
+  }
+
+  const data = await res.json();
+  const valueRanges = data.valueRanges || [];
+
+  const genRows = valueRanges[0]?.values || [];
+  const engRows = valueRanges[1]?.values || [];
+  const visRows = valueRanges[2]?.values || [];
+
+  if (genRows.length === 0) {
+    return [];
+  }
+
+  const genHeaders = genRows[0] || [];
+  const engHeaders = engRows[0] || [];
+  const visHeaders = visRows[0] || [];
+
+  const genDataRows = genRows.slice(1);
+  const engDataRows = engRows.slice(1);
+  const visDataRows = visRows.slice(1);
+
+  const cleanStr = (val: any) => (val === undefined || val === null) ? '' : String(val).trim();
+
+  // Parse Page 1: General Information (Dynamic & Header-driven)
+  const generals: GeneralInformation[] = genDataRows.map((row: any[], index: number) => {
+    const getVal = (headerName: string) => {
+      const idx = genHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
+      return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
+    };
+
+    const gpsString = getVal('gps') || getVal('coordinates') || '13.7563, 100.5018';
+    const [lat, lng] = gpsString.split(',').map((c: string) => parseFloat(c.trim()) || 0);
+
+    const number = parseInt(getVal('number') || getVal('no')) || (index + 1);
+    const timestamp = getVal('timestamp') || getVal('date') || getVal('time');
+    const operatorName = getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator');
+    const voltageLevel = getVal('voltagelevelkv') || getVal('voltagelevel') || getVal('voltage');
+    const city = getVal('city') || getVal('province');
+    const equipmentType = getVal('equipmenttype') as EquipmentType;
+    const manufacturer = getVal('productmanufacturer') || getVal('manufacturer') || getVal('brand');
+    const country = getVal('countryoforigin') || getVal('country');
+    const locationType = getVal('locationtype') as LocationType;
+    const substationName = getVal('substation') || getVal('substationname');
+    const landmark = getVal('landmarklocation') || getVal('landmark');
+    const yearOfRegistration = parseInt(getVal('yearofregistration') || getVal('registrationyear')) || new Date().getFullYear();
+    const peaNumber = getVal('peanumberid') || getVal('peanumber');
+    const assetNumber = getVal('equipmentnumberads') || getVal('assetnumber');
+    const adsNumber = getVal('accountassetnumberaa') || getVal('adsnumber') || getVal('aanumber');
+    const productionMonth = getVal('productionmonth');
+    const installationDate = getVal('installationdate');
+    const wbs = getVal('wbs') || getVal('wbscode');
+    const businessType = getVal('businesstype');
+    const costCenter = getVal('costcenter');
+    const gistag = getVal('gistag');
+    const cls = getVal('class');
+    const contractNumber = getVal('contractnumber');
+    const feeder = getVal('feeder');
+    const substationId = getVal('substationid');
+    const operateId = getVal('operateid');
+    const serialNumber = getVal('serialnumber');
+    const model = getVal('model');
+    const workOrder = getVal('workorder');
+    const size = getVal('size');
+    let equipmentId = getVal('equipmentid');
+
+    // Fallbacks if equipmentid didn't match directly
+    if (!equipmentId) {
+      if (row.length > 31) {
+        equipmentId = cleanStr(row[31]);
+      } else {
+        const col15 = cleanStr(row[15]);
+        const col16 = cleanStr(row[16]);
+        const col15IsEqId = col15.includes('-') && (col15.includes('kV') || col15.split('-').length >= 3);
+        const col16IsEqId = col16.includes('-') && (col16.includes('kV') || col16.split('-').length >= 3);
+        if (col16IsEqId) {
+          equipmentId = col16;
+        } else if (col15IsEqId) {
+          equipmentId = col15;
+        } else {
+          equipmentId = col16 || col15 || '';
+        }
+      }
+    }
+
+    // Now gather all other columns that do NOT match standard headers into customFields
+    const standardKeys = [
+      'number', 'no', 'timestamp', 'date', 'time', 'nameofuseroradmin', 'operatorname', 'operator',
+      'voltagelevelkv', 'voltagelevel', 'voltage', 'city', 'province', 'equipmenttype',
+      'productmanufacturer', 'manufacturer', 'brand', 'countryoforigin', 'country', 'locationtype',
+      'substation', 'substationname', 'landmarklocation', 'landmark', 'gps', 'coordinates',
+      'yearofregistration', 'registrationyear', 'peanumberid', 'peanumber', 'equipmentnumberads',
+      'assetnumber', 'accountassetnumberaa', 'adsnumber', 'aanumber', 'productionmonth',
+      'installationdate', 'wbs', 'wbscode', 'businesstype', 'costcenter', 'gistag', 'class',
+      'contractnumber', 'feeder', 'substationid', 'operateid', 'serialnumber', 'model',
+      'workorder', 'size', 'equipmentid'
+    ];
+
+    const customFields: Record<string, string> = {};
+    genHeaders.forEach((header: string, colIdx: number) => {
+      const norm = normalizeHeader(header);
+      if (norm && !standardKeys.includes(norm) && colIdx < row.length) {
+        customFields[header] = cleanStr(row[colIdx]);
+      }
+    });
+
+    return {
+      number,
+      timestamp,
+      operatorName,
+      voltageLevel,
+      city,
+      equipmentType,
+      manufacturer,
+      country,
+      locationType,
+      substationName,
+      landmark,
+      gps: { lat, lng },
+      yearOfRegistration,
+      peaNumber,
+      assetNumber,
+      adsNumber,
+      productionMonth,
+      installationDate,
+      wbs,
+      businessType,
+      costCenter,
+      gistag,
+      class: cls,
+      contractNumber,
+      feeder,
+      substationId,
+      operateId,
+      serialNumber,
+      model,
+      workOrder,
+      size,
+      equipmentId,
+      customFields
+    };
+  });
+
+  // Parse Page 2: Engineering Information (Dynamic & Header-driven)
+  const engineerings: Record<string, EngineeringInformation> = {};
+  engDataRows.forEach((row: any[], index: number) => {
+    const getVal = (headerName: string) => {
+      const idx = engHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
+      return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
+    };
+
+    let eqId = getVal('equipmentid');
+    if (!eqId) {
+      eqId = cleanStr(row[3]);
+    }
+    if (!eqId) return;
+
+    const loadCurrent = parseFloat(getVal('loadcurrentamps') || getVal('loadcurrent') || cleanStr(row[4])) || 0;
+    const sheathCurrent = parseFloat(getVal('sheathcurrentamps') || getVal('sheathcurrent') || cleanStr(row[5])) || 0;
+    const surfaceTemperature = parseFloat(getVal('surfacetemperaturecelsius') || getVal('surfacetemperature') || cleanStr(row[6])) || 0;
+    const externalDischarge = parseFloat(getVal('externaldischargepc') || getVal('externaldischarge') || cleanStr(row[7])) || 0;
+    const pdResult = (getVal('onlinepdresult') || getVal('pdresult') || cleanStr(row[8]) || 'None') as PDResultType;
+    const onlinePdAmplitude = parseFloat(getVal('onlinepdamplitudepc') || getVal('onlinepdamplitude') || cleanStr(row[9])) || 0;
+    const insulationResistance = parseFloat(getVal('insulationresistancegohm') || getVal('insulationresistance') || cleanStr(row[10]) || cleanStr(row[9])) || 0;
+    const tanDelta = (getVal('tandeltaresult') || getVal('tandelta') || cleanStr(row[11]) || cleanStr(row[10]) || 'No record') as TanDeltaResult;
+    const tanDeltaAmplitude = parseFloat(getVal('tandeltaamplitude') || cleanStr(row[12])) || 0;
+
+    const standardEngKeys = [
+      'number', 'no', 'timestamp', 'nameofuseroradmin', 'operatorname', 'operator', 'equipmentid',
+      'loadcurrentamps', 'loadcurrent', 'sheathcurrentamps', 'sheathcurrent', 'surfacetemperaturecelsius',
+      'surfacetemperature', 'externaldischargepc', 'externaldischarge', 'onlinepdresult', 'pdresult',
+      'onlinepdamplitudepc', 'onlinepdamplitude', 'insulationresistancegohm', 'insulationresistance',
+      'tandeltaresult', 'tandelta', 'tandeltaamplitude'
+    ];
+
+    const customFields: Record<string, string> = {};
+    engHeaders.forEach((header: string, colIdx: number) => {
+      const norm = normalizeHeader(header);
+      if (norm && !standardEngKeys.includes(norm) && colIdx < row.length) {
+        customFields[header] = cleanStr(row[colIdx]);
+      }
+    });
+
+    engineerings[eqId] = {
+      number: parseInt(getVal('number') || getVal('no')) || (index + 1),
+      timestamp: getVal('timestamp') || cleanStr(row[1]),
+      operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
+      equipmentId: eqId,
+      loadCurrent,
+      sheathCurrent,
+      surfaceTemperature,
+      externalDischarge,
+      pdResult,
+      onlinePdAmplitude,
+      insulationResistance,
+      tanDelta,
+      tanDeltaAmplitude,
+      customFields
+    };
+  });
+
+  // Parse Page 3: Visual & Thermal Images (Dynamic & Header-driven)
+  const visuals: Record<string, VisualInformation> = {};
+  visDataRows.forEach((row: any[], index: number) => {
+    const getVal = (headerName: string) => {
+      const idx = visHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
+      return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
+    };
+
+    let eqId = getVal('equipmentid');
+    if (!eqId) {
+      eqId = cleanStr(row[3]);
+    }
+    if (!eqId) return;
+
+    const fixDriveUrl = (url: string) => {
+      if (!url) return url;
+      if (url.includes('drive.google.com/uc?export=view&id=')) {
+        return url.replace('uc?export=view&id=', 'thumbnail?id=') + '&sz=w1000';
+      }
+      return url;
+    };
+
+    visuals[eqId] = {
+      number: parseInt(getVal('number') || getVal('no')) || (index + 1),
+      timestamp: getVal('timestamp') || cleanStr(row[1]),
+      operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
+      equipmentId: eqId,
+      visualPictureUrl: fixDriveUrl(getVal('visualpictureurl') || getVal('visualpicture') || cleanStr(row[4])),
+      thermalImageUrl: fixDriveUrl(getVal('thermalimageurl') || getVal('thermalimage') || cleanStr(row[5]))
+    };
+  });
+
+  // Join them together and compute health index
+  const results = generals.map(gen => {
+    const eng = (engineerings[gen.equipmentId] || {}) as Partial<EngineeringInformation>;
+    const vis = (visuals[gen.equipmentId] || {}) as Partial<VisualInformation>;
+    const { score, status } = calculateHealth(eng);
+
+    const getMs = (ts: string) => {
+      if (!ts) return 0;
+      const d = new Date(ts.replace(/-/g, '/'));
+      return isNaN(d.getTime()) ? 0 : d.getTime();
+    };
+
+    let latestBy = gen.operatorName || 'System';
+    let latestAt = gen.timestamp || '';
+    let maxMs = getMs(latestAt);
+
+    const engMs = getMs(eng.timestamp || '');
+    if (engMs > maxMs) {
+      latestBy = eng.operatorName || 'System';
+      latestAt = eng.timestamp || '';
+      maxMs = engMs;
+    }
+
+    const visMs = getMs(vis.timestamp || '');
+    if (visMs > maxMs) {
+      latestBy = vis.operatorName || 'System';
+      latestAt = vis.timestamp || '';
+      maxMs = visMs;
+    }
+
+    return {
+      ...gen,
+      ...eng,
+      ...vis,
+      healthScore: score,
+      healthStatus: status,
+      latestUpdatedBy: latestBy,
+      latestUpdatedAt: latestAt,
+      spreadsheetId,
+      customFields: {
+        ...(gen.customFields || {}),
+        ...(eng.customFields || {})
+      }
+    } as CableAsset;
+  });
+
+  if (allowedArea) {
+    return results.filter(asset => {
+      let assetArea = '';
+      if (asset.equipmentId) {
+        const parts = asset.equipmentId.split('-');
+        if (parts.length > 0) assetArea = parts[0].trim().toUpperCase();
+      }
+      if (!assetArea && asset.peaNumber) {
+        const parts = asset.peaNumber.split('-');
+        if (parts.length > 1) assetArea = parts[1].trim().toUpperCase();
+      }
+      // If we cannot find any area code on the asset itself, default it to allowedArea
+      // since it literally exists in that spreadsheet! Otherwise, verify they match.
+      return !assetArea || assetArea === allowedArea;
+    });
+  }
+
+  return results;
+}
+
+// Append new general row
+export async function appendGeneralRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+  let rowValues: any[];
+  if (Array.isArray(rowOrData)) {
+    rowValues = rowOrData;
+  } else {
+    // It's an object! Let's fetch the first row (headers) to align it
+    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:AZ1`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!resHeaders.ok) throw new Error('Failed to fetch General Information headers for alignment');
+    const dataHeaders = await resHeaders.json();
+    const headers = dataHeaders.values?.[0] || [];
+    rowValues = alignRowWithHeaders(headers, rowOrData);
+  }
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      range: "'General Information'!A1",
+      majorDimension: 'ROWS',
+      values: [rowValues]
+    })
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to append general information to Google Sheets: ${errorText}`);
+  }
+}
+
+// Fetch highest number in Column A of General Information sheet
+export async function fetchLastSheetNumber(accessToken: string, spreadsheetId: string): Promise<number> {
+  try {
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    const rows = data.values || [];
+    let maxNum = 0;
+    for (const r of rows) {
+      if (r && r[0] !== undefined && r[0] !== null) {
+        const val = parseInt(String(r[0]).replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(val) && val > maxNum && val < 100000) {
+          maxNum = val;
+        }
+      }
+    }
+    return maxNum;
+  } catch (err) {
+    console.warn("Failed to fetch last sheet number:", err);
+    return 0;
+  }
+}
+
+// Append new engineering row
+export async function appendEngineeringRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+  let rowValues: any[];
+  if (Array.isArray(rowOrData)) {
+    rowValues = rowOrData;
+  } else {
+    // Fetch headers of Engineering Information to align
+    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:AZ1`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!resHeaders.ok) throw new Error('Failed to fetch Engineering Information headers for alignment');
+    const dataHeaders = await resHeaders.json();
+    const headers = dataHeaders.values?.[0] || [];
+    rowValues = alignRowWithHeaders(headers, rowOrData);
+  }
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      range: "'Engineering Information'!A1",
+      majorDimension: 'ROWS',
+      values: [rowValues]
+    })
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to append engineering parameters to Google Sheets: ${errorText}`);
+  }
+}
+
+// Append new visual images row
+export async function appendVisualRow(accessToken: string, spreadsheetId: string, row: any[]) {
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Visual%20%26%20Thermal%20Images%27%21A1:append?valueInputOption=USER_ENTERED`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      range: "'Visual & Thermal Images'!A1",
+      majorDimension: 'ROWS',
+      values: [row]
+    })
+  });
+  if (!res.ok) {
+    throw new Error('Failed to append visual assets to Google Sheets');
+  }
+}
+
+// Update specific spreadsheet row
+export async function updateSheetRow(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  rowIndex: number,
+  rowValuesOrData: any[] | Record<string, any>,
+  columnRange: string
+) {
+  let rowValues: any[];
+  let maxColLetter = columnRange.split(':')[1] || 'AF';
+
+  if (Array.isArray(rowValuesOrData)) {
+    rowValues = rowValuesOrData;
+  } else {
+    // Fetch headers of that sheet to align
+    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'${sheetName}'!A1:AZ1`)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!resHeaders.ok) throw new Error(`Failed to fetch ${sheetName} headers for alignment`);
+    const dataHeaders = await resHeaders.json();
+    const headers = dataHeaders.values?.[0] || [];
+    rowValues = alignRowWithHeaders(headers, rowValuesOrData);
+    
+    // Calculate max target column letter dynamically
+    if (headers.length > 0) {
+      const getColumnLetter = (colIdx: number) => {
+        let temp = colIdx;
+        let letter = '';
+        while (temp >= 0) {
+          letter = String.fromCharCode((temp % 26) + 65) + letter;
+          temp = Math.floor(temp / 26) - 1;
+        }
+        return letter;
+      };
+      maxColLetter = getColumnLetter(headers.length - 1);
+    }
+  }
+
+  const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      range,
+      majorDimension: 'ROWS',
+      values: [rowValues]
+    })
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to update row in Google Sheets (${sheetName}): ${errorText}`);
+  }
+}
+
+// Batch update multiple rows/ranges on a single spreadsheet in a single API call
+export async function batchUpdateSheetRows(
+  accessToken: string,
+  spreadsheetId: string,
+  updates: { range: string; values: any[][] }[]
+) {
+  if (updates.length === 0) return;
+  
+  const body = {
+    valueInputOption: 'USER_ENTERED',
+    data: updates.map(u => ({
+      range: u.range,
+      majorDimension: 'ROWS',
+      values: u.values
+    }))
+  };
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to batch update spreadsheet ${spreadsheetId}: ${errorText}`);
+  }
+}
+
+// Fetch row mappings for an equipmentId or specific record number to support overwrite edits
+export async function fetchSheetsRowIndices(
+  accessToken: string,
+  spreadsheetId: string,
+  equipmentId: string,
+  recordNumber?: number
+): Promise<{ genRowIndex: number; engRowIndex: number; visRowIndex: number }> {
+  const ranges = [
+    "'General Information'!A1:AZ",
+    "'Engineering Information'!A1:AZ",
+    "'Visual & Thermal Images'!A1:AZ"
+  ];
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!res.ok) {
+    throw new Error('Failed to retrieve spreadsheet row mappings.');
+  }
+
+  const data = await res.json();
+  const valueRanges = data.valueRanges || [];
+
+  const genRows = valueRanges[0]?.values || [];
+  const engRows = valueRanges[1]?.values || [];
+  const visRows = valueRanges[2]?.values || [];
+
+  const genHeaders = genRows[0] || [];
+  const engHeaders = engRows[0] || [];
+  const visHeaders = visRows[0] || [];
+
+  const genDataRows = genRows.slice(1);
+  const engDataRows = engRows.slice(1);
+  const visDataRows = visRows.slice(1);
+
+  const cleanStr = (val: any) => (val === undefined || val === null) ? '' : String(val).trim();
+  const searchId = cleanStr(equipmentId).toLowerCase();
+
+  const getColIdxOfEqId = (headers: string[]) => {
+    return headers.findIndex(h => normalizeHeader(h) === 'equipmentid');
+  };
+
+  const genEqIdIdx = getColIdxOfEqId(genHeaders);
+  const engEqIdIdx = getColIdxOfEqId(engHeaders);
+  const visEqIdIdx = getColIdxOfEqId(visHeaders);
+
+  // Find index in General Information
+  let genIndex = -1;
+  if (recordNumber) {
+    genIndex = genDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+  }
+  if (genIndex === -1) {
+    const targetIdx = genEqIdIdx !== -1 ? genEqIdIdx : 31; // fallback to AF
+    genIndex = genDataRows.findIndex((row: any[]) => {
+      if (row.length > targetIdx) {
+        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
+      }
+      return false;
+    });
+  }
+
+  // Find index in Engineering Information
+  let engIndex = -1;
+  if (recordNumber) {
+    engIndex = engDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+  }
+  if (engIndex === -1) {
+    const targetIdx = engEqIdIdx !== -1 ? engEqIdIdx : 3; // fallback to D
+    engIndex = engDataRows.findIndex((row: any[]) => {
+      if (row.length > targetIdx) {
+        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
+      }
+      return false;
+    });
+  }
+
+  // Find index in Visual & Thermal Images
+  let visIndex = -1;
+  if (recordNumber) {
+    visIndex = visDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+  }
+  if (visIndex === -1) {
+    const targetIdx = visEqIdIdx !== -1 ? visEqIdIdx : 3; // fallback to D
+    visIndex = visDataRows.findIndex((row: any[]) => {
+      if (row.length > targetIdx) {
+        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
+      }
+      return false;
+    });
+  }
+
+  return {
+    genRowIndex: genIndex !== -1 ? genIndex + 2 : -1,
+    engRowIndex: engIndex !== -1 ? engIndex + 2 : -1,
+    visRowIndex: visIndex !== -1 ? visIndex + 2 : -1
+  };
+}

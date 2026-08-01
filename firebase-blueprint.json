@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "SectorSpreadsheet": {
+      "title": "Sector Spreadsheet Mapping",
+      "description": "Mapping of a PEA area sector to its respective Google Spreadsheet and Google Drive assets folder.",
+      "type": "object",
+      "properties": {
+        "spreadsheetId": {
+          "type": "string",
+          "description": "The unique ID of the Google Sheets file."
+        },
+        "folderId": {
+          "type": "string",
+          "description": "The unique ID of the Google Drive folder for image uploads."
+        }
+      },
+      "required": ["spreadsheetId", "folderId"]
+    }
+  },
+  "firestore": {
+    "sector_spreadsheets/{sectorId}": {
+      "schema": "SectorSpreadsheet",
+      "description": "A collection containing Google Sheet and Drive folder connections mapped per PEA Area Sector (e.g., N1, N2, ALL)."
+    }
+  }
+}

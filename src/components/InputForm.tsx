@@ -1,0 +1,1149 @@
+import { useState, useEffect, useMemo, ChangeEvent, FormEvent } from 'react';
+import { 
+  EquipmentType, 
+  LocationType, 
+  PDResultType, 
+  TanDeltaResult, 
+  PEAUser 
+} from '../types';
+import { 
+  PEA_AREAS,
+  PEA_AREA_NAMES, 
+  PEA_AREA_CITIES, 
+  EQUIPMENT_TYPES, 
+  COUNTRIES_OF_ORIGIN, 
+  MANUFACTURERS, 
+  VOLTAGE_LEVELS,
+  generateEquipmentId,
+  getAvailableEquipmentTypes,
+  getManufacturersForEquipmentType
+} from '../utils/peaData';
+import { 
+  uploadImageToDrive, 
+  appendGeneralRow, 
+  appendEngineeringRow, 
+  appendVisualRow,
+  fetchSheetsData,
+  fetchLastSheetNumber,
+  getMasterSpreadsheetsMap
+} from '../utils/googleSheets';
+import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, getCentralAdminDatabaseConfig } from '../utils/firestore';
+import { 
+  Check, 
+  ArrowRight, 
+  ArrowLeft, 
+  MapPin, 
+  Camera, 
+  AlertTriangle, 
+  Loader2, 
+  ShieldCheck, 
+  Sparkles,
+  User
+} from 'lucide-react';
+
+import { CableAsset } from '../types';
+
+interface InputFormProps {
+  user: PEAUser;
+  spreadsheetId: string | null;
+  googleToken: string | null;
+  folderId: string | null;
+  onSuccess: () => void;
+  assets?: CableAsset[];
+}
+
+export default function InputForm({ user, spreadsheetId, googleToken, folderId, onSuccess, assets }: InputFormProps) {
+  const [step, setStep] = useState<number>(1);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string>('');
+
+  // --- Form State ---
+
+  // Page 1: General Info
+  const [selectedArea, setSelectedArea] = useState<string>(
+    user.interestArea === 'ALL' ? 'N1' : user.interestArea
+  );
+  const [voltage, setVoltage] = useState<string>('115');
+  const [city, setCity] = useState<string>('');
+  const [eqType, setEqType] = useState<EquipmentType>('Underground Cable');
+  const [brand, setBrand] = useState<string>('');
+  const [country, setCountry] = useState<string>('');
+  const [locationType, setLocationType] = useState<LocationType>('Substation');
+  const [substation, setSubstation] = useState<string>('');
+  const [landmark, setLandmark] = useState<string>('');
+  const [gpsLat, setGpsLat] = useState<string>('');
+  const [gpsLng, setGpsLng] = useState<string>('');
+  const [regYear, setRegYear] = useState<number>(new Date().getFullYear());
+  const [peaNumber, setPeaNumber] = useState<string>('');
+  const [assetNumber, setAssetNumber] = useState<string>('');
+  const [adsNumber, setAdsNumber] = useState<string>('');
+
+  // 15 New General Info columns
+  const [productionMonth, setProductionMonth] = useState<string>('');
+  const [installationDate, setInstallationDate] = useState<string>('');
+  const [wbs, setWbs] = useState<string>('');
+  const [businessType, setBusinessType] = useState<string>('');
+  const [costCenter, setCostCenter] = useState<string>('');
+  const [gistag, setGistag] = useState<string>('');
+  const [assetClass, setAssetClass] = useState<string>('');
+  const [contractNumber, setContractNumber] = useState<string>('');
+  const [feeder, setFeeder] = useState<string>('');
+  const [substationId, setSubstationId] = useState<string>('');
+  const [operateId, setOperateId] = useState<string>('');
+  const [serialNumber, setSerialNumber] = useState<string>('');
+  const [model, setModel] = useState<string>('');
+  const [workOrder, setWorkOrder] = useState<string>('');
+  const [size, setSize] = useState<string>('400 sq.mm');
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+
+  // Page 2: Engineering Info
+  const [loadCurrent, setLoadCurrent] = useState<string>('');
+  const [sheathCurrent, setSheathCurrent] = useState<string>('');
+  const [surfaceTemp, setSurfaceTemp] = useState<string>('');
+  const [discharge, setDischarge] = useState<string>('');
+  const [pdResult, setPdResult] = useState<PDResultType>('None');
+  const [onlinePdAmplitude, setOnlinePdAmplitude] = useState<string>('');
+  const [insulationRes, setInsulationRes] = useState<string>('');
+  const [tanDelta, setTanDelta] = useState<TanDeltaResult>('No Action Required');
+  const [tanDeltaAmplitude, setTanDeltaAmplitude] = useState<string>('');
+
+  // Page 3: Images (File format & uploaded link)
+  const [visualFile, setVisualFile] = useState<File | null>(null);
+  const [thermalFile, setThermalFile] = useState<File | null>(null);
+  
+  const [visualPreview, setVisualPreview] = useState<string>('');
+  const [thermalPreview, setThermalPreview] = useState<string>('');
+
+  // Pre-populate city with first available option in selected area
+  useEffect(() => {
+    const cities = PEA_AREA_CITIES[selectedArea] || [];
+    if (cities.length > 0) {
+      setCity(cities[0]);
+    } else {
+      setCity('');
+    }
+  }, [selectedArea]);
+
+  // System Constraint: 33 kV is Southern Area 2-3 (S2, S3) only
+  useEffect(() => {
+    if (selectedArea !== 'S2' && selectedArea !== 'S3' && voltage === '33') {
+      setVoltage('115'); // Reset to default 115 kV
+    }
+  }, [selectedArea, voltage]);
+
+  // Voltage Level Constraint: 115 kV excludes 1.6, 1.10, 1.11, 1.13, 1.14
+  useEffect(() => {
+    const availableTypes = getAvailableEquipmentTypes(voltage);
+    if (!availableTypes.includes(eqType)) {
+      setEqType(availableTypes[0]);
+    }
+  }, [voltage, eqType]);
+
+  // Brand constraint: Automatically sync manufacturer options when equipment type changes
+  useEffect(() => {
+    const availableBrands = getManufacturersForEquipmentType(eqType);
+    if (!brand || !availableBrands.includes(brand)) {
+      setBrand(availableBrands[0] || 'Others');
+    }
+  }, [eqType]);
+
+  // Pre-populate default brand and country
+  useEffect(() => {
+    const availableBrands = getManufacturersForEquipmentType(eqType);
+    if (!brand && availableBrands.length > 0) {
+      setBrand(availableBrands[0]);
+    }
+    if (!country && COUNTRIES_OF_ORIGIN.length > 0) {
+      setCountry(COUNTRIES_OF_ORIGIN[0]);
+    }
+  }, []);
+
+  // Handle GPS location finder
+  const detectGPS = () => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        position => {
+          setGpsLat(position.coords.latitude.toFixed(6));
+          setGpsLng(position.coords.longitude.toFixed(6));
+          setStatusMessage('GPS Auto-detected successfully!');
+          setTimeout(() => setStatusMessage(''), 3000);
+        },
+        error => {
+          console.error(error);
+          alert('GPS detection failed. Please check permissions or enter coordinates manually.');
+        }
+      );
+    } else {
+      alert('Geolocation API not supported in your browser.');
+    }
+  };
+
+  // Unique Equipment ID generator helper
+  const computedEquipmentId = useMemo(() => {
+    const finalPeaNumber = (peaNumber || '').trim();
+    const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+    const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+    return generateEquipmentId(
+      selectedArea,
+      voltage,
+      regYear,
+      eqType,
+      finalPeaNumber,
+      finalAssetNumber,
+      finalAdsNumber
+    );
+  }, [selectedArea, voltage, regYear, eqType, peaNumber, assetNumber, adsNumber]);
+
+  // Image preview handlers
+  const handleImageChange = (e: ChangeEvent<HTMLInputElement>, type: 'visual' | 'thermal') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (type === 'visual') {
+        setVisualFile(file);
+        setVisualPreview(reader.result as string);
+      } else {
+        setThermalFile(file);
+        setThermalPreview(reader.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Immediate Engineering warning calculation flags
+  const alerts = useMemo(() => {
+    const hasHighTemp = surfaceTemp !== '' && parseFloat(surfaceTemp) > 70;
+    const hasHighDischarge = discharge !== '' && parseFloat(discharge) > 100;
+    const hasLowInsulation = insulationRes !== '' && parseFloat(insulationRes) < 1.0;
+    
+    const load = parseFloat(loadCurrent) || 0;
+    const sheath = parseFloat(sheathCurrent) || 0;
+    const hasHighSheathRatio = load > 0 && (sheath / load) > 0.3;
+
+    return {
+      highTemp: hasHighTemp,
+      highDischarge: hasHighDischarge,
+      lowInsulation: hasLowInsulation,
+      highSheathRatio: hasHighSheathRatio
+    };
+  }, [surfaceTemp, discharge, insulationRes, loadCurrent, sheathCurrent]);
+
+  // Submit combined multi-page rows
+  const handleSubmitForm = async (e: FormEvent) => {
+    e.preventDefault();
+    
+    if (step < 3) {
+      setStep(prev => prev + 1);
+      return;
+    }
+
+    if (!visualFile || !thermalFile) {
+      setStatusMessage('Please upload both visual and thermal images before submitting.');
+      return;
+    }
+
+    setLoading(true);
+    setStatusMessage('Preparing database for selected area...');
+
+    try {
+      // 1. Get or Create Spreadsheet for selectedArea
+      let currentSpreadsheetId = spreadsheetId;
+      let currentFolderId = folderId;
+
+      if (googleToken || !currentSpreadsheetId) {
+        const sectorData = await getSectorSpreadsheet(selectedArea);
+        if (sectorData && sectorData.spreadsheetId) {
+          currentSpreadsheetId = sectorData.spreadsheetId;
+          if (sectorData.folderId) currentFolderId = sectorData.folderId;
+        } else {
+          const masterMap = await getMasterSpreadsheetsMap(googleToken);
+          if (masterMap.spreadsheets[selectedArea]) {
+            currentSpreadsheetId = masterMap.spreadsheets[selectedArea];
+            if (masterMap.folders[selectedArea]) currentFolderId = masterMap.folders[selectedArea];
+          }
+        }
+      }
+
+      setStatusMessage('Uploading inspection photos...');
+      
+      let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'; // Fallback mockup
+      let thermalUrl = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'; // Fallback mockup
+
+      // Upload files to user's Google Drive folder if logged in
+      if (googleToken && currentFolderId) {
+        if (visualFile) {
+          visualUrl = await uploadImageToDrive(googleToken, currentFolderId, visualFile);
+        }
+        if (thermalFile) {
+          thermalUrl = await uploadImageToDrive(googleToken, currentFolderId, thermalFile);
+        }
+      }
+
+      setStatusMessage('Saving inspection data to Google Sheets...');
+
+      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      
+      // Calculate next sequential running number
+      let rowNum = 1;
+      if (googleToken && currentSpreadsheetId) {
+        try {
+          setStatusMessage('Retrieving spreadsheet records to calculate next sequential number...');
+          const lastSheetNum = await fetchLastSheetNumber(googleToken, currentSpreadsheetId);
+          if (lastSheetNum > 0) {
+            rowNum = lastSheetNum + 1;
+          } else {
+            const currentAssets = await fetchSheetsData(googleToken, currentSpreadsheetId);
+            if (currentAssets && currentAssets.length > 0) {
+              const validNumbers = currentAssets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
+              rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : currentAssets.length + 1;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch target spreadsheet data for row number, using fallback:", err);
+          if (assets && assets.length > 0) {
+            const validNumbers = assets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
+            rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : assets.length + 1;
+          } else {
+            rowNum = 1;
+          }
+        }
+      } else {
+        if (assets && assets.length > 0) {
+          const validNumbers = assets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
+          rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : assets.length + 1;
+        } else {
+          rowNum = 1;
+        }
+      }
+
+      const finalPeaNumber = (peaNumber || '').trim();
+      const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+
+      // Rows matching the specified spreadsheet layout: 
+      // Column N (index 13): PEA Number (ID)
+      // Column O (index 14): Equipment Number ADS
+      // Column P (index 15): Account Asset Number (AA)
+      // Columns Q - AE (index 16-30): 15 New General Info columns
+      // Column AF (index 31): Equipment ID
+      const generalRow = [
+        rowNum, timestamp, user.name, voltage, city, eqType, 
+        brand || 'Prysmian Group', country || 'Thailand', locationType, substation || 'Main Station', 
+        landmark || 'No landmarks', `${gpsLat || '13.7563'}, ${gpsLng || '100.5018'}`, regYear, 
+        finalPeaNumber, finalAssetNumber, finalAdsNumber,
+        productionMonth || 'N/A', installationDate || 'N/A', wbs || 'N/A', businessType || 'N/A',
+        costCenter || 'N/A', gistag || 'N/A', assetClass || 'N/A', contractNumber || 'N/A',
+        feeder || 'N/A', substationId || 'N/A', operateId || 'N/A', serialNumber || 'N/A',
+        model || 'N/A', workOrder || 'N/A', size || 'N/A',
+        computedEquipmentId
+      ];
+
+      // Engineering Row (13 columns):
+      // Column A-I (0-8): standard parameters (Row, Timestamp, Name, EqID, Load, Sheath, Temp, PD, PDPattern)
+      // Column J (index 9): Online PD amplitude (pC)
+      // Column K (index 10): Insulation Resistance (GOhm)
+      // Column L (index 11): Tan Delta Result
+      // Column M (index 12): Tan Delta amplitude
+      const engineeringRow = [
+        rowNum, timestamp, user.name, computedEquipmentId, 
+        parseFloat(loadCurrent) || 120, parseFloat(sheathCurrent) || 8, parseFloat(surfaceTemp) || 35, 
+        parseFloat(discharge) || 5, pdResult,
+        parseFloat(onlinePdAmplitude) || 0,
+        parseFloat(insulationRes) || 15.0, tanDelta,
+        parseFloat(tanDeltaAmplitude) || 0
+      ];
+
+      const visualRow = [
+        rowNum, timestamp, user.name, computedEquipmentId, visualUrl, thermalUrl
+      ];
+
+      const combinedAsset = {
+        number: rowNum, timestamp, operatorName: user.name, voltageLevel: voltage, city, 
+        equipmentType: eqType, manufacturer: brand || 'Prysmian Group', country: country || 'Thailand',
+        locationType, substationName: substation || 'Main Station', landmark: landmark || 'No landmarks',
+        gps: { lat: parseFloat(gpsLat) || 13.7563, lng: parseFloat(gpsLng) || 100.5018 },
+        yearOfRegistration: regYear, peaNumber: finalPeaNumber, assetNumber: finalAssetNumber, adsNumber: finalAdsNumber,
+        productionMonth, installationDate, wbs, businessType, costCenter, gistag, class: assetClass,
+        contractNumber, feeder, substationId, operateId, serialNumber, model, workOrder, size,
+        equipmentId: computedEquipmentId,
+        loadCurrent: parseFloat(loadCurrent) || 120, sheathCurrent: parseFloat(sheathCurrent) || 8,
+        surfaceTemperature: parseFloat(surfaceTemp) || 35, externalDischarge: parseFloat(discharge) || 5,
+        pdResult, onlinePdAmplitude: parseFloat(onlinePdAmplitude) || 0, insulationResistance: parseFloat(insulationRes) || 15.0,
+        tanDelta, tanDeltaAmplitude: parseFloat(tanDeltaAmplitude) || 0,
+        visualPictureUrl: visualPreview || visualUrl, thermalImageUrl: thermalPreview || thermalUrl
+      };
+
+      if (googleToken && currentSpreadsheetId) {
+        // Append real database rows
+        await appendGeneralRow(googleToken, currentSpreadsheetId, generalRow);
+        await appendEngineeringRow(googleToken, currentSpreadsheetId, engineeringRow);
+        await appendVisualRow(googleToken, currentSpreadsheetId, visualRow);
+      }
+
+      // Always sync to Firestore central cache and local storage so Dashboard updates immediately across all roles
+      try {
+        const currentList = assets || [];
+        const updatedList = [combinedAsset, ...currentList];
+        await saveCentralAssetsCache(updatedList);
+        localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
+      } catch (e) {
+        console.warn("Failed updating central assets cache:", e);
+      }
+
+      setStatusMessage('Asset successfully logged!');
+      setTimeout(() => {
+        onSuccess();
+      }, 1500);
+
+    } catch (err: any) {
+      alert(`Submission Error: ${err.message || 'Error occurred during upload.'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-2xl mx-auto" id="input-form-card">
+      {/* Wizard Header Progress */}
+      <div className="bg-purple-900 text-white p-6 relative">
+        <span className="text-[10px] font-black tracking-widest uppercase bg-purple-800 text-purple-200 px-2 py-0.5 rounded-md">
+          Asset Registration Wizard
+        </span>
+        <h3 className="text-base font-bold mt-1 uppercase">Log Cable System Equipment</h3>
+        <p className="text-xs text-purple-200 mt-0.5">PEA Area: {selectedArea} - {PEA_AREA_NAMES[selectedArea]}</p>
+
+        {/* Dynamic Progress Bar */}
+        <div className="absolute bottom-0 left-0 w-full h-1.5 bg-purple-950 flex">
+          <div className={`h-full bg-emerald-500 transition-all duration-300 ${
+            step === 1 ? 'w-1/3' : step === 2 ? 'w-2/3' : 'w-full'
+          }`} />
+        </div>
+      </div>
+
+      <div className="p-6">
+        {statusMessage && (
+          <div className="bg-purple-50 text-purple-700 border border-purple-100 p-3 rounded-lg text-xs font-semibold flex items-center gap-2 mb-5">
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmitForm} className="space-y-6">
+          {/* STEP 1: GENERAL INFORMATION */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <div className="border-b border-gray-100 pb-2 mb-3">
+                <h4 className="text-xs font-bold text-gray-900 uppercase">Step 1: General Information Registry</h4>
+                <p className="text-[10px] text-gray-400">Configure key identifying indicators of the cable or termination unit</p>
+              </div>
+
+              {/* Grid 1 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Operator Name</label>
+                  <div className="relative">
+                    <User className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-gray-400" />
+                    <input
+                      type="text"
+                      disabled
+                      value={user.name}
+                      className="w-full bg-gray-100 border border-gray-200 rounded-lg py-2 pl-8 pr-3 text-xs font-semibold text-gray-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Voltage Level (kV)</label>
+                  <select
+                    value={voltage}
+                    onChange={e => setVoltage(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    <option value="115">115 kV (Transmission)</option>
+                    <option value="33">33 kV (Distribution)</option>
+                    <option value="22">22 kV (Distribution)</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Area</label>
+                  <select
+                    value={selectedArea}
+                    onChange={e => setSelectedArea(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    {PEA_AREAS.map(area => (
+                      <option key={area} value={area}>{area}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA City / Province</label>
+                  <select
+                    value={city}
+                    onChange={e => setCity(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    {(PEA_AREA_CITIES[selectedArea] || []).map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Type</label>
+                  <select
+                    value={eqType}
+                    onChange={e => setEqType(e.target.value as EquipmentType)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    {getAvailableEquipmentTypes(voltage).map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Manufacturer Brand</label>
+                  <select
+                    value={brand}
+                    onChange={e => setBrand(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    {getManufacturersForEquipmentType(eqType).map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Country of Origin</label>
+                  <select
+                    value={country}
+                    onChange={e => setCountry(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    {COUNTRIES_OF_ORIGIN.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Grid 2 */}
+              <div className="grid grid-cols-3 gap-4 border-t border-gray-50 pt-4">
+                <div className="flex flex-col gap-1.5 col-span-1">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Location Type</label>
+                  <select
+                    value={locationType}
+                    onChange={e => setLocationType(e.target.value as LocationType)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  >
+                    <option value="Substation">Substation</option>
+                    <option value="Transmission Line">Transmission Line</option>
+                    <option value="Distribution Line">Distribution Line</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5 col-span-2">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Substation Name / Segment</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Chiang Mai 2 Substation"
+                    value={substation}
+                    onChange={e => setSubstation(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-bold text-gray-400 uppercase">Landmark / Geographic details</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Opposite BigC Main Expressway Highway Room 107"
+                  value={landmark}
+                  onChange={e => setLandmark(e.target.value)}
+                  className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              {/* GPS Auto-detector */}
+              <div className="grid grid-cols-2 gap-4 border-t border-gray-50 pt-4">
+                <div className="flex flex-col gap-1.5 col-span-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">GPS Coordinates</label>
+                    <button
+                      type="button"
+                      onClick={detectGPS}
+                      className="text-[10px] text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                      Auto-detect Location
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="Latitude (e.g. 18.7883)"
+                      value={gpsLat}
+                      onChange={e => setGpsLat(e.target.value)}
+                      className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                    />
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="Longitude (e.g. 98.9853)"
+                      value={gpsLng}
+                      onChange={e => setGpsLng(e.target.value)}
+                      className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Registration Year</label>
+                  <input
+                    type="number"
+                    required
+                    placeholder="e.g. 2018"
+                    value={regYear}
+                    onChange={e => setRegYear(parseInt(e.target.value) || new Date().getFullYear())}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Number (ID)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. PEA-N1-UG01"
+                    value={peaNumber}
+                    onChange={e => setPeaNumber(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Number ADS</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. EQ-9081234"
+                    value={assetNumber}
+                    onChange={e => setAssetNumber(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Account Asset Number (AA)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. AA-1001"
+                    value={adsNumber}
+                    onChange={e => setAdsNumber(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  />
+                </div>
+              </div>
+
+              {/* Expandable Advanced General Fields */}
+              <div className="border-t border-gray-100 pt-4 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-2 text-xs font-black text-purple-900 hover:text-purple-950 cursor-pointer transition-all uppercase tracking-wider"
+                >
+                  <span className="text-[9px]">{showAdvanced ? '▼' : '▶'}</span>
+                  <span>Advanced Cable Specification ({15} Optional Fields)</span>
+                </button>
+
+                {showAdvanced && (
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 pt-3 mt-1 animate-fadeIn">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Production Month</label>
+                      <input
+                        type="month"
+                        value={productionMonth}
+                        onChange={e => setProductionMonth(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date</label>
+                      <input
+                        type="date"
+                        value={installationDate}
+                        onChange={e => setInstallationDate(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">WBS Code</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. WBS-N1-9023"
+                        value={wbs}
+                        onChange={e => setWbs(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Business Type</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Transmission"
+                        value={businessType}
+                        onChange={e => setBusinessType(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Cost Center</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. CC-1234"
+                        value={costCenter}
+                        onChange={e => setCostCenter(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">GISTAG</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. GIS-TAG-882"
+                        value={gistag}
+                        onChange={e => setGistag(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Class</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Class A"
+                        value={assetClass}
+                        onChange={e => setAssetClass(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Contract Number</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. CN-88219"
+                        value={contractNumber}
+                        onChange={e => setContractNumber(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Feeder</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. FDR-09"
+                        value={feeder}
+                        onChange={e => setFeeder(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Substation ID</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. SUB-CM2"
+                        value={substationId}
+                        onChange={e => setSubstationId(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Operate ID</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. OP-991"
+                        value={operateId}
+                        onChange={e => setOperateId(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Serial Number</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. SN-882180"
+                        value={serialNumber}
+                        onChange={e => setSerialNumber(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Model</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. MOD-XL-9"
+                        value={model}
+                        onChange={e => setModel(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Work Order</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. WO-77621"
+                        value={workOrder}
+                        onChange={e => setWorkOrder(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Size</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 400 sq.mm"
+                        value={size}
+                        onChange={e => setSize(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Computed ID Preview */}
+              <div className="bg-purple-50/50 border border-purple-100 rounded-lg p-3 text-xs mt-3 flex justify-between items-center">
+                <div>
+                  <span className="text-[9px] font-black text-purple-700 uppercase block tracking-wider">Auto-Compiled unique Equipment ID</span>
+                  <span className="font-mono font-bold text-purple-900 mt-0.5 block">{computedEquipmentId}</span>
+                </div>
+                <Sparkles className="w-5 h-5 text-purple-700" />
+              </div>
+            </div>
+          )}
+
+          {/* STEP 2: ENGINEERING PARAMETERS */}
+          {step === 2 && (
+            <div className="space-y-4">
+              <div className="border-b border-gray-100 pb-2 mb-3">
+                <h4 className="text-xs font-bold text-gray-900 uppercase">Step 2: Engineering Information & Diagnostic Logs</h4>
+                <p className="text-[10px] text-gray-400">Provide real field test results to compute the Health Index accurately</p>
+              </div>
+
+              {/* Grid 1 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Load Current (Amps)</label>
+                  <input
+                    type="number"
+                    required
+                    placeholder="e.g. 180"
+                    value={loadCurrent}
+                    onChange={e => setLoadCurrent(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">Sheath Current (Amps)</label>
+                    {alerts.highSheathRatio && (
+                      <span className="text-[9px] font-bold text-orange-500 flex items-center gap-0.5">
+                        <AlertTriangle className="w-3 h-3" /> Ratio &gt; 30%
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    required
+                    placeholder="e.g. 12"
+                    value={sheathCurrent}
+                    onChange={e => setSheathCurrent(e.target.value)}
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
+                      alerts.highSheathRatio ? 'border-orange-300 focus:border-orange-600' : 'border-gray-200'
+                    }`}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">Surface Temperature (°C)</label>
+                    {alerts.highTemp && (
+                      <span className="text-[9px] font-bold text-red-500 flex items-center gap-0.5">
+                        <AlertTriangle className="w-3 h-3" /> Hotspot &gt; 70°C
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    required
+                    placeholder="e.g. 45"
+                    value={surfaceTemp}
+                    onChange={e => setSurfaceTemp(e.target.value)}
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
+                      alerts.highTemp ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    }`}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">External PD Discharge (pC)</label>
+                    {alerts.highDischarge && (
+                      <span className="text-[9px] font-bold text-red-500 flex items-center gap-0.5">
+                        <AlertTriangle className="w-3 h-3" /> PD Elevated
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    required
+                    placeholder="e.g. 8"
+                    value={discharge}
+                    onChange={e => setDischarge(e.target.value)}
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
+                      alerts.highDischarge ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    }`}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Online PD Result Pattern</label>
+                  <select
+                    value={pdResult}
+                    onChange={e => setPdResult(e.target.value as PDResultType)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  >
+                    <option value="None">None (Normal)</option>
+                    <option value="Corona">Corona Discharge</option>
+                    <option value="Surface">Surface Discharge</option>
+                    <option value="Void">Void (Cavity) Discharge</option>
+                    <option value="Internal">Internal (Insulation) PD</option>
+                    <option value="Treeing">Treeing (Severe Degradation)</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Online PD amplitude (pC)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="e.g. 150"
+                    value={onlinePdAmplitude}
+                    onChange={e => setOnlinePdAmplitude(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">Insulation Resistance (G-Ohm)</label>
+                    {alerts.lowInsulation && (
+                      <span className="text-[9px] font-bold text-red-500 flex items-center gap-0.5">
+                        <AlertTriangle className="w-3 h-3" /> Low Res &lt; 1 GOhm
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="e.g. 12.5"
+                    value={insulationRes}
+                    onChange={e => setInsulationRes(e.target.value)}
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
+                      alerts.lowInsulation ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    }`}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Tan Delta Result</label>
+                  <select
+                    value={tanDelta}
+                    onChange={e => setTanDelta(e.target.value as TanDeltaResult)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                  >
+                    <option value="No Action Required">No Action Required</option>
+                    <option value="Further Study Advised">Further Study Advised</option>
+                    <option value="Action Required">Action Required (Unstable)</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Tan delta amplitude</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="e.g. 0.0025"
+                    value={tanDeltaAmplitude}
+                    onChange={e => setTanDeltaAmplitude(e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              {/* Warning flags callout */}
+              {(alerts.highTemp || alerts.highDischarge || alerts.highSheathRatio || alerts.lowInsulation) && (
+                <div className="bg-red-50 border border-red-100 rounded-lg p-3.5 space-y-2 mt-4 text-[11px] text-red-800">
+                  <div className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-xs">
+                    <AlertTriangle className="w-4 h-4 text-red-600" />
+                    High Operational Risk Factors Highlighted!
+                  </div>
+                  <ul className="list-disc pl-4 space-y-1">
+                    {alerts.highTemp && <li>Joint or cable surface temperature is {surfaceTemp}°C. Hotspots can lead to rapid catastrophic thermal breakdown.</li>}
+                    {alerts.highDischarge && <li>Partial discharge magnitude is {discharge} pC. Severe dielectric degradation alert.</li>}
+                    {alerts.highSheathRatio && <li>Circulating sheath current ratio is excessive, inducing heat and operational loss.</li>}
+                    {alerts.lowInsulation && <li>Insulation resistance is dangerously low at {insulationRes} GOhm. High risk of ground leakage.</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 3: IMAGES & FINALIZE */}
+          {step === 3 && (
+            <div className="space-y-4">
+              <div className="border-b border-gray-100 pb-2 mb-3">
+                <h4 className="text-xs font-bold text-gray-900 uppercase">Step 3: Field Inspection Imaging</h4>
+                <p className="text-[10px] text-gray-400">Take or upload visual photos and thermal thermograms linked to your Google Drive</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Visual */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase block">Visual Asset Picture</label>
+                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden">
+                    {visualPreview ? (
+                      <>
+                        <img src={visualPreview} alt="Visual Preview" className="absolute inset-0 w-full h-full object-cover" />
+                        <div className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 cursor-pointer" onClick={() => { setVisualFile(null); setVisualPreview(''); }}>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ display: 'none' }} />
+                          <span className="text-[9px] font-black uppercase px-1">Clear</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="w-8 h-8 text-gray-300 mb-2" />
+                        <span className="text-[11px] text-gray-500 font-bold block">Upload Field Photo</span>
+                        <span className="text-[9px] text-gray-400 block mt-0.5">Drag & drop or Click</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={e => handleImageChange(e, 'visual')}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                  </div>
+                </div>
+
+                {/* Thermal */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase block">Thermal Thermogram Scan</label>
+                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden">
+                    {thermalPreview ? (
+                      <>
+                        <img src={thermalPreview} alt="Thermal Preview" className="absolute inset-0 w-full h-full object-cover" />
+                        <div className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 cursor-pointer" onClick={() => { setThermalFile(null); setThermalPreview(''); }}>
+                          <span className="text-[9px] font-black uppercase px-1">Clear</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="w-8 h-8 text-gray-300 mb-2" />
+                        <span className="text-[11px] text-gray-500 font-bold block">Upload Thermogram Scan</span>
+                        <span className="text-[9px] text-gray-400 block mt-0.5">Drag & drop or Click</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={e => handleImageChange(e, 'thermal')}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Connected Google Drive Status Badge */}
+              {googleToken && folderId ? (
+                <div className="bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg p-3 flex justify-between items-center text-xs mt-4">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    Google Account Verified & Active
+                  </div>
+                  <span className="text-[9px] font-black tracking-widest uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md">
+                    Linked to Drive File Storage
+                  </span>
+                </div>
+              ) : (
+                <div className="bg-orange-50 text-orange-700 border border-orange-100 rounded-lg p-3 text-[11px] mt-4 leading-relaxed">
+                  ⚠️ Google Account is currently disconnected. Uploaded files will be stored inside local browser memory, and fallback URLs will be saved in the sheet database. For real storage, connect Google Sheets on the main toolbar.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Controls Navigation Footer */}
+          <div className="flex justify-between items-center border-t border-gray-100 pt-5 mt-6">
+            {step > 1 ? (
+              <button
+                type="button"
+                onClick={() => setStep(prev => prev - 1)}
+                className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-900 font-bold uppercase transition-all cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Previous Step
+              </button>
+            ) : (
+              <div />
+            )}
+
+            {step < 3 ? (
+              <button
+                type="button"
+                onClick={() => setStep(prev => prev + 1)}
+                className="bg-purple-700 hover:bg-purple-900 text-white rounded-lg py-2 px-5 text-xs font-bold uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer"
+              >
+                Next Step
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={loading || !visualFile || !thermalFile}
+                className={`text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${(loading || !visualFile || !thermalFile) ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'}`}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Submit Inspection Record
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
