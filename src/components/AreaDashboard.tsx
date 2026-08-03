@@ -851,14 +851,45 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
                   </div>
                   
                   {/* Satellite Image */}
-                  <div className="col-span-2 bg-gray-50 border border-gray-100 rounded-xl p-3 flex flex-col items-center justify-center text-center min-h-[140px] overflow-hidden">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase mb-2">Equipment Satellite Location</span>
-                    <img 
-                      src={`/api/map-image?lat=${selectedAsset.gps.lat}&lng=${selectedAsset.gps.lng}`}
-                      alt="Equipment Satellite Location"
-                      className="w-full h-32 object-cover rounded-lg border border-gray-200 shadow-xs"
-                    />
-                  </div>
+                  {(() => {
+                    const lat = selectedAsset?.gps?.lat || 13.7563;
+                    const lng = selectedAsset?.gps?.lng || 100.5018;
+                    return (
+                      <div className="col-span-2 bg-gray-50 border border-gray-100 rounded-xl p-3 flex flex-col items-center justify-center text-center min-h-[140px] overflow-hidden">
+                        <div className="w-full flex items-center justify-between mb-1.5">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase">Equipment Satellite Location</span>
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`}
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-[9px] font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 hover:underline"
+                          >
+                            <ExternalLink className="w-2.5 h-2.5" />
+                            <span>Open Maps</span>
+                          </a>
+                        </div>
+                        <div className="w-full relative overflow-hidden rounded-lg">
+                          <img 
+                            src={`/api/map-image?lat=${lat}&lng=${lng}`}
+                            alt="Equipment Satellite Location"
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              const fallbackUrl = `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${lng - 0.002},${lat - 0.001},${lng + 0.002},${lat + 0.001}&bboxSR=4326&size=600,300&format=png&f=image`;
+                              if (target.src !== fallbackUrl) {
+                                target.src = fallbackUrl;
+                              }
+                            }}
+                            className="w-full h-32 object-cover rounded-lg border border-gray-200 shadow-xs"
+                          />
+                          <div className="absolute bottom-2 left-2 bg-slate-900/80 text-white text-[9px] font-mono px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <MapPin className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                            <span>{lat.toFixed(5)}, {lng.toFixed(5)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

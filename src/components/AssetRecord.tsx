@@ -2019,6 +2019,9 @@ export default function AssetRecord({
                           src={visualPreview || editVisualUrl || 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'}
                           alt="Visual Light Capture"
                           referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
+                          }}
                           className="w-full h-28 object-cover rounded-md"
                         />
                       </div>
@@ -2040,6 +2043,9 @@ export default function AssetRecord({
                           src={thermalPreview || editThermalUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'}
                           alt="Thermography Diagnostic"
                           referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
+                          }}
                           className="w-full h-28 object-cover rounded-md"
                         />
                       </div>
@@ -2054,17 +2060,46 @@ export default function AssetRecord({
                     </div>
 
                     {/* Satellite Location Block */}
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase block">Equipment Satellite Location</label>
-                      <div className="border border-gray-200 rounded-lg overflow-hidden bg-white p-1">
-                        <img
-                          src={selectedAsset?.gps ? `/api/map-image?lat=${selectedAsset.gps.lat}&lng=${selectedAsset.gps.lng}` : ''}
-                          alt="Equipment Satellite Location"
-                          referrerPolicy="no-referrer"
-                          className="w-full h-28 object-cover rounded-md"
-                        />
-                      </div>
-                    </div>
+                    {(() => {
+                      const mapLat = editLat ? (parseFloat(editLat) || 13.7563) : (selectedAsset?.gps?.lat || 13.7563);
+                      const mapLng = editLng ? (parseFloat(editLng) || 100.5018) : (selectedAsset?.gps?.lng || 100.5018);
+                      return (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[9px] font-bold text-gray-400 uppercase block">Equipment Satellite Location</label>
+                            <a 
+                              href={`https://www.google.com/maps/search/?api=1&query=${mapLat},${mapLng}`} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="text-[9px] font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 hover:underline"
+                              title="Open location in Google Maps"
+                            >
+                              <ExternalLink className="w-2.5 h-2.5" />
+                              <span>Open Maps</span>
+                            </a>
+                          </div>
+                          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white p-1 relative group">
+                            <img
+                              src={`/api/map-image?lat=${mapLat}&lng=${mapLng}`}
+                              alt="Equipment Satellite Location"
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                const fallbackUrl = `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${mapLng - 0.002},${mapLat - 0.001},${mapLng + 0.002},${mapLat + 0.001}&bboxSR=4326&size=600,300&format=png&f=image`;
+                                if (target.src !== fallbackUrl) {
+                                  target.src = fallbackUrl;
+                                }
+                              }}
+                              className="w-full h-28 object-cover rounded-md"
+                            />
+                            <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-white text-[9px] font-mono px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
+                              <MapPin className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                              <span>{mapLat.toFixed(5)}, {mapLng.toFixed(5)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 

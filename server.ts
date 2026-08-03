@@ -200,12 +200,18 @@ ${criticalListMD}
 
 // Proxy endpoint for Google Maps Static API with fallback
 app.get('/api/map-image', async (req, res) => {
-  const { lat, lng } = req.query;
+  let { lat, lng } = req.query;
 
-  if (!lat || !lng) {
-    res.status(400).json({ error: 'lat and lng are required' });
-    return;
+  let latNum = parseFloat(lat as string);
+  let lngNum = parseFloat(lng as string);
+
+  if (isNaN(latNum) || isNaN(lngNum) || (latNum === 0 && lngNum === 0)) {
+    latNum = 13.7563; // Default PEA HQ / Bangkok baseline
+    lngNum = 100.5018;
   }
+
+  lat = latNum.toString();
+  lng = lngNum.toString();
 
   // Search environment variables for any potential Google Maps API keys
   let apiKey = process.env.GOOGLE_MAPS_API_KEY || 
