@@ -72,29 +72,30 @@ export default function MapChart({ assets, onSelectAsset }: MapChartProps) {
 
         // Hover tooltip popup
         const currentYear = new Date().getFullYear();
-        const age = currentYear - asset.yearOfRegistration;
+        const regYear = asset.yearOfRegistration || currentYear;
+        const age = currentYear - regYear;
         
         const popupContent = `
           <div class="p-1 font-sans text-xs text-gray-800 leading-tight">
-            <div class="font-bold border-b border-gray-100 pb-1 mb-1 text-gray-900">${asset.equipmentType}</div>
+            <div class="font-bold border-b border-gray-100 pb-1 mb-1 text-gray-900">${asset.equipmentType || 'Asset'}</div>
             <div class="grid grid-cols-2 gap-x-2 gap-y-0.5 mt-1">
               <span class="text-gray-400 font-medium">ID:</span>
-              <span class="font-mono text-gray-900">${asset.equipmentId}</span>
+              <span class="font-mono text-gray-900">${asset.equipmentId || 'N/A'}</span>
               <span class="text-gray-400 font-medium">Brand:</span>
-              <span class="text-gray-900">${asset.manufacturer}</span>
+              <span class="text-gray-900">${asset.manufacturer || 'N/A'}</span>
               <span class="text-gray-400 font-medium">Voltage:</span>
-              <span class="text-gray-900">${asset.voltageLevel} kV</span>
+              <span class="text-gray-900">${asset.voltageLevel || '22'} kV</span>
               <span class="text-gray-400 font-medium">Age:</span>
-              <span class="text-gray-900">${age} Years (${asset.yearOfRegistration})</span>
+              <span class="text-gray-900">${age} Years (${regYear})</span>
               <span class="text-gray-400 font-medium">Health Status:</span>
               <span class="font-semibold" style="color: ${
                 asset.healthStatus === 'Red' ? '#EF4444' : 
                 asset.healthStatus === 'Orange' ? '#F97316' : 
                 asset.healthStatus === 'Yellow' ? '#D97706' : '#10B981'
-              }">${asset.healthStatus} (${asset.healthScore}%)</span>
+              }">${asset.healthStatus || 'Green'} (${asset.healthScore ?? 100}%)</span>
             </div>
             <div class="mt-2 text-[10px] text-gray-400 border-t border-gray-50 pt-1 flex justify-between items-center">
-              <span>${asset.city} (${asset.locationType})</span>
+              <span>${asset.city || ''} (${asset.locationType || ''})</span>
               <span class="text-purple-600 hover:underline cursor-pointer font-semibold uppercase">View details &rarr;</span>
             </div>
           </div>
@@ -103,7 +104,7 @@ export default function MapChart({ assets, onSelectAsset }: MapChartProps) {
         marker.bindPopup(popupContent, {
           closeButton: false,
           minWidth: 200,
-          className: 'custom-leaflet-popup'
+          className: 'custom-leaflet-popup cursor-pointer'
         });
 
         // Open popup on hover
@@ -111,10 +112,22 @@ export default function MapChart({ assets, onSelectAsset }: MapChartProps) {
           this.openPopup();
         });
 
-        // Click handler to select asset
+        // Click handler to select asset on marker click
         marker.on('click', () => {
           if (onSelectAsset) {
             onSelectAsset(asset);
+          }
+        });
+
+        // Click handler to select asset on popup click
+        marker.on('popupopen', () => {
+          const popupEl = marker.getPopup()?.getElement();
+          if (popupEl) {
+            popupEl.onclick = () => {
+              if (onSelectAsset) {
+                onSelectAsset(asset);
+              }
+            };
           }
         });
 

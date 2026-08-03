@@ -35,6 +35,7 @@ import {
   TrendingUp,
   Sliders,
   Calendar,
+  ExternalLink,
   X,
   FileSpreadsheet
 } from 'lucide-react';
@@ -1101,19 +1102,21 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: Adm
                 <div className="md:col-span-2 bg-gray-50 border border-gray-100 rounded-xl p-4 grid grid-cols-2 gap-3 text-xs">
                   <div>
                     <span className="text-gray-400 font-medium block">PEA Area District</span>
-                    <span className="font-bold text-gray-800">{selectedAsset.equipmentId.split('-')[0]} - {PEA_AREA_NAMES[selectedAsset.equipmentId.split('-')[0]] || 'PEA Region'}</span>
+                    <span className="font-bold text-gray-800">
+                      {selectedAsset.equipmentId ? selectedAsset.equipmentId.split('-')[0] : 'N/A'} - {PEA_AREA_NAMES[selectedAsset.equipmentId?.split('-')?.[0] || ''] || 'PEA Region'}
+                    </span>
                   </div>
                   <div>
                     <span className="text-gray-400 font-medium block">Substation/Location</span>
-                    <span className="font-bold text-gray-800">{selectedAsset.substationName}</span>
+                    <span className="font-bold text-gray-800">{selectedAsset.substationName || 'N/A'}</span>
                   </div>
                   <div>
                     <span className="text-gray-400 font-medium block">City / Province</span>
-                    <span className="font-bold text-gray-800">{selectedAsset.city}</span>
+                    <span className="font-bold text-gray-800">{selectedAsset.city || 'N/A'}</span>
                   </div>
                   <div>
                     <span className="text-gray-400 font-medium block">Voltage Level</span>
-                    <span className="font-bold text-gray-800">{selectedAsset.voltageLevel} kV</span>
+                    <span className="font-bold text-gray-800">{selectedAsset.voltageLevel || '22'} kV</span>
                   </div>
                 </div>
               </div>
@@ -1124,20 +1127,20 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: Adm
                 <div>
                   <h4 className="text-xs font-bold text-purple-900 uppercase border-b border-gray-100 pb-1.5 mb-2.5">General Registry Details</h4>
                   <div className="space-y-2 text-xs">
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Equipment Number ADS:</span><span className="font-mono font-bold text-gray-800">{selectedAsset.assetNumber}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">PEA Grid Number:</span><span className="font-mono font-bold text-gray-800">{selectedAsset.peaNumber}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Brand Manufacturer:</span><span className="font-bold text-gray-800">{selectedAsset.manufacturer}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Country of Origin:</span><span className="font-bold text-gray-800">{selectedAsset.country}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Installation Year:</span><span className="font-bold text-gray-800">{selectedAsset.yearOfRegistration} (Age: {new Date().getFullYear() - selectedAsset.yearOfRegistration} Yrs)</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Equipment Number ADS:</span><span className="font-mono font-bold text-gray-800">{selectedAsset.assetNumber || 'N/A'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">PEA Grid Number:</span><span className="font-mono font-bold text-gray-800">{selectedAsset.peaNumber || 'N/A'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Brand Manufacturer:</span><span className="font-bold text-gray-800">{selectedAsset.manufacturer || 'N/A'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Country of Origin:</span><span className="font-bold text-gray-800">{selectedAsset.country || 'N/A'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Installation Year:</span><span className="font-bold text-gray-800">{selectedAsset.yearOfRegistration || '2026'} (Age: {new Date().getFullYear() - (selectedAsset.yearOfRegistration || new Date().getFullYear())} Yrs)</span></div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">GPS Location coordinates:</span>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-gray-800">{selectedAsset.gps.lat}, {selectedAsset.gps.lng}</span>
-                        <a href={`https://www.google.com/maps/search/?api=1&query=${selectedAsset.gps.lat},${selectedAsset.gps.lng}`} target="_blank" rel="noopener noreferrer" className="text-purple-700 hover:text-purple-900">
+                        <span className="font-mono font-bold text-gray-800">{selectedAsset.gps?.lat ?? 13.7563}, {selectedAsset.gps?.lng ?? 100.5018}</span>
+                        <a href={`https://www.google.com/maps/search/?api=1&query=${selectedAsset.gps?.lat ?? 13.7563},${selectedAsset.gps?.lng ?? 100.5018}`} target="_blank" rel="noopener noreferrer" className="text-purple-700 hover:text-purple-900">
                           <MapPin className="w-3.5 h-3.5" />
                         </a>
                       </div>
                     </div>
-                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Substation landmark:</span><span className="font-bold text-gray-800 truncate max-w-[180px]">{selectedAsset.landmark}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Substation landmark:</span><span className="font-bold text-gray-800 truncate max-w-[180px]">{selectedAsset.landmark || 'N/A'}</span></div>
                   </div>
                 </div>
 

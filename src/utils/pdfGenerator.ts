@@ -269,9 +269,9 @@ export function exportAssetToPDF(asset: CableAsset) {
             <div class="row"><span class="label">PEA Grid Number</span><span class="value mono">${asset.peaNumber}</span></div>
             <div class="row"><span class="label">Manufacturer</span><span class="value">${asset.manufacturer}</span></div>
             <div class="row"><span class="label">Country of Origin</span><span class="value">${asset.country}</span></div>
-            <div class="row"><span class="label">Installation Year</span><span class="value">${asset.yearOfRegistration} (Age: ${new Date().getFullYear() - asset.yearOfRegistration} Yrs)</span></div>
-            <div class="row"><span class="label">GPS Coordinates</span><span class="value mono"><a href="https://www.google.com/maps/search/?api=1&query=${asset.gps.lat},${asset.gps.lng}" target="_blank">${asset.gps.lat}, ${asset.gps.lng}</a></span></div>
-            <div class="row"><span class="label">City / Province</span><span class="value">${asset.city}</span></div>
+            <div class="row"><span class="label">Installation Year</span><span class="value">${asset.yearOfRegistration || '2026'} (Age: ${new Date().getFullYear() - (asset.yearOfRegistration || new Date().getFullYear())} Yrs)</span></div>
+            <div class="row"><span class="label">GPS Coordinates</span><span class="value mono"><a href="https://www.google.com/maps/search/?api=1&query=${asset.gps?.lat ?? 13.7563},${asset.gps?.lng ?? 100.5018}" target="_blank">${asset.gps?.lat ?? 13.7563}, ${asset.gps?.lng ?? 100.5018}</a></span></div>
+            <div class="row"><span class="label">City / Province</span><span class="value">${asset.city || 'N/A'}</span></div>
             <div class="row"><span class="label">Location Type</span><span class="value">${asset.locationType}</span></div>
             <div class="row"><span class="label">Substation</span><span class="value">${asset.substationName}</span></div>
           </div>
@@ -326,8 +326,8 @@ export function exportAssetToPDF(asset: CableAsset) {
           <h2 class="section-title" style="margin-top: 20px;">Equipment Geographical & Satellite Location Map</h2>
           
           <div style="position: relative; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; height: 380px; width: 100%; margin-bottom: 20px; background-color: #f8fafc; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05);">
-            <a href="https://www.google.com/maps/search/?api=1&query=${asset.gps.lat},${asset.gps.lng}" target="_blank" style="display: block; width: 100%; height: 100%;">
-              <img src="${window.location.origin}/api/map-image?lat=${asset.gps.lat}&lng=${asset.gps.lng}" style="width: 100%; height: 100%; object-fit: cover;" referrerPolicy="no-referrer" />
+            <a href="https://www.google.com/maps/search/?api=1&query=${asset.gps?.lat ?? 13.7563},${asset.gps?.lng ?? 100.5018}" target="_blank" style="display: block; width: 100%; height: 100%;">
+              <img src="${window.location.origin}/api/map-image?lat=${asset.gps?.lat ?? 13.7563}&lng=${asset.gps?.lng ?? 100.5018}" style="width: 100%; height: 100%; object-fit: cover;" referrerPolicy="no-referrer" />
               <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -100%); text-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 50; display: flex; flex-direction: column; align-items: center;">
                 <span style="font-size: 42px; line-height: 1; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.4));">📍</span>
               </div>
@@ -338,10 +338,10 @@ export function exportAssetToPDF(asset: CableAsset) {
             <h3 style="font-size: 11px; font-weight: 800; color: #581c87; text-transform: uppercase; margin-top: 0; margin-bottom: 12px; letter-spacing: 0.5px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">GIS Location Specification</h3>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
               <div>
-                <div class="row"><span class="label">Latitude</span><span class="value mono">${asset.gps.lat}</span></div>
-                <div class="row"><span class="label">Longitude</span><span class="value mono">${asset.gps.lng}</span></div>
+                <div class="row"><span class="label">Latitude</span><span class="value mono">${asset.gps?.lat ?? 13.7563}</span></div>
+                <div class="row"><span class="label">Longitude</span><span class="value mono">${asset.gps?.lng ?? 100.5018}</span></div>
                 <div class="row"><span class="label">Location</span>
-                  <a href="https://www.google.com/maps/search/?api=1&query=${asset.gps.lat},${asset.gps.lng}" target="_blank" style="text-decoration: none; color: #7c3aed; font-weight: bold; margin-left: 8px;">
+                  <a href="https://www.google.com/maps/search/?api=1&query=${asset.gps?.lat ?? 13.7563},${asset.gps?.lng ?? 100.5018}" target="_blank" style="text-decoration: none; color: #7c3aed; font-weight: bold; margin-left: 8px;">
                     📍 Open in Maps
                   </a>
                 </div>
