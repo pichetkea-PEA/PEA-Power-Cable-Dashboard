@@ -120,5 +120,5 @@ export function generateAssetsHash(assets: CableAsset[]): string {
   if (assets[0]?.equipmentId) sampleIds += assets[0].equipmentId;
   if (assets[Math.floor(totalLen / 2)]?.equipmentId) sampleIds += assets[Math.floor(totalLen / 2)].equipmentId;
   if (assets[totalLen - 1]?.equipmentId) sampleIds += assets[totalLen - 1].equipmentId;
-  return `${totalLen}_${sampleIds}_${assets[0]?.updatedAt || ''}`;
+  return `${totalLen}_${sampleIds}_${assets[0]?.timestamp || ''}`;
 }

@@ -793,6 +793,7 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Brand Manufacturer:</span><span className="font-bold text-gray-800">{selectedAsset.manufacturer || 'N/A'}</span></div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Country of Origin:</span><span className="font-bold text-gray-800">{selectedAsset.country || 'N/A'}</span></div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Installation Year:</span><span className="font-bold text-gray-800">{selectedAsset.yearOfRegistration || '2026'} (Age: {new Date().getFullYear() - (selectedAsset.yearOfRegistration || new Date().getFullYear())} Yrs)</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Asset Valuation:</span><span className="font-bold text-emerald-700 font-mono">{selectedAsset.assetValue || 'N/A'}</span></div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">GPS Location:</span>
                       <div className="flex items-center gap-2">
                         <span className="font-mono font-bold text-gray-800">{selectedAsset.gps?.lat ?? 13.7563}, {selectedAsset.gps?.lng ?? 100.5018}</span>

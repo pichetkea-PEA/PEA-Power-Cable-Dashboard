@@ -4,6 +4,7 @@ import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache } from "./utils/firestore";
 import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate } from './utils/googleSheets';
+import { getBangkokTimestamp } from './utils/dateUtils';
 import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
 import AreaDashboard from './components/AreaDashboard';
@@ -45,6 +46,20 @@ export default function App() {
   
   // App UI states
   const [activeTab, setActiveTab] = useState<'admin' | 'area' | 'input' | 'records' | 'registration'>('area');
+  const [urlEquipmentId] = useState<string | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('equipmentId') || params.get('assetId') || params.get('eqId') || params.get('asset') || null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    if (urlEquipmentId) {
+      setActiveTab('records');
+    }
+  }, [urlEquipmentId]);
   const [assets, setAssets] = useState<CableAsset[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSyncingCentralDb, setIsSyncingCentralDb] = useState<boolean>(false);
@@ -56,7 +71,7 @@ export default function App() {
   const [lastFetchedTime, setLastFetchedTime] = useState<string | null>(() => localStorage.getItem('pea_last_fetched_time'));
 
   const updateLastFetchedTimestamp = (ts?: string) => {
-    const timestamp = ts || new Date().toISOString();
+    const timestamp = ts ? getBangkokTimestamp(ts) : getBangkokTimestamp();
     localStorage.setItem('pea_last_fetched_time', timestamp);
     setLastFetchedTime(timestamp);
   };
@@ -64,9 +79,10 @@ export default function App() {
   const formatLastFetchedTime = (isoString: string | null) => {
     if (!isoString) return null;
     try {
-      const d = new Date(isoString);
+      const d = new Date(isoString.includes('T') ? isoString : isoString.replace(/-/g, '/'));
       if (isNaN(d.getTime())) return isoString;
       return d.toLocaleString('en-GB', {
+        timeZone: 'Asia/Bangkok',
         day: '2-digit',
         month: 'short',
         year: 'numeric',
@@ -1471,6 +1487,7 @@ export default function App() {
                   folderId={folderId}
                   assets={assets}
                   onRefresh={handleManualRefresh}
+                  initialEquipmentId={urlEquipmentId}
                 />
               )}
 

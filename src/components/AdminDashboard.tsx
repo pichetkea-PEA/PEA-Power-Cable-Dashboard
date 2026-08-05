@@ -1141,6 +1141,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: Adm
                       </div>
                     </div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Substation landmark:</span><span className="font-bold text-gray-800 truncate max-w-[180px]">{selectedAsset.landmark || 'N/A'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400 font-medium">Asset Valuation:</span><span className="font-bold text-emerald-700 font-mono">{selectedAsset.assetValue || 'N/A'}</span></div>
                   </div>
                 </div>
 

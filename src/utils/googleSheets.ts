@@ -1,6 +1,7 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
 import { calculateHealth, generateEquipmentId } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
+import { getBangkokTimestamp } from './dateUtils';
 
 // Helper to set public write permissions on Google Drive files so all authorized users can sync
 export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
@@ -272,7 +273,7 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
     valueInputOption: 'USER_ENTERED',
     data: [
       {
-        range: "'General Information'!A1:AF1",
+        range: "'General Information'!A1:AG1",
         values: [[
           'Number', 'Timestamp', 'Name of user or admin', 'Voltage Level (kV)', 'City', 
           'Equipment type', 'Product Manufacturer', 'Country of Origin', 'Location type', 
@@ -280,7 +281,7 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
           'Equipment Number ADS', 'Account Asset Number (AA)', 'Production Month', 'Installation Date', 
           'WBS', 'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number', 
           'Feeder', 'Substation ID', 'Operate ID', 'Serial Number', 'Model', 'Work Order', 
-          'Size', 'Equipment ID'
+          'Size', 'Asset Value', 'Equipment ID'
         ]]
       },
       {
@@ -319,21 +320,21 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
     valueInputOption: 'USER_ENTERED',
     data: [
       {
-        range: "'General Information'!A2:AF3",
+        range: "'General Information'!A2:AG3",
         values: [
           [
             1, '2026-07-15 10:30:00', 'Somsak PEA', '115', 'Chiang Mai', 'Underground Cable', 
             'Prysmian Group', 'Germany', 'Transmission Line', 'Chiang Mai 2 Substation', 
             'Main Highway Road 107', '18.7883, 98.9853', '2018', 'PEA-N1-UG01', 'SAP-9081234', 
             'ADS-1001', '07/2018', '2018-07-15', 'WBS-N1-001', 'Utility', 'CC-N1-908', 'GIS-N1-UG01', 
-            'Class A', 'CN-2018-001', 'FDR-501', 'SUB-CM2', 'OP-N1-01', 'SN-Pry-001', 'Model A', 'WO-99881', '3x240 sq.mm', 'N1-115kV-2018-UND-PEA-N1-UG01'
+            'Class A', 'CN-2018-001', 'FDR-501', 'SUB-CM2', 'OP-N1-01', 'SN-Pry-001', 'Model A', 'WO-99881', '3x240 sq.mm', '2,500,000 THB', 'N1-115kV-2018-UND-PEA-N1-UG01'
           ],
           [
             2, '2026-07-16 11:24:00', 'Somsak PEA', '115', 'Chiang Mai', 'Termination', 
             'ABB Hitachi', 'Sweden', 'Substation', 'Chiang Mai 2 Substation', 'Substation Bay 04', 
             '18.7905, 98.9950', '2018', 'PEA-N1-TR01', 'SAP-9081235', 'ADS-1002', '07/2018', '2018-07-16', 
             'WBS-N1-002', 'Utility', 'CC-N1-908', 'GIS-N1-TR01', 'Class A', 'CN-2018-002', 'FDR-501', 'SUB-CM2', 
-            'OP-N1-02', 'SN-ABB-001', 'Model B', 'WO-99882', '115kV Plug-in', 'N1-115kV-2018-TER-PEA-N1-TR01'
+            'OP-N1-02', 'SN-ABB-001', 'Model B', 'WO-99882', '115kV Plug-in', '1,800,000 THB', 'N1-115kV-2018-TER-PEA-N1-TR01'
           ]
         ]
       },
@@ -437,7 +438,10 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     
     // Standard General Information
     if (norm === 'number' || norm === 'no') return data.number ?? defaultValues[idx] ?? '';
-    if (norm === 'timestamp' || norm === 'date' || norm === 'time') return data.timestamp ?? defaultValues[idx] ?? '';
+    if (norm === 'timestamp' || norm === 'date' || norm === 'time') {
+      const rawTs = data.timestamp ?? defaultValues[idx] ?? '';
+      return rawTs ? getBangkokTimestamp(rawTs) : getBangkokTimestamp();
+    }
     if (norm === 'nameofuseroradmin' || norm === 'operatorname' || norm === 'operator') return data.operatorName ?? defaultValues[idx] ?? '';
     if (norm === 'voltagelevelkv' || norm === 'voltagelevel' || norm === 'voltage') return data.voltageLevel ?? defaultValues[idx] ?? '';
     if (norm === 'city' || norm === 'province') return data.city ?? defaultValues[idx] ?? '';
@@ -473,6 +477,7 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     if (norm === 'model') return data.model ?? defaultValues[idx] ?? '';
     if (norm === 'workorder') return data.workOrder ?? defaultValues[idx] ?? '';
     if (norm === 'size') return data.size ?? defaultValues[idx] ?? '';
+    if (norm === 'assetvalue' || norm === 'value') return data.assetValue ?? defaultValues[idx] ?? '';
     if (norm === 'equipmentid') return data.equipmentId ?? defaultValues[idx] ?? '';
     
     // Standard Engineering Information
@@ -561,6 +566,9 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     throw new Error(`Failed to fetch spreadsheet data (Status: ${res.status}). ${advice}`);
   }
 
+  // Trigger background conversion of existing sheet timestamps to Bangkok UTC+7
+  convertExistingSheetTimestampsToUTC7(accessToken, spreadsheetId).catch(() => {});
+
   const data = await res.json();
   const valueRanges = data.valueRanges || [];
 
@@ -593,7 +601,8 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     const [lat, lng] = gpsString.split(',').map((c: string) => parseFloat(c.trim()) || 0);
 
     const number = parseInt(getVal('number') || getVal('no')) || (index + 1);
-    const timestamp = getVal('timestamp') || getVal('date') || getVal('time');
+    const rawTs = getVal('timestamp') || getVal('date') || getVal('time');
+    const timestamp = rawTs ? getBangkokTimestamp(rawTs) : getBangkokTimestamp();
     const operatorName = getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator');
     const voltageLevel = getVal('voltagelevelkv') || getVal('voltagelevel') || getVal('voltage');
     const city = getVal('city') || getVal('province');
@@ -622,12 +631,20 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     const model = getVal('model');
     const workOrder = getVal('workorder');
     const size = getVal('size');
+    const assetValue = getVal('assetvalue') || getVal('value') || (row.length > 31 && !row[31]?.toString().includes('-') ? cleanStr(row[31]) : '');
     let equipmentId = getVal('equipmentid');
 
     // Fallbacks if equipmentid didn't match directly
     if (!equipmentId) {
-      if (row.length > 31) {
-        equipmentId = cleanStr(row[31]);
+      if (row.length > 32) {
+        equipmentId = cleanStr(row[32]);
+      } else if (row.length > 31) {
+        const col31 = cleanStr(row[31]);
+        if (col31.includes('-') && (col31.includes('kV') || col31.split('-').length >= 3)) {
+          equipmentId = col31;
+        } else {
+          equipmentId = cleanStr(row[32]) || col31;
+        }
       } else {
         const col15 = cleanStr(row[15]);
         const col16 = cleanStr(row[16]);
@@ -653,7 +670,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       'assetnumber', 'accountassetnumberaa', 'adsnumber', 'aanumber', 'productionmonth',
       'installationdate', 'wbs', 'wbscode', 'businesstype', 'costcenter', 'gistag', 'class',
       'contractnumber', 'feeder', 'substationid', 'operateid', 'serialnumber', 'model',
-      'workorder', 'size', 'equipmentid'
+      'workorder', 'size', 'assetvalue', 'value', 'equipmentid'
     ];
 
     const customFields: Record<string, string> = {};
@@ -696,6 +713,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       model,
       workOrder,
       size,
+      assetValue,
       equipmentId,
       customFields
     };
@@ -741,9 +759,10 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       }
     });
 
+    const engRawTs = getVal('timestamp') || cleanStr(row[1]);
     engineerings[eqId] = {
       number: parseInt(getVal('number') || getVal('no')) || (index + 1),
-      timestamp: getVal('timestamp') || cleanStr(row[1]),
+      timestamp: engRawTs ? getBangkokTimestamp(engRawTs) : getBangkokTimestamp(),
       operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
       equipmentId: eqId,
       loadCurrent,
@@ -781,9 +800,10 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       return url;
     };
 
+    const visRawTs = getVal('timestamp') || cleanStr(row[1]);
     visuals[eqId] = {
       number: parseInt(getVal('number') || getVal('no')) || (index + 1),
-      timestamp: getVal('timestamp') || cleanStr(row[1]),
+      timestamp: visRawTs ? getBangkokTimestamp(visRawTs) : getBangkokTimestamp(),
       operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
       equipmentId: eqId,
       visualPictureUrl: fixDriveUrl(getVal('visualpictureurl') || getVal('visualpicture') || cleanStr(row[4])),
@@ -857,6 +877,29 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
   return results;
 }
 
+// Helper function for fetching with exponential backoff on HTTP 429 / Rate Limit
+export async function fetchWithBackoff(url: string, options: RequestInit = {}, maxRetries = 5, initialDelayMs = 2000): Promise<Response> {
+  let delay = initialDelayMs;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 || res.status === 503) {
+        if (attempt === maxRetries) return res; // Last attempt, return response
+        console.warn(`[Google Sheets API 429 Rate Limit] Retrying attempt ${attempt + 1}/${maxRetries} after ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        delay *= 2; // Exponential backoff: 2s, 4s, 8s, 16s...
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      await new Promise(r => setTimeout(r, delay));
+      delay *= 2;
+    }
+  }
+  return fetch(url, options);
+}
+
 // Append new general row
 export async function appendGeneralRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
   let rowValues: any[];
@@ -864,7 +907,7 @@ export async function appendGeneralRow(accessToken: string, spreadsheetId: strin
     rowValues = rowOrData;
   } else {
     // It's an object! Let's fetch the first row (headers) to align it
-    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:AZ1`, {
+    const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:AZ1`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (!resHeaders.ok) throw new Error('Failed to fetch General Information headers for alignment');
@@ -873,7 +916,7 @@ export async function appendGeneralRow(accessToken: string, spreadsheetId: strin
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
+  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -891,10 +934,33 @@ export async function appendGeneralRow(accessToken: string, spreadsheetId: strin
   }
 }
 
+// Append multiple general rows in a SINGLE API call (Batch Append to avoid 60 requests/min rate limit)
+export async function appendGeneralRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+  if (!rowsValues || rowsValues.length === 0) return;
+
+  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      range: "'General Information'!A1",
+      majorDimension: 'ROWS',
+      values: rowsValues
+    })
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to batch append general information to Google Sheets: ${errorText}`);
+  }
+}
+
 // Fetch highest number in Column A of General Information sheet
 export async function fetchLastSheetNumber(accessToken: string, spreadsheetId: string): Promise<number> {
   try {
-    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
+    const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (!res.ok) return 0;
@@ -923,7 +989,7 @@ export async function appendEngineeringRow(accessToken: string, spreadsheetId: s
     rowValues = rowOrData;
   } else {
     // Fetch headers of Engineering Information to align
-    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:AZ1`, {
+    const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:AZ1`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     if (!resHeaders.ok) throw new Error('Failed to fetch Engineering Information headers for alignment');
@@ -932,7 +998,7 @@ export async function appendEngineeringRow(accessToken: string, spreadsheetId: s
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
+  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -950,23 +1016,101 @@ export async function appendEngineeringRow(accessToken: string, spreadsheetId: s
   }
 }
 
-// Append new visual images row
-export async function appendVisualRow(accessToken: string, spreadsheetId: string, row: any[]) {
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Visual%20%26%20Thermal%20Images%27%21A1:append?valueInputOption=USER_ENTERED`, {
+// Append multiple engineering rows in a SINGLE API call
+export async function appendEngineeringRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+  if (!rowsValues || rowsValues.length === 0) return;
+
+  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      range: "'Visual & Thermal Images'!A1",
+      range: "'Engineering Information'!A1",
       majorDimension: 'ROWS',
-      values: [row]
+      values: rowsValues
     })
   });
+
   if (!res.ok) {
-    throw new Error('Failed to append visual assets to Google Sheets');
+    const errorText = await res.text();
+    throw new Error(`Failed to batch append engineering parameters to Google Sheets: ${errorText}`);
   }
+}
+
+// Append new visual images row
+export async function appendVisualRow(accessToken: string, spreadsheetId: string, row: any[]) {
+  const possibleSheetNames = [
+    'Visual & Thermal Images',
+    'Visual & Thermal',
+    'Visual Images',
+    'Visual',
+    'Visual&Thermal Images'
+  ];
+
+  for (const sheetName of possibleSheetNames) {
+    try {
+      const encodedRange = encodeURIComponent(`'${sheetName}'!A1`);
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range: `'${sheetName}'!A1`,
+          majorDimension: 'ROWS',
+          values: [row]
+        })
+      });
+
+      if (res.ok) {
+        return; // Successfully appended
+      }
+    } catch (err) {
+      // try next candidate sheet name
+    }
+  }
+
+  // Log warning if visual sheet tab does not exist or append fails, so main asset registration is not blocked
+  console.warn(`Visual & Thermal Images sheet tab not found or append skipped for spreadsheet ${spreadsheetId}`);
+}
+
+// Append multiple visual rows in a SINGLE API call
+export async function appendVisualRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+  if (!rowsValues || rowsValues.length === 0) return;
+
+  const possibleSheetNames = [
+    'Visual & Thermal Images',
+    'Visual & Thermal',
+    'Visual Images',
+    'Visual',
+    'Visual&Thermal Images'
+  ];
+
+  for (const sheetName of possibleSheetNames) {
+    try {
+      const encodedRange = encodeURIComponent(`'${sheetName}'!A1`);
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range: `'${sheetName}'!A1`,
+          majorDimension: 'ROWS',
+          values: rowsValues
+        })
+      });
+
+      if (res.ok) return;
+    } catch (err) {
+      // try next candidate sheet name
+    }
+  }
+  console.warn(`Visual & Thermal Images sheet tab not found or batch append skipped for spreadsheet ${spreadsheetId}`);
 }
 
 // Update specific spreadsheet row
@@ -1112,11 +1256,12 @@ export async function fetchSheetsRowIndices(
     genIndex = genDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
   }
   if (genIndex === -1) {
-    const targetIdx = genEqIdIdx !== -1 ? genEqIdIdx : 31; // fallback to AF
     genIndex = genDataRows.findIndex((row: any[]) => {
-      if (row.length > targetIdx) {
-        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
+      if (genEqIdIdx !== -1 && row.length > genEqIdIdx) {
+        if (cleanStr(row[genEqIdIdx]).toLowerCase() === searchId) return true;
       }
+      if (row.length > 32 && cleanStr(row[32]).toLowerCase() === searchId) return true;
+      if (row.length > 31 && cleanStr(row[31]).toLowerCase() === searchId) return true;
       return false;
     });
   }
@@ -1157,3 +1302,73 @@ export async function fetchSheetsRowIndices(
     visRowIndex: visIndex !== -1 ? visIndex + 2 : -1
   };
 }
+
+/**
+ * Scans an existing Google Sheet file and converts any unformatted or ISO UTC timestamps
+ * across all sheets into Bangkok, Hanoi, Jakarta (UTC+7) timezone format ("YYYY-MM-DD HH:mm:ss").
+ * Performs batch updates to update the spreadsheet in place.
+ */
+export async function convertExistingSheetTimestampsToUTC7(accessToken: string, spreadsheetId: string): Promise<number> {
+  if (!accessToken || !spreadsheetId) return 0;
+  let convertedCount = 0;
+  const sheetsToProcess = [
+    'General Information',
+    'Engineering Information',
+    'Visual & Thermal Images'
+  ];
+
+  try {
+    const ranges = sheetsToProcess.map(s => `'${s}'!A1:B`);
+    const res = await fetchWithRetry(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+
+    if (!res.ok) return 0;
+    const data = await res.json();
+    const valueRanges = data.valueRanges || [];
+    const updates: { range: string; values: any[][] }[] = [];
+
+    valueRanges.forEach((rangeData: any, idx: number) => {
+      const sheetName = sheetsToProcess[idx];
+      const rows: any[][] = rangeData.values || [];
+      if (rows.length <= 1) return; // Only header row or empty
+
+      const headers = rows[0] || [];
+      let tsColIdx = headers.findIndex((h: string) => {
+        const norm = normalizeHeader(h);
+        return norm === 'timestamp' || norm === 'date' || norm === 'time';
+      });
+      if (tsColIdx === -1) tsColIdx = 1; // Fallback to Column B
+
+      const getColLetter = (colIdx: number) => String.fromCharCode(65 + colIdx);
+      const colLetter = getColLetter(tsColIdx);
+
+      rows.slice(1).forEach((row: any[], rowIdx: number) => {
+        const currentTs = row[tsColIdx] ? String(row[tsColIdx]).trim() : '';
+        if (currentTs) {
+          const convertedTs = getBangkokTimestamp(currentTs);
+          // If the timestamp changed (e.g. from ISO UTC string to Bangkok UTC+7 string), stage for batch update
+          if (convertedTs !== currentTs) {
+            const actualRowNumber = rowIdx + 2;
+            updates.push({
+              range: `'${sheetName}'!${colLetter}${actualRowNumber}`,
+              values: [[convertedTs]]
+            });
+            convertedCount++;
+          }
+        }
+      });
+    });
+
+    if (updates.length > 0) {
+      await batchUpdateSheetRows(accessToken, spreadsheetId, updates);
+      console.log(`Converted ${convertedCount} timestamp(s) in spreadsheet ${spreadsheetId} to Bangkok (UTC+7) time.`);
+    }
+  } catch (err) {
+    console.warn("Error converting existing spreadsheet timestamps to UTC+7:", err);
+  }
+
+  return convertedCount;
+}
+

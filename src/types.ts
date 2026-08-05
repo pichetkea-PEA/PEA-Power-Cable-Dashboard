@@ -87,7 +87,8 @@ export interface GeneralInformation {
   model?: string;
   workOrder?: string;
   size?: string;
-  // Shifted to AF
+  assetValue?: string; // Col AF in Google Sheets, Col AD in uploaded CSV
+  // Shifted to AG
   equipmentId: string;
   customFields?: Record<string, string>;
 }

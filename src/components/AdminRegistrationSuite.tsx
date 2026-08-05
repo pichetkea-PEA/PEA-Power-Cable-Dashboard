@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { CableAsset, EquipmentType, LocationType, PEAUser } from '../types';
+import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
   PEA_AREAS, 
   PEA_AREA_NAMES, 
@@ -33,10 +34,11 @@ import {
   Download,
   Loader2
 } from 'lucide-react';
-import { updateSheetRow, fetchSheetsRowIndices, autoDiscoverAndSync, fetchSheetsData, appendGeneralRow, appendEngineeringRow, appendVisualRow, fetchLastSheetNumber, getMasterSpreadsheetsMap, batchUpdateSheetRows } from '../utils/googleSheets';
+import { updateSheetRow, fetchSheetsRowIndices, autoDiscoverAndSync, fetchSheetsData, appendGeneralRow, appendEngineeringRow, appendVisualRow, appendGeneralRowsBatch, appendEngineeringRowsBatch, appendVisualRowsBatch, fetchLastSheetNumber, getMasterSpreadsheetsMap, batchUpdateSheetRows } from '../utils/googleSheets';
 import { saveCentralAssetsCache } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
+import { RegistrationProgressModal } from './RegistrationProgressModal';
 
 interface AdminRegistrationSuiteProps {
   assets: CableAsset[];
@@ -150,6 +152,27 @@ export default function AdminRegistrationSuite({
   const [editAds, setEditAds] = useState<string>('');
   const [editAa, setEditAa] = useState<string>('');
   const [savingAssetId, setSavingAssetId] = useState<string | null>(null);
+
+  // Registration Progress Modal State
+  const [progressModal, setProgressModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    stepMessage: string;
+    percent: number;
+    isError: boolean;
+    errorMessage?: string;
+    isComplete: boolean;
+    totalItems?: number;
+    currentItemIndex?: number;
+    currentItemName?: string;
+  }>({
+    isOpen: false,
+    title: 'Registering New Asset',
+    stepMessage: '',
+    percent: 0,
+    isError: false,
+    isComplete: false
+  });
 
   // Latest PEA Number per equipment type across 12 sheets (Column N)
   const [isCheckingPea, setIsCheckingPea] = useState<boolean>(false);
@@ -560,8 +583,31 @@ export default function AdminRegistrationSuite({
     }
   };
 
-  const generateAutoPeaForCsvRow = (volt: string, eqType: string, locType: string, sz: string, allCollectedAssets: { pea: string; area: string }[], regYear?: string) => {
-    const yearNum = parseInt(regYear || '') || new Date().getFullYear();
+  const generateAutoPeaForCsvRow = (
+    volt: string, 
+    eqType: string, 
+    locType: string, 
+    sz: string, 
+    allCollectedAssets: { pea: string; area: string }[], 
+    installationDate?: string,
+    regYear?: string
+  ) => {
+    // New Concept: PEA Number is generated using Column R "Installation Date" year converted to Buddhist Era (BE)
+    const dateOrYearStr = (installationDate && installationDate.trim()) ? installationDate : (regYear || '');
+    let yearNum = new Date().getFullYear();
+    
+    if (dateOrYearStr) {
+      const match = dateOrYearStr.match(/\b(19\d\d|20\d\d|25\d\d)\b/);
+      if (match) {
+        yearNum = parseInt(match[1], 10);
+      } else {
+        const parsedDate = new Date(dateOrYearStr);
+        if (!isNaN(parsedDate.getTime())) {
+          yearNum = parsedDate.getFullYear();
+        }
+      }
+    }
+
     const buddhistYr = yearNum > 2500 ? yearNum : yearNum + 543;
     const yy = String(buddhistYr).slice(-2);
 
@@ -798,9 +844,10 @@ export default function AdminRegistrationSuite({
         const gistag = (cols[26] || '').trim();
         const cls = (cols[27] || '').trim();
         const contractNumber = (cols[28] || '').trim();
+        const assetValue = (cols[29] || '').trim(); // Col AD
 
-        // Automatically assign latest PEA number searching sheet data using Col B, A, H, I
-        const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, yearOfRegistration);
+        // Automatically assign latest PEA number searching sheet data using Col B, A, H, I and Installation Date (Col R)
+        const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration);
         allCollectedAssets.push({ pea: autoPea, area });
 
         const typeCode = getEquipmentTypeAbbreviation(eqType as EquipmentType) || 'EQP';
@@ -837,7 +884,8 @@ export default function AdminRegistrationSuite({
           serialNumber,
           model,
           workOrder,
-          yearOfRegistration
+          yearOfRegistration,
+          assetValue
         });
       }
 
@@ -887,7 +935,8 @@ export default function AdminRegistrationSuite({
         'Operate ID', 'Serial No', 'Manufacturer', 'Model', 'Country of Origin',
         'Production Month', 'Year of Registration', 'Substation Name', 'Substation ID',
         'Feeder', 'Landmark Location', 'Installation Date', 'WBS', 'Work Order',
-        'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number'
+        'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number',
+        'Asset Value' // Column AD (Index 29)
       ];
       csvLines.push(headers.map(h => `"${h}"`).join(','));
 
@@ -899,7 +948,8 @@ export default function AdminRegistrationSuite({
           rec.operateId, rec.serialNumber, rec.manufacturer, rec.model, rec.country,
           rec.productionMonth, rec.yearOfRegistration, rec.substationName, rec.substationId,
           rec.feeder, rec.landmark, rec.installationDate, rec.wbs, rec.workOrder,
-          rec.businessType, rec.costCenter, rec.gistag, rec.class, rec.contractNumber
+          rec.businessType, rec.costCenter, rec.gistag, rec.class, rec.contractNumber,
+          rec.assetValue || '' // Column AD (Index 29)
         ];
         csvLines.push(row.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(','));
       });
@@ -931,6 +981,17 @@ export default function AdminRegistrationSuite({
     }
 
     setIsProcessingOption1(true);
+    setProgressModal({
+      isOpen: true,
+      title: 'Registering New Assets',
+      stepMessage: 'Initializing batch registration process and verifying spreadsheets...',
+      percent: 5,
+      isError: false,
+      isComplete: false,
+      totalItems: option1ReviewList.length,
+      currentItemIndex: 0
+    });
+
     try {
       let spreadsheetsMap: { [area: string]: string } = {};
       try {
@@ -940,88 +1001,101 @@ export default function AdminRegistrationSuite({
         console.warn("Auto sync spreadsheets error:", e);
       }
 
-      // Track maximum number per spreadsheet ID to increment accurately starting from actual sheet last number
-      const maxNumMap: { [spId: string]: number } = {};
-
       // Determine logged-in user name / account email
       const registeredBy = user?.name || user?.email || operatorName || 'PEA Admin';
 
-      let count = 0;
-      const newlyCreatedAssets: CableAsset[] = [];
+      // Group records by target spreadsheet ID
+      const groupedBySpreadsheet: {
+        [spId: string]: {
+          records: typeof option1ReviewList;
+          area: string;
+        }
+      } = {};
 
       for (const rec of option1ReviewList) {
         const targetArea = (rec.area || 'N1').toUpperCase();
-        const targetSpreadsheetId = spreadsheetsMap[targetArea] || (spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds[0] : spreadsheetId);
+        const targetSpreadsheetId = spreadsheetsMap[targetArea] || (spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds[0] : spreadsheetId) || 'local_sheet';
         
-        const currentSpKey = targetSpreadsheetId || 'local_sheet';
+        if (!groupedBySpreadsheet[targetSpreadsheetId]) {
+          groupedBySpreadsheet[targetSpreadsheetId] = { records: [], area: targetArea };
+        }
+        groupedBySpreadsheet[targetSpreadsheetId].records.push(rec);
+      }
 
-        if (maxNumMap[currentSpKey] === undefined) {
-          let sheetLastNum = 0;
-          if (googleToken && targetSpreadsheetId) {
-            try {
-              sheetLastNum = await fetchLastSheetNumber(googleToken, targetSpreadsheetId);
-            } catch (e) {
-              console.warn("Error fetching last sheet number:", e);
-            }
-          }
-          if (sheetLastNum > 0) {
-            maxNumMap[currentSpKey] = sheetLastNum;
-          } else {
-            // Fallback to checking assets array for targetArea
-            const areaAssets = assets ? assets.filter(a => {
-              const aArea = a.equipmentId?.split('-')[0]?.toUpperCase() || a.city?.toUpperCase();
-              return !aArea || aArea === targetArea;
-            }) : [];
-            const areaNums = areaAssets.map(a => Number(a.number) || 0).filter(n => !isNaN(n) && n > 0 && n < 50000);
-            const fallbackMax = areaNums.length > 0 ? Math.max(...areaNums) : 0;
-            maxNumMap[currentSpKey] = fallbackMax;
+      let totalRegisteredCount = 0;
+      const newlyCreatedAssets: CableAsset[] = [];
+      const totalCount = option1ReviewList.length;
+
+      const spKeys = Object.keys(groupedBySpreadsheet);
+      for (let sIdx = 0; sIdx < spKeys.length; sIdx++) {
+        const currentSpId = spKeys[sIdx];
+        const group = groupedBySpreadsheet[currentSpId];
+        const groupRecords = group.records;
+
+        let sheetLastNum = 0;
+        if (googleToken && currentSpId && currentSpId !== 'local_sheet') {
+          try {
+            sheetLastNum = await fetchLastSheetNumber(googleToken, currentSpId);
+          } catch (e) {
+            console.warn("Error fetching last sheet number for batch:", e);
           }
         }
+        if (sheetLastNum === 0) {
+          const areaAssets = assets ? assets.filter(a => {
+            const aArea = a.equipmentId?.split('-')[0]?.toUpperCase() || a.city?.toUpperCase();
+            return !aArea || aArea === group.area;
+          }) : [];
+          const areaNums = areaAssets.map(a => Number(a.number) || 0).filter(n => !isNaN(n) && n > 0 && n < 50000);
+          sheetLastNum = areaNums.length > 0 ? Math.max(...areaNums) : 0;
+        }
 
-        maxNumMap[currentSpKey] += 1;
-        const nextIdx = maxNumMap[currentSpKey];
-        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const generalRowsBatch: any[][] = [];
+        const engineeringRowsBatch: any[][] = [];
+        const visualRowsBatch: any[][] = [];
 
-        const rowValues = [
-          nextIdx,
-          timestamp,
-          registeredBy,
-          rec.voltageLevel,
-          rec.city || rec.area,
-          rec.equipmentType,
-          rec.manufacturer,
-          rec.country,
-          rec.locationType,
-          rec.substationName,
-          rec.landmark || 'Primary Feeder Line',
-          rec.gps || '13.7563, 100.5018',
-          rec.yearOfRegistration || new Date().getFullYear(),
-          rec.peaNumber,
-          rec.adsNumber || '', // ADS left blank
-          rec.assetNumber || '', // AA left blank
-          rec.productionMonth,
-          rec.installationDate,
-          rec.wbs,
-          rec.businessType,
-          rec.costCenter,
-          rec.gistag,
-          rec.class,
-          rec.contractNumber,
-          rec.feeder,
-          rec.substationId,
-          rec.operateId,
-          rec.serialNumber,
-          rec.model,
-          rec.workOrder,
-          rec.size,
-          rec.equipmentId
-        ];
+        for (let rIdx = 0; rIdx < groupRecords.length; rIdx++) {
+          const rec = groupRecords[rIdx];
+          sheetLastNum += 1;
+          const nextIdx = sheetLastNum;
+          const timestamp = getBangkokTimestamp();
 
-        if (googleToken && targetSpreadsheetId) {
-          // 1. General Information sheet
-          await appendGeneralRow(googleToken, targetSpreadsheetId, rowValues);
+          const genRow = [
+            nextIdx,
+            timestamp,
+            registeredBy,
+            rec.voltageLevel,
+            rec.city || rec.area,
+            rec.equipmentType,
+            rec.manufacturer,
+            rec.country,
+            rec.locationType,
+            rec.substationName,
+            rec.landmark || 'Primary Feeder Line',
+            rec.gps || '13.7563, 100.5018',
+            rec.yearOfRegistration || new Date().getFullYear(),
+            rec.peaNumber,
+            rec.adsNumber || '',
+            rec.assetNumber || '',
+            rec.productionMonth,
+            rec.installationDate,
+            rec.wbs,
+            rec.businessType,
+            rec.costCenter,
+            rec.gistag,
+            rec.class,
+            rec.contractNumber,
+            rec.feeder,
+            rec.substationId,
+            rec.operateId,
+            rec.serialNumber,
+            rec.model,
+            rec.workOrder,
+            rec.size,
+            rec.assetValue || '',
+            rec.equipmentId
+          ];
+          generalRowsBatch.push(genRow);
 
-          // 2. Engineering Information sheet
           const engRow = [
             nextIdx,
             timestamp,
@@ -1029,57 +1103,105 @@ export default function AdminRegistrationSuite({
             rec.equipmentId,
             0, 0, 30, 0, 'None', 0, 100, 'No Action Required', 0
           ];
-          await appendEngineeringRow(googleToken, targetSpreadsheetId, engRow);
+          engineeringRowsBatch.push(engRow);
 
-          // 3. Visual & Thermal Images sheet (Columns A, B, C, D: Number, Timestamp, Name of user or admin, Equipment ID)
           const visRow = [
             nextIdx,
             timestamp,
             registeredBy,
             rec.equipmentId
           ];
-          await appendVisualRow(googleToken, targetSpreadsheetId, visRow);
+          visualRowsBatch.push(visRow);
+
+          const newAssetObj: CableAsset = {
+            number: nextIdx,
+            timestamp,
+            operatorName: registeredBy,
+            voltageLevel: rec.voltageLevel,
+            city: rec.city || rec.area,
+            equipmentType: rec.equipmentType,
+            manufacturer: rec.manufacturer,
+            country: rec.country,
+            locationType: rec.locationType,
+            substationName: rec.substationName,
+            landmark: rec.landmark || 'Primary Feeder Line',
+            gps: { lat: 13.7563, lng: 100.5018 },
+            yearOfRegistration: rec.yearOfRegistration || new Date().getFullYear(),
+            peaNumber: rec.peaNumber,
+            assetNumber: rec.adsNumber || '',
+            adsNumber: rec.assetNumber || '',
+            productionMonth: rec.productionMonth,
+            installationDate: rec.installationDate,
+            wbs: rec.wbs,
+            businessType: rec.businessType,
+            costCenter: rec.costCenter,
+            gistag: rec.gistag,
+            class: rec.class,
+            contractNumber: rec.contractNumber,
+            feeder: rec.feeder,
+            substationId: rec.substationId,
+            operateId: rec.operateId,
+            serialNumber: rec.serialNumber,
+            model: rec.model,
+            workOrder: rec.workOrder,
+            size: rec.size,
+            equipmentId: rec.equipmentId,
+            healthScore: 100,
+            healthStatus: 'Green'
+          };
+          newlyCreatedAssets.push(newAssetObj);
+          totalRegisteredCount++;
         }
 
-        const newAssetObj: CableAsset = {
-          number: nextIdx,
-          timestamp,
-          operatorName: registeredBy,
-          voltageLevel: rec.voltageLevel,
-          city: rec.city || rec.area,
-          equipmentType: rec.equipmentType,
-          manufacturer: rec.manufacturer,
-          country: rec.country,
-          locationType: rec.locationType,
-          substationName: rec.substationName,
-          landmark: rec.landmark || 'Primary Feeder Line',
-          gps: { lat: 13.7563, lng: 100.5018 },
-          yearOfRegistration: rec.yearOfRegistration || new Date().getFullYear(),
-          peaNumber: rec.peaNumber,
-          assetNumber: rec.adsNumber || '',
-          adsNumber: rec.assetNumber || '',
-          productionMonth: rec.productionMonth,
-          installationDate: rec.installationDate,
-          wbs: rec.wbs,
-          businessType: rec.businessType,
-          costCenter: rec.costCenter,
-          gistag: rec.gistag,
-          class: rec.class,
-          contractNumber: rec.contractNumber,
-          feeder: rec.feeder,
-          substationId: rec.substationId,
-          operateId: rec.operateId,
-          serialNumber: rec.serialNumber,
-          model: rec.model,
-          workOrder: rec.workOrder,
-          size: rec.size,
-          equipmentId: rec.equipmentId,
-          healthScore: 100,
-          healthStatus: 'Green'
-        };
-        newlyCreatedAssets.push(newAssetObj);
-        count++;
+        // Execute batch API requests per spreadsheet
+        if (googleToken && currentSpId && currentSpId !== 'local_sheet') {
+          setProgressModal({
+            isOpen: true,
+            title: 'Registering New Assets',
+            stepMessage: `Writing ${generalRowsBatch.length} General Information rows to Google Sheets in a single batch request...`,
+            percent: Math.round(20 + (sIdx / spKeys.length) * 70),
+            isError: false,
+            isComplete: false,
+            totalItems: totalCount,
+            currentItemIndex: totalRegisteredCount - 1
+          });
+          await appendGeneralRowsBatch(googleToken, currentSpId, generalRowsBatch);
+
+          setProgressModal({
+            isOpen: true,
+            title: 'Registering New Assets',
+            stepMessage: `Writing ${engineeringRowsBatch.length} Engineering Parameter rows in a single batch request...`,
+            percent: Math.round(25 + (sIdx / spKeys.length) * 70),
+            isError: false,
+            isComplete: false,
+            totalItems: totalCount,
+            currentItemIndex: totalRegisteredCount - 1
+          });
+          await appendEngineeringRowsBatch(googleToken, currentSpId, engineeringRowsBatch);
+
+          setProgressModal({
+            isOpen: true,
+            title: 'Registering New Assets',
+            stepMessage: `Writing ${visualRowsBatch.length} Visual & Thermal image rows in a single batch request...`,
+            percent: Math.round(30 + (sIdx / spKeys.length) * 70),
+            isError: false,
+            isComplete: false,
+            totalItems: totalCount,
+            currentItemIndex: totalRegisteredCount - 1
+          });
+          await appendVisualRowsBatch(googleToken, currentSpId, visualRowsBatch);
+        }
       }
+
+      setProgressModal({
+        isOpen: true,
+        title: 'Registering New Assets',
+        stepMessage: 'Synchronizing central database cache...',
+        percent: 96,
+        isError: false,
+        isComplete: false,
+        totalItems: totalCount
+      });
 
       // Always update Central Firestore Cache and Local Storage
       try {
@@ -1094,13 +1216,32 @@ export default function AdminRegistrationSuite({
         console.warn("Error updating local assets cache in Option 1:", e);
       }
 
-      setCommitSuccess(`Option 1 Registration Succeeded! Registered ${count} new assets (PEA numbers assigned, ADS & AA left for Option 2 update).`);
+      setCommitSuccess(`Option 1 Registration Succeeded! Registered ${totalRegisteredCount} new assets (PEA numbers assigned, ADS & AA left for Option 2 update).`);
       setOption1ReviewList([]);
       setCsvParsedRows([]);
       setSelectedCsvOption(null);
+
+      setProgressModal({
+        isOpen: true,
+        title: 'Registration Complete',
+        stepMessage: `Successfully registered ${totalRegisteredCount} new asset record(s) to PEA database! (100%)`,
+        percent: 100,
+        isError: false,
+        isComplete: true,
+        totalItems: totalCount
+      });
+
       onRefresh();
     } catch (err: any) {
-      alert(`Option 1 commit error: ${err.message}`);
+      setProgressModal({
+        isOpen: true,
+        title: 'Registration Failed',
+        stepMessage: 'An error occurred during asset registration.',
+        percent: 0,
+        isError: true,
+        errorMessage: err.message || 'Unknown registration error',
+        isComplete: false
+      });
     } finally {
       setIsProcessingOption1(false);
     }
@@ -1168,6 +1309,7 @@ export default function AdminRegistrationSuite({
       const gistag = (cols[26] || '').trim();
       const cls = (cols[27] || '').trim();
       const contractNumber = (cols[28] || '').trim();
+      const assetValue = (cols[29] || '').trim(); // Col AD
 
       parsedReview2.push({
         rowNum: i + 2,
@@ -1200,7 +1342,8 @@ export default function AdminRegistrationSuite({
         serialNumber,
         model,
         workOrder,
-        yearOfRegistration
+        yearOfRegistration,
+        assetValue
       });
     }
 
@@ -1327,7 +1470,7 @@ export default function AdminRegistrationSuite({
         if (googleToken && match.spreadsheetId !== 'local') {
           const fullRowValues = [
             existing.number,
-            existing.timestamp || new Date().toISOString().replace('T', ' ').substring(0, 19),
+            existing.timestamp ? getBangkokTimestamp(existing.timestamp) : getBangkokTimestamp(),
             existing.operatorName || 'Option 2 Update',
             existing.voltageLevel,
             existing.city,
@@ -1357,6 +1500,7 @@ export default function AdminRegistrationSuite({
             existing.model || '',
             existing.workOrder || '',
             existing.size || '',
+            existing.assetValue || '',
             existing.equipmentId || ''
           ];
 
@@ -1364,7 +1508,7 @@ export default function AdminRegistrationSuite({
             batchUpdatesBySheet[match.spreadsheetId] = [];
           }
           batchUpdatesBySheet[match.spreadsheetId].push({
-            range: `'General Information'!A${match.rowIndex}:AF${match.rowIndex}`,
+            range: `'General Information'!A${match.rowIndex}:AG${match.rowIndex}`,
             values: [fullRowValues]
           });
         }
@@ -1509,7 +1653,7 @@ export default function AdminRegistrationSuite({
               // Update field with a custom cleared tag or rename
               const nullifiedRow = [
                 item.number,
-                new Date().toISOString().replace('T', ' ').substring(0, 19),
+                getBangkokTimestamp(),
                 'Automated Resolve',
                 item.voltageLevel,
                 item.city,
@@ -1599,7 +1743,7 @@ export default function AdminRegistrationSuite({
           // Build generalRow with 32 columns
           const generalRow = [
             editingAsset.number,
-            new Date().toISOString().replace('T', ' ').substring(0, 19),
+            getBangkokTimestamp(),
             'Manual Edit',
             editingAsset.voltageLevel,
             editingAsset.city,
@@ -1629,10 +1773,11 @@ export default function AdminRegistrationSuite({
             editingAsset.model || 'N/A',
             editingAsset.workOrder || 'N/A',
             editingAsset.size || 'N/A',
+            editingAsset.assetValue || 'N/A',
             updatedEquipmentId
           ];
 
-          await updateSheetRow(googleToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AF');
+          await updateSheetRow(googleToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AG');
           
           // Update engineering row if present
           if (mappings.engRowIndex > 0) {
@@ -1854,9 +1999,9 @@ export default function AdminRegistrationSuite({
                 </select>
               </div>
 
-              {/* 5. Year of Registration */}
+              {/* 5. Installation Year */}
               <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-purple-900 uppercase">5. Year of Register</label>
+                <label className="text-[10px] font-bold text-purple-900 uppercase">5. Installation Year</label>
                 <select
                   value={filterYear}
                   onChange={e => setFilterYear(e.target.value)}
@@ -1994,6 +2139,7 @@ export default function AdminRegistrationSuite({
                         <div><span className="text-gray-400 font-semibold block">28. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
                         <div><span className="text-gray-400 font-semibold block">29. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
                         <div><span className="text-gray-400 font-semibold block">30. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                        <div><span className="text-gray-400 font-semibold block">31. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
                       </div>
                     </div>
                   ))}
@@ -2081,6 +2227,7 @@ export default function AdminRegistrationSuite({
                         <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
                         <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
                         <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                        <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
                       </div>
                     </div>
                   ))}
@@ -2761,13 +2908,24 @@ export default function AdminRegistrationSuite({
                 />
               </div>
 
-              <div className="flex flex-col gap-1 sm:col-span-2">
+              <div className="flex flex-col gap-1">
                 <label className="text-[9px] font-bold text-gray-400 uppercase">30. Contract Number (Col AC)</label>
                 <input
                   type="text"
                   value={editingOption1Item.data.contractNumber || ''}
                   onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, contractNumber: e.target.value } })}
                   className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-emerald-600 uppercase">31. Asset Value (Col AD)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.assetValue || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, assetValue: e.target.value } })}
+                  placeholder="e.g. 2,500,000 THB"
+                  className="w-full bg-emerald-50/50 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
                 />
               </div>
             </div>
@@ -2915,6 +3073,17 @@ export default function AdminRegistrationSuite({
                   value={editingOption2Item.data.locationType || ''}
                   onChange={e => setEditingOption2Item({ ...editingOption2Item, data: { ...editingOption2Item.data, locationType: e.target.value } })}
                   className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-emerald-600 uppercase">11. Asset Value (Col AD)</label>
+                <input
+                  type="text"
+                  value={editingOption2Item.data.assetValue || ''}
+                  onChange={e => setEditingOption2Item({ ...editingOption2Item, data: { ...editingOption2Item.data, assetValue: e.target.value } })}
+                  placeholder="e.g. 2,500,000 THB"
+                  className="w-full bg-emerald-50/50 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
                 />
               </div>
             </div>
@@ -3094,6 +3263,21 @@ export default function AdminRegistrationSuite({
           </div>
         </div>
       )}
+
+      {/* Registration Progress Percent Modal */}
+      <RegistrationProgressModal
+        isOpen={progressModal.isOpen}
+        title={progressModal.title}
+        currentStepMessage={progressModal.stepMessage}
+        progressPercent={progressModal.percent}
+        isError={progressModal.isError}
+        errorMessage={progressModal.errorMessage}
+        isComplete={progressModal.isComplete}
+        totalItems={progressModal.totalItems}
+        currentItemIndex={progressModal.currentItemIndex}
+        currentItemName={progressModal.currentItemName}
+        onClose={() => setProgressModal(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

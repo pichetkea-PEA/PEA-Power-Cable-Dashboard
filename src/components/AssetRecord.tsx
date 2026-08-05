@@ -15,6 +15,7 @@ import {
   Legend 
 } from 'recharts';
 import { exportAssetToPDF } from '../utils/pdfGenerator';
+import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
   CableAsset, 
   PEAUser, 
@@ -46,6 +47,7 @@ import {
   uploadImageToDrive
 } from '../utils/googleSheets';
 import { getSectorSpreadsheet, saveSectorSpreadsheet } from '../utils/firestore';
+import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { 
   Search, 
   Database, 
@@ -69,8 +71,10 @@ import {
   Edit,
   FileText,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  QrCode
 } from 'lucide-react';
+import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
 
 interface AssetRecordProps {
   user: PEAUser;
@@ -79,6 +83,7 @@ interface AssetRecordProps {
   folderId: string | null;
   assets?: CableAsset[];
   onRefresh?: () => void;
+  initialEquipmentId?: string | null;
 }
 
 export default function AssetRecord({ 
@@ -87,7 +92,8 @@ export default function AssetRecord({
   spreadsheetId, 
   folderId,
   assets,
-  onRefresh
+  onRefresh,
+  initialEquipmentId
 }: AssetRecordProps) {
   // --- Filter State ---
   const [filterArea, setFilterArea] = useState<string>((user.role === 'Admin' || user.role === 'Manager') ? 'All' : user.interestArea);
@@ -102,12 +108,35 @@ export default function AssetRecord({
   const [allAssets, setAllAssets] = useState<CableAsset[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
+
+  // Registration Progress Modal State
+  const [progressModal, setProgressModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    stepMessage: string;
+    percent: number;
+    isError: boolean;
+    errorMessage?: string;
+    isComplete: boolean;
+  }>({
+    isOpen: false,
+    title: 'Registering New Asset Record',
+    stepMessage: '',
+    percent: 0,
+    isError: false,
+    isComplete: false
+  });
   const [loadingAI, setLoadingAI] = useState<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<string>('');
 
   // --- Selected Asset & Edit Forms ---
   const [selectedAsset, setSelectedAsset] = useState<CableAsset | null>(null);
   const [isEditing, setIsEditing] = useState<boolean>(false);
+
+  // --- QR Code Modals State ---
+  const [showQRModal, setShowQRModal] = useState<boolean>(false);
+  const [showScannerModal, setShowScannerModal] = useState<boolean>(false);
+  const [qrAsset, setQrAsset] = useState<CableAsset | null>(null);
 
   // Derived state: keep only the latest revision of each unique equipment ID for general browsing & search
   const latestAssets = useMemo(() => {
@@ -418,6 +447,7 @@ export default function AssetRecord({
   const [editModel, setEditModel] = useState<string>('');
   const [editWorkOrder, setEditWorkOrder] = useState<string>('');
   const [editSize, setEditSize] = useState<string>('400 sq.mm');
+  const [editAssetValue, setEditAssetValue] = useState<string>('');
   const [showAdvancedEdit, setShowAdvancedEdit] = useState<boolean>(false);
 
   // 2 New Engineering columns
@@ -597,12 +627,26 @@ export default function AssetRecord({
     setFilterCity('All');
   }, [filterArea]);
 
-  // Auto-run initial lookup when assets finish loading if no asset is selected
+  // Auto-run initial lookup when assets finish loading or deep-link initialEquipmentId is provided
   useEffect(() => {
-    if (!selectedAsset && latestAssets.length > 0) {
+    if (initialEquipmentId && latestAssets.length > 0) {
+      const match = latestAssets.find(a => 
+        a.equipmentId?.toLowerCase() === initialEquipmentId.toLowerCase() ||
+        a.peaNumber?.toLowerCase() === initialEquipmentId.toLowerCase() ||
+        a.assetNumber?.toLowerCase() === initialEquipmentId.toLowerCase() ||
+        a.adsNumber?.toLowerCase() === initialEquipmentId.toLowerCase()
+      );
+      if (match) {
+        selectAsset(match);
+      } else {
+        setSearchType('Equipment ID');
+        setSearchValue(initialEquipmentId);
+        handleSearch();
+      }
+    } else if (!selectedAsset && latestAssets.length > 0) {
       handleSearch();
     }
-  }, [latestAssets]);
+  }, [latestAssets, initialEquipmentId]);
 
   // Get list of available cities based on area filter
   const availableCities = useMemo(() => {
@@ -736,6 +780,7 @@ export default function AssetRecord({
     setEditModel(asset.model || '');
     setEditWorkOrder(asset.workOrder || '');
     setEditSize(asset.size || '400 sq.mm');
+    setEditAssetValue(asset.assetValue || '');
 
     // Engineering
     setEditLoadCurrent(asset.loadCurrent?.toString() || '');
@@ -911,7 +956,7 @@ export default function AssetRecord({
       // Resolve correct spreadsheet and folder based on asset's area
       const { spreadsheetId: targetSpreadsheetId, folderId: targetFolderId } = await resolveAssetSpreadsheet(selectedAsset);
 
-      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const timestamp = getBangkokTimestamp();
       
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
@@ -958,7 +1003,7 @@ export default function AssetRecord({
           finalAdsNumber
         );
 
-        // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Equipment ID
+        // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Asset Value, Column AG (32): Equipment ID
         const generalRow = [
           selectedAsset.number, timestamp, user.name, editVoltage, editCity, editEqType,
           editManufacturer || 'Prysmian Group', editCountry || 'Thailand', editLocationType,
@@ -968,7 +1013,7 @@ export default function AssetRecord({
           editProductionMonth || 'N/A', editInstallationDate || 'N/A', editWbs || 'N/A', editBusinessType || 'N/A',
           editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
           editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
-          editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A',
+          editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
           updatedEquipmentId
         ];
 
@@ -987,7 +1032,7 @@ export default function AssetRecord({
         ];
 
         // Execute batch row overwrites
-        await updateSheetRow(googleToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AF');
+        await updateSheetRow(googleToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AG');
         if (engRowIndex !== -1) {
           await updateSheetRow(googleToken, targetSpreadsheetId, 'Engineering Information', engRowIndex, engineeringRow, 'A:M');
         } else {
@@ -1040,6 +1085,7 @@ export default function AssetRecord({
             model: editModel,
             workOrder: editWorkOrder,
             size: editSize,
+            assetValue: editAssetValue,
             loadCurrent: parseFloat(editLoadCurrent) || 120,
             sheathCurrent: parseFloat(editSheathCurrent) || 8,
             surfaceTemperature: parseFloat(editTemp) || 35,
@@ -1077,18 +1123,27 @@ export default function AssetRecord({
     setSaving(true);
     setShowSaveChoiceModal(false);
     setSyncStatus('Resolving database connection for the asset\'s area...');
+    setProgressModal({
+      isOpen: true,
+      title: 'Saving New Audit Record',
+      stepMessage: 'Resolving database connection for asset area...',
+      percent: 15,
+      isError: false,
+      isComplete: false
+    });
 
     try {
       // Resolve correct spreadsheet and folder based on asset's area
       const { spreadsheetId: targetSpreadsheetId, folderId: targetFolderId } = await resolveAssetSpreadsheet(selectedAsset);
 
-      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const timestamp = getBangkokTimestamp();
 
       // Calculate next sequential running number
       let rowNum = 1;
       if (googleToken && targetSpreadsheetId) {
         try {
           setSyncStatus('Retrieving latest records to calculate running number...');
+          setProgressModal(prev => ({ ...prev, percent: 30, stepMessage: 'Calculating sequential running index...' }));
           const currentAssets = await fetchSheetsData(googleToken, targetSpreadsheetId);
           if (currentAssets && currentAssets.length > 0) {
             // Filter out any massive timestamp values (e.g., >= 100000) so they don't corrupt the sequential counter
@@ -1120,10 +1175,12 @@ export default function AssetRecord({
       if (googleToken && targetFolderId) {
         if (visualFile) {
           setSyncStatus('Uploading new general photos...');
+          setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos to Google Drive...' }));
           finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId, visualFile);
         }
         if (thermalFile) {
           setSyncStatus('Uploading new thermographic snaps...');
+          setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images to Google Drive...' }));
           finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId, thermalFile);
         }
       }
@@ -1143,13 +1200,18 @@ export default function AssetRecord({
         finalAdsNumber
       );
 
-      // 2. Write as Appended Rows: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q (16): Equipment ID
+      // 2. Write as Appended Rows
       const generalRow = [
         rowNum, timestamp, user.name, editVoltage, editCity, editEqType,
         editManufacturer || 'Prysmian Group', editCountry || 'Thailand', editLocationType,
         editSubstation || 'Main Station', editLandmark || 'No landmarks',
         `${editLat || '13.7563'}, ${editLng || '100.5018'}`, editRegYear,
-        finalPeaNumber, finalAssetNumber, finalAdsNumber, updatedEquipmentId
+        finalPeaNumber, finalAssetNumber, finalAdsNumber,
+        editProductionMonth || 'N/A', editInstallationDate || 'N/A', editWbs || 'N/A', editBusinessType || 'N/A',
+        editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
+        editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
+        editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
+        updatedEquipmentId
       ];
 
       const engineeringRow = [
@@ -1166,8 +1228,13 @@ export default function AssetRecord({
 
       if (googleToken && targetSpreadsheetId) {
         setSyncStatus('Adding new log entry rows to Google Sheets...');
+        setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing General Information row to Google Sheets...' }));
         await appendGeneralRow(googleToken, targetSpreadsheetId, generalRow);
+
+        setProgressModal(prev => ({ ...prev, percent: 80, stepMessage: 'Writing Engineering Parameters row to Google Sheets...' }));
         await appendEngineeringRow(googleToken, targetSpreadsheetId, engineeringRow);
+
+        setProgressModal(prev => ({ ...prev, percent: 90, stepMessage: 'Writing Visual & Thermal image references...' }));
         await appendVisualRow(googleToken, targetSpreadsheetId, visualRow);
       } else {
         // Local storage append fallback
@@ -1206,6 +1273,15 @@ export default function AssetRecord({
       }
 
       setSyncStatus('New inspection entry successfully logged!');
+      setProgressModal({
+        isOpen: true,
+        title: 'Record Saved Successfully',
+        stepMessage: `New inspection audit entry logged for ${selectedAsset.equipmentId}! (100%)`,
+        percent: 100,
+        isError: false,
+        isComplete: true
+      });
+
       setTimeout(() => {
         setSyncStatus('');
         loadDatabase();
@@ -1214,7 +1290,15 @@ export default function AssetRecord({
       }, 1500);
 
     } catch (err: any) {
-      alert(`New Entry Save Error: ${err.message || 'Could not sync new entry.'}`);
+      setProgressModal({
+        isOpen: true,
+        title: 'Save Error',
+        stepMessage: 'Failed to log new audit entry.',
+        percent: 0,
+        isError: true,
+        errorMessage: err.message || 'Could not sync new entry.',
+        isComplete: false
+      });
     } finally {
       setSaving(false);
     }
@@ -1368,6 +1452,16 @@ export default function AssetRecord({
                 className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white grow"
               />
               <button
+                type="button"
+                onClick={() => setShowScannerModal(true)}
+                className="bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
+                title="Scan or upload asset QR code"
+              >
+                <QrCode className="w-4 h-4" />
+                <span>Scan QR</span>
+              </button>
+              <button
+                type="button"
                 onClick={handleSearch}
                 className="bg-purple-900 text-white hover:bg-purple-950 px-5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
@@ -1408,6 +1502,12 @@ export default function AssetRecord({
                   {selectedAsset.adsNumber && (
                     <span className="text-[9px] font-bold bg-purple-800 text-purple-200 px-2 py-0.5 rounded-sm">
                       ADS: {selectedAsset.adsNumber}
+                    </span>
+                  )}
+
+                  {selectedAsset.assetValue && (
+                    <span className="text-[9px] font-bold bg-emerald-800 text-emerald-100 px-2 py-0.5 rounded-sm">
+                      Asset Value: {selectedAsset.assetValue}
                     </span>
                   )}
                 </div>
@@ -1559,18 +1659,34 @@ export default function AssetRecord({
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">City</label>
-                      <select
-                        value={editCity}
-                        onChange={e => setEditCity(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        {(PEA_AREA_CITIES[currentAssetArea] || []).map(c => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">City</label>
+                        <select
+                          value={editCity}
+                          onChange={e => setEditCity(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName(true)}
+                        >
+                          {(PEA_AREA_CITIES[currentAssetArea] || []).map(c => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Location Type</label>
+                        <select
+                          value={editLocationType}
+                          onChange={e => setEditLocationType(e.target.value as LocationType)}
+                          disabled={!isEditing}
+                          className={getInputClassName(true)}
+                        >
+                          <option value="Substation">Substation</option>
+                          <option value="Transmission Line">Transmission Line</option>
+                          <option value="Distribution Line">Distribution Line</option>
+                        </select>
+                      </div>
                     </div>
 
                     <div className="flex flex-col gap-1">
@@ -1584,44 +1700,6 @@ export default function AssetRecord({
                         {getAvailableEquipmentTypes(editVoltage || '115').map(t => (
                           <option key={t} value={t}>{t}</option>
                         ))}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Manufacturer</label>
-                      <select
-                        value={editManufacturer}
-                        onChange={e => setEditManufacturer(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        {getManufacturersForEquipmentType(editEqType).map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Country of Origin</label>
-                      <select
-                        value={editCountry}
-                        onChange={e => setEditCountry(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        {COUNTRIES_OF_ORIGIN.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Location Type</label>
-                      <select
-                        value={editLocationType}
-                        onChange={e => setEditLocationType(e.target.value as LocationType)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        <option value="Substation">Substation</option>
-                        <option value="Transmission Line">Transmission Line</option>
-                        <option value="Distribution Line">Distribution Line</option>
                       </select>
                     </div>
 
@@ -1670,333 +1748,372 @@ export default function AssetRecord({
                       </div>
                     </div>
 
-                    {/* Advanced Fields Toggle inside edit workspace */}
-                    <div className="pt-2 border-t border-gray-100">
-                      <button
-                        type="button"
-                        onClick={() => setShowAdvancedEdit(!showAdvancedEdit)}
-                        className="w-full flex items-center justify-between text-[10px] font-bold text-purple-700 uppercase tracking-wider py-1 hover:text-purple-900"
-                      >
-                        <span>Advanced Cable Specifications ({showAdvancedEdit ? 'Hide' : 'Show'})</span>
-                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showAdvancedEdit ? 'rotate-180' : ''}`} />
-                      </button>
-                      
-                      {showAdvancedEdit && (
-                        <div className="mt-3 space-y-3 pt-3 border-t border-dashed border-gray-100">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Production Month</label>
-                              <input
-                                type="text"
-                                placeholder="e.g. 07/2018"
-                                value={editProductionMonth}
-                                onChange={e => setEditProductionMonth(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date</label>
-                              <input
-                                type="date"
-                                value={editInstallationDate}
-                                onChange={e => setEditInstallationDate(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">WBS Code</label>
-                              <input
-                                type="text"
-                                placeholder="WBS..."
-                                value={editWbs}
-                                onChange={e => setEditWbs(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Business Type</label>
-                              <input
-                                type="text"
-                                placeholder="e.g. Transmission or N/A"
-                                value={editBusinessType}
-                                onChange={e => setEditBusinessType(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Cost Center</label>
-                              <input
-                                type="text"
-                                placeholder="CC..."
-                                value={editCostCenter}
-                                onChange={e => setEditCostCenter(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">GISTAG</label>
-                              <input
-                                type="text"
-                                placeholder="GIS..."
-                                value={editGistag}
-                                onChange={e => setEditGistag(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Class</label>
-                              <input
-                                type="text"
-                                placeholder="e.g. High Voltage or N/A"
-                                value={editClass}
-                                onChange={e => setEditClass(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Contract Number</label>
-                              <input
-                                type="text"
-                                placeholder="CN-..."
-                                value={editContractNumber}
-                                onChange={e => setEditContractNumber(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Feeder ID</label>
-                              <input
-                                type="text"
-                                placeholder="FDR-..."
-                                value={editFeeder}
-                                onChange={e => setEditFeeder(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Substation ID</label>
-                              <input
-                                type="text"
-                                placeholder="SUB-..."
-                                value={editSubstationId}
-                                onChange={e => setEditSubstationId(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Operate ID</label>
-                              <input
-                                type="text"
-                                placeholder="OP-..."
-                                value={editOperateId}
-                                onChange={e => setEditOperateId(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Serial Number</label>
-                              <input
-                                type="text"
-                                placeholder="S/N..."
-                                value={editSerialNumber}
-                                onChange={e => setEditSerialNumber(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Model</label>
-                              <input
-                                type="text"
-                                placeholder="Model..."
-                                value={editModel}
-                                onChange={e => setEditModel(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[9px] font-bold text-gray-400 uppercase">Work Order</label>
-                              <input
-                                type="text"
-                                placeholder="WO-..."
-                                value={editWorkOrder}
-                                onChange={e => setEditWorkOrder(e.target.value)}
-                                disabled={!isEditing}
-                                className={getInputClassName()}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[9px] font-bold text-gray-400 uppercase">Size (Cross Section)</label>
-                            <input
-                              type="text"
-                              placeholder="e.g. 1x400 sq.mm"
-                              value={editSize}
-                              onChange={e => setEditSize(e.target.value)}
-                              disabled={!isEditing}
-                              className={getInputClassName()}
-                            />
-                          </div>
-                        </div>
-                      )}
+                    <div className="flex flex-col gap-1 pt-2 border-t border-gray-200/80">
+                      <label className="text-[9px] font-bold text-emerald-700 uppercase flex items-center justify-between">
+                        <span>Asset Value</span>
+                        <span className="text-[8px] text-emerald-600 font-normal">Col AF</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 2,500,000 THB"
+                        value={editAssetValue}
+                        onChange={e => setEditAssetValue(e.target.value)}
+                        disabled={!isEditing}
+                        className="w-full bg-emerald-50/40 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-emerald-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white disabled:bg-emerald-50/30"
+                      />
                     </div>
                   </div>
                 </div>
 
-                {/* COLUMN 2: ENGINEERING PARAMETERS */}
+                {/* COLUMN 2: ENGINEERING TELEMETRY & SPECIFICATIONS */}
                 <div className="bg-gray-50/50 border border-gray-100 p-5 rounded-xl space-y-4">
                   <div className="flex items-center gap-1.5 border-b border-gray-100 pb-2 mb-1">
                     <Activity className="w-4 h-4 text-purple-700" />
                     <h4 className="text-[11px] font-black text-gray-900 uppercase tracking-widest">
-                      2. Engineering Telemetry
+                      2. Engineering Telemetry & Specs
                     </h4>
                   </div>
 
+                  {/* Section A: Cable & Equipment Specifications */}
                   <div className="space-y-3">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Load Current (Amps)</label>
-                      <input
-                        type="number"
-                        value={editLoadCurrent}
-                        onChange={e => setEditLoadCurrent(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                      />
+                    <span className="text-[9px] font-black text-purple-800 uppercase tracking-wider block bg-purple-100/60 px-2 py-0.5 rounded-sm">
+                      Cable Technical Specifications
+                    </span>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Manufacturer</label>
+                        <select
+                          value={editManufacturer}
+                          onChange={e => setEditManufacturer(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName(true)}
+                        >
+                          {getManufacturersForEquipmentType(editEqType).map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Country of Origin</label>
+                        <select
+                          value={editCountry}
+                          onChange={e => setEditCountry(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName(true)}
+                        >
+                          {COUNTRIES_OF_ORIGIN.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Sheath Current (Amps)</label>
-                      <input
-                        type="number"
-                        value={editSheathCurrent}
-                        onChange={e => setEditSheathCurrent(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Model</label>
+                        <input
+                          type="text"
+                          placeholder="Model..."
+                          value={editModel}
+                          onChange={e => setEditModel(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Serial Number</label>
+                        <input
+                          type="text"
+                          placeholder="S/N..."
+                          value={editSerialNumber}
+                          onChange={e => setEditSerialNumber(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Surface Temperature (°C)</label>
-                      <input
-                        type="number"
-                        value={editTemp}
-                        onChange={e => setEditTemp(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Size (Cross Section)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 1x400 sq.mm"
+                          value={editSize}
+                          onChange={e => setEditSize(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Production Month</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 07/2018"
+                          value={editProductionMonth}
+                          onChange={e => setEditProductionMonth(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">External PD Discharge (pC)</label>
-                      <input
-                        type="number"
-                        value={editDischarge}
-                        onChange={e => setEditDischarge(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date</label>
+                        <input
+                          type="date"
+                          value={editInstallationDate}
+                          onChange={e => setEditInstallationDate(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">WBS Code</label>
+                        <input
+                          type="text"
+                          placeholder="WBS..."
+                          value={editWbs}
+                          onChange={e => setEditWbs(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD Result Pattern</label>
-                      <select
-                        value={editPdResult}
-                        onChange={e => setEditPdResult(e.target.value as PDResultType)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        <option value="None">None (Stable Waveform)</option>
-                        <option value="Corona">Corona Discharge</option>
-                        <option value="Surface">Surface Tracking</option>
-                        <option value="Internal">Internal Void Discharge</option>
-                        <option value="Floating">Floating Potential</option>
-                        <option value="Void">Insulation Void</option>
-                        <option value="Treeing">Electrical Treeing</option>
-                      </select>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Business Type</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Transmission or N/A"
+                          value={editBusinessType}
+                          onChange={e => setEditBusinessType(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Cost Center</label>
+                        <input
+                          type="text"
+                          placeholder="CC..."
+                          value={editCostCenter}
+                          onChange={e => setEditCostCenter(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD amplitude (pC)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={editOnlinePdAmplitude}
-                        onChange={e => setEditOnlinePdAmplitude(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                        placeholder="e.g. 150"
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">GISTAG</label>
+                        <input
+                          type="text"
+                          placeholder="GIS..."
+                          value={editGistag}
+                          onChange={e => setEditGistag(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Class</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. High Voltage or N/A"
+                          value={editClass}
+                          onChange={e => setEditClass(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Insulation Resistance (GΩ)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={editInsulation}
-                        onChange={e => setEditInsulation(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Contract Number</label>
+                        <input
+                          type="text"
+                          placeholder="CN-..."
+                          value={editContractNumber}
+                          onChange={e => setEditContractNumber(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Work Order</label>
+                        <input
+                          type="text"
+                          placeholder="WO-..."
+                          value={editWorkOrder}
+                          onChange={e => setEditWorkOrder(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Tan Delta Loss Result</label>
-                      <select
-                        value={editTanDelta}
-                        onChange={e => setEditTanDelta(e.target.value as TanDeltaResult)}
-                        disabled={!isEditing}
-                        className={getInputClassName(true)}
-                      >
-                        <option value="No Action Required">No Action Required (Safe)</option>
-                        <option value="Action Required">Action Required (Urgent)</option>
-                        <option value="Further Study Advised">Further Study Advised</option>
-                        <option value="No record">No record</option>
-                      </select>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Feeder ID</label>
+                        <input
+                          type="text"
+                          placeholder="FDR..."
+                          value={editFeeder}
+                          onChange={e => setEditFeeder(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Substation ID</label>
+                        <input
+                          type="text"
+                          placeholder="SUB..."
+                          value={editSubstationId}
+                          onChange={e => setEditSubstationId(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Operate ID</label>
+                        <input
+                          type="text"
+                          placeholder="OP..."
+                          value={editOperateId}
+                          onChange={e => setEditOperateId(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Tan delta amplitude</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={editTanDeltaAmplitude}
-                        onChange={e => setEditTanDeltaAmplitude(e.target.value)}
-                        disabled={!isEditing}
-                        className={getInputClassName()}
-                        placeholder="e.g. 0.0025"
-                      />
+                    {/* Section B: Engineering Telemetry Measurements */}
+                    <div className="pt-3 border-t border-gray-200/80 space-y-3">
+                      <span className="text-[9px] font-black text-purple-800 uppercase tracking-wider block bg-purple-100/60 px-2 py-0.5 rounded-sm">
+                        Diagnostic Telemetry Measurements
+                      </span>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Load Current (Amps)</label>
+                          <input
+                            type="number"
+                            value={editLoadCurrent}
+                            onChange={e => setEditLoadCurrent(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Sheath Current (Amps)</label>
+                          <input
+                            type="number"
+                            value={editSheathCurrent}
+                            onChange={e => setEditSheathCurrent(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Surface Temp (°C)</label>
+                          <input
+                            type="number"
+                            value={editTemp}
+                            onChange={e => setEditTemp(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">External PD (pC)</label>
+                          <input
+                            type="number"
+                            value={editDischarge}
+                            onChange={e => setEditDischarge(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD Pattern</label>
+                          <select
+                            value={editPdResult}
+                            onChange={e => setEditPdResult(e.target.value as PDResultType)}
+                            disabled={!isEditing}
+                            className={getInputClassName(true)}
+                          >
+                            <option value="None">None (Stable)</option>
+                            <option value="Corona">Corona</option>
+                            <option value="Surface">Surface</option>
+                            <option value="Internal">Internal Void</option>
+                            <option value="Floating">Floating Potential</option>
+                            <option value="Void">Insulation Void</option>
+                            <option value="Treeing">Electrical Treeing</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD Amplitude (pC)</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={editOnlinePdAmplitude}
+                            onChange={e => setEditOnlinePdAmplitude(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                            placeholder="e.g. 150"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Insulation Resistance (GΩ)</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={editInsulation}
+                            onChange={e => setEditInsulation(e.target.value)}
+                            disabled={!isEditing}
+                            className={getInputClassName()}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] font-bold text-gray-400 uppercase">Tan Delta Loss Result</label>
+                          <select
+                            value={editTanDelta}
+                            onChange={e => setEditTanDelta(e.target.value as TanDeltaResult)}
+                            disabled={!isEditing}
+                            className={getInputClassName(true)}
+                          >
+                            <option value="No Action Required">No Action Required</option>
+                            <option value="Action Required">Action Required</option>
+                            <option value="Further Study Advised">Further Study Advised</option>
+                            <option value="No record">No record</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Tan Delta Amplitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={editTanDeltaAmplitude}
+                          onChange={e => setEditTanDeltaAmplitude(e.target.value)}
+                          disabled={!isEditing}
+                          className={getInputClassName()}
+                          placeholder="e.g. 0.0025"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2022,7 +2139,7 @@ export default function AssetRecord({
                           onError={(e) => {
                             e.currentTarget.src = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
                           }}
-                          className="w-full h-28 object-cover rounded-md"
+                          className="w-full h-32 object-cover rounded-md"
                         />
                       </div>
                       {isEditing && (
@@ -2046,7 +2163,7 @@ export default function AssetRecord({
                           onError={(e) => {
                             e.currentTarget.src = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
                           }}
-                          className="w-full h-28 object-cover rounded-md"
+                          className="w-full h-32 object-cover rounded-md"
                         />
                       </div>
                       {isEditing && (
@@ -2090,7 +2207,7 @@ export default function AssetRecord({
                                   target.src = fallbackUrl;
                                 }
                               }}
-                              className="w-full h-28 object-cover rounded-md"
+                              className="w-full h-32 object-cover rounded-md"
                             />
                             <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-white text-[9px] font-mono px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
                               <MapPin className="w-2.5 h-2.5 text-purple-400 shrink-0" />
@@ -2100,6 +2217,46 @@ export default function AssetRecord({
                         </div>
                       );
                     })()}
+
+                    {/* Quick Asset Summary Card */}
+                    <div className="bg-white border border-purple-100 rounded-xl p-3.5 space-y-2 shadow-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black text-purple-900 uppercase">Asset Health Status</span>
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          selectedAsset.healthStatus === 'Green' ? 'bg-emerald-100 text-emerald-800' :
+                          selectedAsset.healthStatus === 'Yellow' ? 'bg-amber-100 text-amber-800' :
+                          selectedAsset.healthStatus === 'Orange' ? 'bg-orange-100 text-orange-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {selectedAsset.healthStatus} ({selectedAsset.healthScore}%)
+                        </span>
+                      </div>
+
+                      <div className="text-[10px] space-y-1 text-gray-600 border-t border-gray-100 pt-2">
+                        <div className="flex justify-between">
+                          <span className="font-medium text-gray-400">Registered By:</span>
+                          <span className="font-bold text-gray-800">{selectedAsset.operatorName || 'System'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="font-medium text-gray-400">Recorded Value:</span>
+                          <span className="font-bold text-emerald-700 font-mono">{editAssetValue || selectedAsset.assetValue || 'N/A'}</span>
+                        </div>
+                        <div className="flex justify-between items-center pt-1 border-t border-gray-100">
+                          <span className="font-medium text-gray-400">Asset QR Tag:</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQrAsset(selectedAsset);
+                              setShowQRModal(true);
+                            }}
+                            className="text-purple-700 hover:text-purple-900 font-black flex items-center gap-1 cursor-pointer hover:underline"
+                          >
+                            <QrCode className="w-3.5 h-3.5" />
+                            <span>View QR Code</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -2147,6 +2304,17 @@ export default function AssetRecord({
                   </button>
                 ) : (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQrAsset(selectedAsset);
+                        setShowQRModal(true);
+                      }}
+                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md animate-fadeIn"
+                    >
+                      <QrCode className="w-4 h-4" />
+                      Asset QR Code
+                    </button>
                     <button
                       type="button"
                       onClick={() => exportAssetToPDF(selectedAsset!)}
@@ -2357,6 +2525,51 @@ export default function AssetRecord({
 
       {/* --- MODAL 2: SAVE CHOICE MODAL DIALOG --- */}
       {showSaveChoiceDialog()}
+
+      {/* --- MODAL 3: QR CODE TAG MODAL --- */}
+      {showQRModal && qrAsset && (
+        <AssetQRCodeModal 
+          asset={qrAsset} 
+          onClose={() => {
+            setShowQRModal(false);
+            setQrAsset(null);
+          }} 
+        />
+      )}
+
+      {/* --- MODAL 4: QR CODE SCANNER MODAL --- */}
+      {showScannerModal && (
+        <QRScannerModal 
+          onClose={() => setShowScannerModal(false)}
+          onScanSuccess={(scannedEqId) => {
+            setSearchType('Equipment ID');
+            setSearchValue(scannedEqId);
+            const match = latestAssets.find(a => 
+              a.equipmentId?.toLowerCase() === scannedEqId.toLowerCase() ||
+              a.peaNumber?.toLowerCase() === scannedEqId.toLowerCase() ||
+              a.assetNumber?.toLowerCase() === scannedEqId.toLowerCase() ||
+              a.adsNumber?.toLowerCase() === scannedEqId.toLowerCase()
+            );
+            if (match) {
+              selectAsset(match);
+            } else {
+              handleSearch();
+            }
+          }}
+        />
+      )}
+
+      {/* Registration Progress Popup */}
+      <RegistrationProgressModal
+        isOpen={progressModal.isOpen}
+        title={progressModal.title}
+        currentStepMessage={progressModal.stepMessage}
+        progressPercent={progressModal.percent}
+        isError={progressModal.isError}
+        errorMessage={progressModal.errorMessage}
+        isComplete={progressModal.isComplete}
+        onClose={() => setProgressModal(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 
@@ -2426,7 +2639,7 @@ export default function AssetRecord({
                 Save as New Record (Audit Entry)
               </span>
               <span className="text-[10px] text-purple-700 leading-normal">
-                This keeps the original record intact and appends a new inspection entry under the same **Equipment ID** (\`{selectedAsset.equipmentId}\`). Your operator name (**{user.name}**) and the current timestamp will be logged for this moment.
+                This keeps the original record intact and appends a new inspection entry under the same **Equipment ID** (`{selectedAsset.equipmentId}`). Your operator name (**{user.name}**) and the current timestamp will be logged for this moment.
               </span>
             </button>
 

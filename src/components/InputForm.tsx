@@ -18,6 +18,7 @@ import {
   getAvailableEquipmentTypes,
   getManufacturersForEquipmentType
 } from '../utils/peaData';
+import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
   uploadImageToDrive, 
   appendGeneralRow, 
@@ -27,6 +28,7 @@ import {
   fetchLastSheetNumber,
   getMasterSpreadsheetsMap
 } from '../utils/googleSheets';
+import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, getCentralAdminDatabaseConfig } from '../utils/firestore';
 import { 
   Check, 
@@ -113,6 +115,24 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   
   const [visualPreview, setVisualPreview] = useState<string>('');
   const [thermalPreview, setThermalPreview] = useState<string>('');
+
+  // Registration Progress Modal State
+  const [progressModal, setProgressModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    stepMessage: string;
+    percent: number;
+    isError: boolean;
+    errorMessage?: string;
+    isComplete: boolean;
+  }>({
+    isOpen: false,
+    title: 'Registering New Asset',
+    stepMessage: '',
+    percent: 0,
+    isError: false,
+    isComplete: false
+  });
 
   // Pre-populate city with first available option in selected area
   useEffect(() => {
@@ -246,6 +266,14 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
     setLoading(true);
     setStatusMessage('Preparing database for selected area...');
+    setProgressModal({
+      isOpen: true,
+      title: 'Registering New Asset',
+      stepMessage: 'Preparing database connection & uploading attachments...',
+      percent: 10,
+      isError: false,
+      isComplete: false
+    });
 
     try {
       // 1. Get or Create Spreadsheet for selectedArea
@@ -267,6 +295,11 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       }
 
       setStatusMessage('Uploading inspection photos...');
+      setProgressModal(prev => ({
+        ...prev,
+        percent: 25,
+        stepMessage: 'Uploading visual & thermal inspection photos...'
+      }));
       
       let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'; // Fallback mockup
       let thermalUrl = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'; // Fallback mockup
@@ -282,8 +315,13 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       }
 
       setStatusMessage('Saving inspection data to Google Sheets...');
+      setProgressModal(prev => ({
+        ...prev,
+        percent: 40,
+        stepMessage: 'Calculating sequential index & validating PEA registration fields...'
+      }));
 
-      const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const timestamp = getBangkokTimestamp();
       
       // Calculate next sequential running number
       let rowNum = 1;
@@ -322,12 +360,6 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
       const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
 
-      // Rows matching the specified spreadsheet layout: 
-      // Column N (index 13): PEA Number (ID)
-      // Column O (index 14): Equipment Number ADS
-      // Column P (index 15): Account Asset Number (AA)
-      // Columns Q - AE (index 16-30): 15 New General Info columns
-      // Column AF (index 31): Equipment ID
       const generalRow = [
         rowNum, timestamp, user.name, voltage, city, eqType, 
         brand || 'Prysmian Group', country || 'Thailand', locationType, substation || 'Main Station', 
@@ -340,12 +372,6 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         computedEquipmentId
       ];
 
-      // Engineering Row (13 columns):
-      // Column A-I (0-8): standard parameters (Row, Timestamp, Name, EqID, Load, Sheath, Temp, PD, PDPattern)
-      // Column J (index 9): Online PD amplitude (pC)
-      // Column K (index 10): Insulation Resistance (GOhm)
-      // Column L (index 11): Tan Delta Result
-      // Column M (index 12): Tan Delta amplitude
       const engineeringRow = [
         rowNum, timestamp, user.name, computedEquipmentId, 
         parseFloat(loadCurrent) || 120, parseFloat(sheathCurrent) || 8, parseFloat(surfaceTemp) || 35, 
@@ -376,11 +402,17 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       };
 
       if (googleToken && currentSpreadsheetId) {
-        // Append real database rows
+        setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: `Writing General Information for ${computedEquipmentId}...` }));
         await appendGeneralRow(googleToken, currentSpreadsheetId, generalRow);
+
+        setProgressModal(prev => ({ ...prev, percent: 75, stepMessage: 'Writing Engineering Parameters row...' }));
         await appendEngineeringRow(googleToken, currentSpreadsheetId, engineeringRow);
+
+        setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing Visual & Thermal image references...' }));
         await appendVisualRow(googleToken, currentSpreadsheetId, visualRow);
       }
+
+      setProgressModal(prev => ({ ...prev, percent: 95, stepMessage: 'Synchronizing central database cache & local storage...' }));
 
       // Always sync to Firestore central cache and local storage so Dashboard updates immediately across all roles
       try {
@@ -393,12 +425,29 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       }
 
       setStatusMessage('Asset successfully logged!');
+      setProgressModal({
+        isOpen: true,
+        title: 'Asset Registered Successfully',
+        stepMessage: `Asset Equipment ${computedEquipmentId} (PEA: ${finalPeaNumber || 'Assigned'}) registered successfully! (100%)`,
+        percent: 100,
+        isError: false,
+        isComplete: true
+      });
+
       setTimeout(() => {
         onSuccess();
       }, 1500);
 
     } catch (err: any) {
-      alert(`Submission Error: ${err.message || 'Error occurred during upload.'}`);
+      setProgressModal({
+        isOpen: true,
+        title: 'Registration Failed',
+        stepMessage: 'An error occurred during asset registration.',
+        percent: 0,
+        isError: true,
+        errorMessage: err.message || 'Error occurred during registration.',
+        isComplete: false
+      });
     } finally {
       setLoading(false);
     }
@@ -1144,6 +1193,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
           </div>
         </form>
       </div>
+
+      {/* Registration Progress Popup */}
+      <RegistrationProgressModal
+        isOpen={progressModal.isOpen}
+        title={progressModal.title}
+        currentStepMessage={progressModal.stepMessage}
+        progressPercent={progressModal.percent}
+        isError={progressModal.isError}
+        errorMessage={progressModal.errorMessage}
+        isComplete={progressModal.isComplete}
+        onClose={() => setProgressModal(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

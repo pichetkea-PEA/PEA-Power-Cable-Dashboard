@@ -10,10 +10,26 @@ interface State {
   error: Error | null;
 }
 
-export class ErrorBoundary extends Component<Props, State> {
-  public state: State = {
-    hasError: false,
-    error: null,
+export class ErrorBoundary extends React.Component<Props, State> {
+  props: Props;
+  state: State;
+
+  constructor(props: Props) {
+    super(props);
+    this.props = props;
+    this.state = {
+      hasError: false,
+      error: null,
+    };
+  }
+
+  // Explicit type declaration for setState in environment where React.Component is ambient
+  setState: (state: Partial<State> | ((prevState: State) => Partial<State>)) => void = (newState) => {
+    if (typeof newState === 'function') {
+      this.state = { ...this.state, ...newState(this.state) };
+    } else {
+      this.state = { ...this.state, ...newState };
+    }
   };
 
   public static getDerivedStateFromError(error: Error): State {
