@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits } from './peaData';
+import { calculateHealth, generateEquipmentId, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -1397,26 +1397,39 @@ export async function convertExistingSheetTimestampsToUTC7(accessToken: string, 
 /**
  * Scans an existing Google Sheet file and migrates all equipment IDs
  * across all 3 sheets ('General Information', 'Engineering Information', 'Visual & Thermal Images')
- * to conform to the new PEA Equipment ID format:
- * "S2-115TLTM-2020-TRT#00001-550009"
+/**
+ * Migrates Equipment IDs (Column AG / column index 32) in a given Google Sheet
+ * to strictly conform to the latest PEA Equipment ID format:
+ * "{AREA}-{VOLTAGE}{LOC_TYPE}{EQ_TYPE}-{YEAR}-{CITY_ABBR}#{RUNNING_NO}-{PEA_6DIGITS}"
+ * (e.g., "C1-115TLTM-2020-AYU#00001-550009")
  */
-export async function migrateExistingSheetEquipmentIds(accessToken: string, spreadsheetId: string): Promise<number> {
-  if (!accessToken || !spreadsheetId) return 0;
+export async function migrateExistingSheetEquipmentIds(
+  accessToken: string,
+  spreadsheetId: string,
+  explicitArea?: string
+): Promise<{ updatedCount: number; areaCode: string }> {
+  if (!accessToken || !spreadsheetId) return { updatedCount: 0, areaCode: '' };
   let updatedCount = 0;
+  let areaCode = (explicitArea || '').trim().toUpperCase();
 
   try {
-    let areaCode = 'S2';
+    let title = '';
     try {
       const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       });
       if (metaRes.ok) {
         const meta = await metaRes.json();
-        const title = meta.properties?.title || '';
-        const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) ||
-                      title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
-        if (match) {
-          areaCode = match[1].trim().toUpperCase();
+        title = meta.properties?.title || '';
+        if (!areaCode) {
+          const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*[-_]?\s*(Area\s+)?([A-Za-z0-9]+)/i) ||
+                        title.match(/([A-Z]{1,2}\d{1})/i);
+          if (match) {
+            const found = (match[2] || match[1] || '').trim().toUpperCase();
+            if (PEA_AREAS.includes(found as any)) {
+              areaCode = found;
+            }
+          }
         }
       }
     } catch (err) {
@@ -1434,7 +1447,7 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    if (!res.ok) return 0;
+    if (!res.ok) return { updatedCount: 0, areaCode };
     const data = await res.json();
     const valueRanges = data.valueRanges || [];
 
@@ -1442,7 +1455,7 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
     const engRows = valueRanges[1]?.values || [];
     const visRows = valueRanges[2]?.values || [];
 
-    if (genRows.length <= 1) return 0;
+    if (genRows.length <= 1) return { updatedCount: 0, areaCode };
 
     const genHeaders = genRows[0] || [];
     const engHeaders = engRows[0] || [];
@@ -1469,6 +1482,19 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
     const yearIdx = findColIdx(genHeaders, ['yearofregistration', 'registrationyear'], 12);
     const peaIdx = findColIdx(genHeaders, ['peanumberid', 'peanumber'], 13);
 
+    // If areaCode is still empty, deduce from city in first valid row
+    if (!areaCode) {
+      for (const row of genRows.slice(1)) {
+        const c = cityIdx < row.length ? cleanStr(row[cityIdx]) : '';
+        const deduced = getAreaFromCity(c);
+        if (deduced) {
+          areaCode = deduced;
+          break;
+        }
+      }
+    }
+    if (!areaCode || areaCode === 'ALL') areaCode = 'S2';
+
     const eqIdMap: Record<string, string> = {};
     const cityCounters: Record<string, number> = {};
 
@@ -1486,25 +1512,31 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
 
       const cityAbbr = getCityAbbreviation(city);
 
+      // Deduce row-specific area code if city explicitly maps to another area
+      const rowArea = getAreaFromCity(city) || areaCode;
+
+      cityCounters[cityAbbr] = (cityCounters[cityAbbr] || 0) + 1;
+      const cityIndex = cityCounters[cityAbbr];
+
+      const newEqId = generateEquipmentId({
+        area: rowArea,
+        voltage,
+        year,
+        locationType: locType,
+        equipmentType: eqType,
+        city,
+        cityIndex,
+        peaNumber
+      });
+
       let key = oldEqId;
       if (!key) {
         key = `${city}_${eqType}_${peaNumber || row[0]}`;
       }
 
-      if (!eqIdMap[key]) {
-        cityCounters[cityAbbr] = (cityCounters[cityAbbr] || 0) + 1;
-        const cityIndex = cityCounters[cityAbbr];
-        const newEqId = generateEquipmentId(
-          areaCode,
-          voltage,
-          year,
-          locType,
-          eqType,
-          city,
-          cityIndex,
-          peaNumber
-        );
-        eqIdMap[key] = newEqId;
+      eqIdMap[key] = newEqId;
+      if (oldEqId) {
+        eqIdMap[oldEqId] = newEqId;
       }
     });
 
@@ -1516,6 +1548,15 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
     };
 
     const updates: { range: string; values: any[][] }[] = [];
+
+    // Ensure Column AG header is set to "Equipment ID"
+    if (!genHeaders[genEqIdIdx] || normalizeHeader(genHeaders[genEqIdIdx]) !== 'equipmentid') {
+      const letter = getColLetter(genEqIdIdx);
+      updates.push({
+        range: `'General Information'!${letter}1`,
+        values: [['Equipment ID']]
+      });
+    }
 
     // 1. General Information updates
     const genLetter = getColLetter(genEqIdIdx);
@@ -1574,12 +1615,77 @@ export async function migrateExistingSheetEquipmentIds(accessToken: string, spre
 
     if (updates.length > 0) {
       await batchUpdateSheetRows(accessToken, spreadsheetId, updates);
-      console.log(`Migrated ${updatedCount} equipment ID cell(s) in spreadsheet ${spreadsheetId} to new PEA format.`);
+      console.log(`[Equipment ID Migration] Updated ${updatedCount} cell(s) in spreadsheet ${spreadsheetId} (${areaCode}).`);
     }
   } catch (err) {
     console.warn("Error migrating spreadsheet equipment IDs:", err);
   }
 
-  return updatedCount;
+  return { updatedCount, areaCode };
+}
+
+/**
+ * Scans ALL 12 PEA Google Sheet files in Google Drive, checks column AG "Equipment ID"
+ * on General Information (and corresponding Equipment IDs on Engineering Information and Visual Images),
+ * verifies whether Equipment IDs match the area rules, and updates all mismatched Equipment IDs.
+ */
+export async function migrateAll12GoogleSheetsEquipmentIds(accessToken: string): Promise<{
+  totalSpreadsheets: number;
+  totalUpdates: number;
+  areaBreakdown: Record<string, number>;
+}> {
+  if (!accessToken) return { totalSpreadsheets: 0, totalUpdates: 0, areaBreakdown: {} };
+
+  console.log("Starting batch Equipment ID migration across all 12 PEA Google Sheets...");
+
+  const masterMap = await getMasterSpreadsheetsMap(accessToken);
+  const spreadsheetsByArea = masterMap.spreadsheets || {};
+
+  let totalUpdates = 0;
+  let totalSpreadsheets = 0;
+  const areaBreakdown: Record<string, number> = {};
+
+  // Process all mapped area spreadsheets
+  for (const [area, spreadsheetId] of Object.entries(spreadsheetsByArea)) {
+    if (!spreadsheetId) continue;
+    try {
+      const result = await migrateExistingSheetEquipmentIds(accessToken, spreadsheetId, area);
+      totalSpreadsheets++;
+      totalUpdates += result.updatedCount;
+      if (result.updatedCount > 0) {
+        areaBreakdown[area] = (areaBreakdown[area] || 0) + result.updatedCount;
+      }
+    } catch (err) {
+      console.warn(`Error migrating Equipment IDs for Area ${area} (${spreadsheetId}):`, err);
+    }
+  }
+
+  // Also search Drive for any other sheets containing "PEA Cable Asset Database"
+  try {
+    const list = await listSpreadsheets(accessToken);
+    for (const file of list) {
+      const alreadyProcessed = Object.values(spreadsheetsByArea).includes(file.id);
+      if (!alreadyProcessed) {
+        const match = file.name.match(/PEA\s+Cable\s+Asset\s+Database\s*[-_]?\s*(Area\s+)?([A-Za-z0-9]+)/i);
+        const areaStr = match ? match[2] || match[1] : '';
+        const result = await migrateExistingSheetEquipmentIds(accessToken, file.id, areaStr);
+        totalSpreadsheets++;
+        totalUpdates += result.updatedCount;
+        if (result.areaCode && result.updatedCount > 0) {
+          areaBreakdown[result.areaCode] = (areaBreakdown[result.areaCode] || 0) + result.updatedCount;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Drive search for remaining spreadsheets failed:", err);
+  }
+
+  console.log(`[Batch Equipment ID Migration Completed] Checked ${totalSpreadsheets} spreadsheets, updated ${totalUpdates} cell(s). Breakdown:`, areaBreakdown);
+
+  return {
+    totalSpreadsheets,
+    totalUpdates,
+    areaBreakdown
+  };
 }
 

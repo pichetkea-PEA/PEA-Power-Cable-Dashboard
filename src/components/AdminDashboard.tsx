@@ -44,9 +44,11 @@ interface AdminDashboardProps {
   assets: CableAsset[];
   spreadsheetId: string | null;
   onRefresh: () => void;
+  onMigrateEquipmentIds?: () => void;
+  isMigratingIds?: boolean;
 }
 
-export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: AdminDashboardProps) {
+export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMigrateEquipmentIds, isMigratingIds }: AdminDashboardProps) {
   // Filters State
   const [filters, setFilters] = useState<DashboardFilters>({
     area: 'All',
@@ -460,18 +462,31 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: Adm
 
       {/* Filters Card */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-5" id="admin-filters-card">
-        <div className="flex justify-between items-center border-b border-gray-100 pb-3 mb-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-gray-100 pb-3 mb-4 gap-2">
           <div className="flex items-center gap-2">
             <Sliders className="w-5 h-5 text-purple-700" />
             <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Multi-Level System Filter</h3>
           </div>
-          <button 
-            onClick={handleResetFilters}
-            className="flex items-center gap-1.5 text-xs text-purple-700 hover:text-purple-900 font-semibold cursor-pointer"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Reset Filters
-          </button>
+          <div className="flex items-center gap-3">
+            {onMigrateEquipmentIds && (
+              <button
+                onClick={onMigrateEquipmentIds}
+                disabled={isMigratingIds}
+                className="flex items-center gap-1.5 text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 px-3 py-1.5 rounded-lg font-semibold cursor-pointer disabled:opacity-50 transition-all"
+                title="Scan and revise Column AG Equipment IDs in all 12 Google Sheets according to the latest PEA rules"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-purple-600" />
+                {isMigratingIds ? 'Updating 12 Sheets Column AG...' : 'Update Column AG (Equipment ID) in All 12 Sheets'}
+              </button>
+            )}
+            <button 
+              onClick={handleResetFilters}
+              className="flex items-center gap-1.5 text-xs text-purple-700 hover:text-purple-900 font-semibold cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Reset Filters
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

@@ -3,7 +3,7 @@ import { PEAUser, CableAsset, UserRole } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache } from "./utils/firestore";
-import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate } from './utils/googleSheets';
+import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
 import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
@@ -99,6 +99,7 @@ export default function App() {
   // Video Game Loading & Page Transition states
   const [showGameLoading, setShowGameLoading] = useState<boolean>(false);
   const [isPageSwitching, setIsPageSwitching] = useState<boolean>(false);
+  const [isMigratingIds, setIsMigratingIds] = useState<boolean>(false);
 
   // Login & Sign-Up form states
   const [loginMode, setLoginMode] = useState<'signin' | 'signup'>('signin');
@@ -623,6 +624,36 @@ export default function App() {
       setIsLoading(false);
       setIsSyncingCentralDb(false);
       isFetchingRef.current = false;
+    }
+  };
+
+  // Batch Equipment ID Migration across all 12 PEA Google Sheets
+  const handleBatchMigrateEquipmentIds = async () => {
+    if (!googleToken) {
+      alert("Please sign in with a Google Account to scan and update Equipment IDs in Google Sheets.");
+      return;
+    }
+    setIsMigratingIds(true);
+    setSyncSuccessMessage("Scanning and revising Column AG Equipment IDs across all 12 PEA Google Sheets...");
+    try {
+      const result = await migrateAll12GoogleSheetsEquipmentIds(googleToken);
+      const breakdownText = Object.entries(result.areaBreakdown)
+        .map(([areaCode, count]) => `Area ${areaCode}: ${count}`)
+        .join(', ');
+      
+      const msg = `Batch Equipment ID Migration Completed! Checked ${result.totalSpreadsheets} Google Sheets files. Revised ${result.totalUpdates} Equipment ID cell(s)${breakdownText ? ` (${breakdownText})` : ''} to comply with the latest PEA rules.`;
+      setSyncSuccessMessage(msg);
+      alert(msg);
+
+      if (spreadsheetIds.length > 0 || spreadsheetId) {
+        const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : [spreadsheetId!];
+        await handleLoadSpreadsheet(googleToken, idsToFetch, true);
+      }
+    } catch (err: any) {
+      console.error("Batch Equipment ID migration error:", err);
+      alert(`Equipment ID Migration Error: ${err.message || 'Failed to update sheets'}`);
+    } finally {
+      setIsMigratingIds(false);
     }
   };
 
@@ -1449,6 +1480,8 @@ export default function App() {
                   assets={assets} 
                   spreadsheetId={spreadsheetId}
                   onRefresh={handleManualRefresh} 
+                  onMigrateEquipmentIds={handleBatchMigrateEquipmentIds}
+                  isMigratingIds={isMigratingIds}
                 />
               )}
 

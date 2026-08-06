@@ -62,6 +62,22 @@ export const PEA_AREA_CITIES: Record<string, string[]> = {
   S3: ['Yala', 'Narathiwat', 'Pattani', 'Phatthalung', 'Satun', 'Songkhla']
 };
 
+export function getAreaFromCity(city: string): string | null {
+  if (!city) return null;
+  const clean = city.trim().toLowerCase();
+  if (!clean) return null;
+  for (const [area, cities] of Object.entries(PEA_AREA_CITIES)) {
+    if (area === 'ALL') continue;
+    if (cities.some(c => {
+      const cl = c.toLowerCase();
+      return cl === clean || clean.includes(cl) || cl.includes(clean);
+    })) {
+      return area;
+    }
+  }
+  return null;
+}
+
 export const ALL_EQUIPMENT_TYPES: EquipmentType[] = [
   'Underground Cable',
   'Oil Insulated Termination',
@@ -600,7 +616,7 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-N1-UG01',
       assetNumber: 'SAP-9081234',
       adsNumber: 'ADS-1001',
-      equipmentId: 'N1-115kV-2018-UND-PEA-N1-UG01'
+      equipmentId: generateEquipmentId({ area: 'N1', voltage: '115', year: 2018, locationType: 'Transmission Line', equipmentType: 'Underground Cable', city: 'Chiang Mai', cityIndex: 1, peaNumber: '550001' })
     },
     {
       number: 2,
@@ -608,7 +624,7 @@ export function getMockAssets(): CableAsset[] {
       operatorName: 'Somsak PEA',
       voltageLevel: '115',
       city: 'Chiang Mai',
-      equipmentType: 'Termination',
+      equipmentType: 'Oil Insulated Termination',
       manufacturer: 'ABB Hitachi',
       country: 'Sweden',
       locationType: 'Substation',
@@ -619,7 +635,7 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-N1-TR01',
       assetNumber: 'SAP-9081235',
       adsNumber: 'ADS-1002',
-      equipmentId: 'N1-115kV-2018-TER-PEA-N1-TR01'
+      equipmentId: generateEquipmentId({ area: 'N1', voltage: '115', year: 2018, locationType: 'Substation', equipmentType: 'Oil Insulated Termination', city: 'Chiang Mai', cityIndex: 2, peaNumber: '550002' })
     },
     {
       number: 3,
@@ -627,7 +643,7 @@ export function getMockAssets(): CableAsset[] {
       operatorName: 'Wichai Sompong',
       voltageLevel: '33',
       city: 'Chon Buri',
-      equipmentType: 'Submarine Cable',
+      equipmentType: 'Underground Cable',
       manufacturer: 'Sumitomo Electric',
       country: 'Japan',
       locationType: 'Transmission Line',
@@ -638,7 +654,7 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-C2-SUB01',
       assetNumber: 'SAP-4059281',
       adsNumber: 'ADS-1003',
-      equipmentId: 'C2-33kV-2015-SUB-PEA-C2-SUB01'
+      equipmentId: generateEquipmentId({ area: 'C2', voltage: '33', year: 2015, locationType: 'Transmission Line', equipmentType: 'Underground Cable', city: 'Chon Buri', cityIndex: 1, peaNumber: '550003' })
     },
     {
       number: 4,
@@ -646,7 +662,7 @@ export function getMockAssets(): CableAsset[] {
       operatorName: 'Kitti PEA',
       voltageLevel: '115',
       city: 'Nakhon Ratchasima',
-      equipmentType: 'Surge Arrester',
+      equipmentType: 'Lightning Arrester',
       manufacturer: 'Siemens Energy',
       country: 'Germany',
       locationType: 'Substation',
@@ -657,14 +673,14 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-NE3-SA01',
       assetNumber: 'SAP-3091845',
       adsNumber: 'ADS-1004',
-      equipmentId: 'NE3-115kV-2012-SUR-PEA-NE3-SA01'
+      equipmentId: generateEquipmentId({ area: 'NE3', voltage: '115', year: 2012, locationType: 'Substation', equipmentType: 'Lightning Arrester', city: 'Nakhon Ratchasima', cityIndex: 1, peaNumber: '550004' })
     },
     {
       number: 5,
       timestamp: '2026-07-17 15:45:00',
       operatorName: 'Prasert Rakdee',
       voltageLevel: '115',
-      city: 'Phuket',
+      city: 'Phetchaburi',
       equipmentType: 'Joint',
       manufacturer: 'LS Cable & System',
       country: 'South Korea',
@@ -676,7 +692,7 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-S1-JT42',
       assetNumber: 'SAP-8094821',
       adsNumber: 'ADS-1005',
-      equipmentId: 'S1-115kV-2020-JOI-PEA-S1-JT42'
+      equipmentId: generateEquipmentId({ area: 'S1', voltage: '115', year: 2020, locationType: 'Transmission Line', equipmentType: 'Joint', city: 'Phetchaburi', cityIndex: 1, peaNumber: '550005' })
     },
     {
       number: 6,
@@ -684,7 +700,7 @@ export function getMockAssets(): CableAsset[] {
       operatorName: 'Anan Suksamran',
       voltageLevel: '115',
       city: 'Phitsanulok',
-      equipmentType: 'Ground Box',
+      equipmentType: 'GND Link box',
       manufacturer: 'Thai Maxwell',
       country: 'Thailand',
       locationType: 'Substation',
@@ -695,14 +711,14 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-N2-GB01',
       assetNumber: 'SAP-5012395',
       adsNumber: 'ADS-1006',
-      equipmentId: 'N2-115kV-2021-GRO-PEA-N2-GB01'
+      equipmentId: generateEquipmentId({ area: 'N2', voltage: '115', year: 2021, locationType: 'Substation', equipmentType: 'GND Link box', city: 'Phitsanulok', cityIndex: 1, peaNumber: '550006' })
     },
     {
       number: 7,
       timestamp: '2026-07-18 10:45:00',
       operatorName: 'Sawat PEA',
       voltageLevel: '115',
-      city: 'Hat Yai',
+      city: 'Nakhon Si Thammarat',
       equipmentType: 'Underground Cable',
       manufacturer: 'Bangkok Cable',
       country: 'Thailand',
@@ -714,16 +730,16 @@ export function getMockAssets(): CableAsset[] {
       peaNumber: 'PEA-S2-UG02',
       assetNumber: 'SAP-2098412',
       adsNumber: 'ADS-1007',
-      equipmentId: 'S2-115kV-2010-UND-PEA-S2-UG02'
+      equipmentId: generateEquipmentId({ area: 'S2', voltage: '115', year: 2010, locationType: 'Transmission Line', equipmentType: 'Underground Cable', city: 'Nakhon Si Thammarat', cityIndex: 1, peaNumber: '550007' })
     }
   ];
 
   const engInfo: Record<string, EngineeringInformation> = {
-    'N1-115kV-2018-UND-PEA-N1-UG01': {
+    [baseAssets[0].equipmentId]: {
       number: 1,
       timestamp: '2026-07-15 10:35:00',
       operatorName: 'Somsak PEA',
-      equipmentId: 'N1-115kV-2018-UND-PEA-N1-UG01',
+      equipmentId: baseAssets[0].equipmentId,
       loadCurrent: 180,
       sheathCurrent: 12,
       surfaceTemperature: 45,
@@ -734,56 +750,56 @@ export function getMockAssets(): CableAsset[] {
       tanDelta: 'No Action Required',
       tanDeltaAmplitude: 0.05
     },
-    'N1-115kV-2018-TER-PEA-N1-TR01': {
+    [baseAssets[1].equipmentId]: {
       number: 2,
       timestamp: '2026-07-16 11:30:00',
       operatorName: 'Somsak PEA',
-      equipmentId: 'N1-115kV-2018-TER-PEA-N1-TR01',
+      equipmentId: baseAssets[1].equipmentId,
       loadCurrent: 180,
-      sheathCurrent: 42, // Elevated sheath current
-      surfaceTemperature: 58, // Yellow: elevated temperature
-      externalDischarge: 80, // Yellow PD
+      sheathCurrent: 42,
+      surfaceTemperature: 58,
+      externalDischarge: 80,
       pdResult: 'Corona',
       onlinePdAmplitude: 65,
-      insulationResistance: 8.2, // Yellow
-      tanDelta: 'Further Study Advised', // Yellow
+      insulationResistance: 8.2,
+      tanDelta: 'Further Study Advised',
       tanDeltaAmplitude: 0.38
     },
-    'C2-33kV-2015-SUB-PEA-C2-SUB01': {
+    [baseAssets[2].equipmentId]: {
       number: 3,
       timestamp: '2026-07-16 14:25:00',
       operatorName: 'Wichai Sompong',
-      equipmentId: 'C2-33kV-2015-SUB-PEA-C2-SUB01',
+      equipmentId: baseAssets[2].equipmentId,
       loadCurrent: 310,
-      sheathCurrent: 135, // High sheath current ratio
-      surfaceTemperature: 76, // Orange surface temp
-      externalDischarge: 320, // Orange discharge
+      sheathCurrent: 135,
+      surfaceTemperature: 76,
+      externalDischarge: 320,
       pdResult: 'Surface',
       onlinePdAmplitude: 240,
-      insulationResistance: 0.85, // Orange insulation
+      insulationResistance: 0.85,
       tanDelta: 'Further Study Advised',
       tanDeltaAmplitude: 0.62
     },
-    'NE3-115kV-2012-SUR-PEA-NE3-SA01': {
+    [baseAssets[3].equipmentId]: {
       number: 4,
       timestamp: '2026-07-17 09:20:00',
       operatorName: 'Kitti PEA',
-      equipmentId: 'NE3-115kV-2012-SUR-PEA-NE3-SA01',
+      equipmentId: baseAssets[3].equipmentId,
       loadCurrent: 140,
       sheathCurrent: 5,
-      surfaceTemperature: 96, // Red: Severe temperature
-      externalDischarge: 650, // Red: Severe discharge
-      pdResult: 'Internal', // Red: Internal PD
+      surfaceTemperature: 96,
+      externalDischarge: 650,
+      pdResult: 'Internal',
       onlinePdAmplitude: 580,
-      insulationResistance: 0.05, // Red: Extremely low resistance
-      tanDelta: 'Action Required', // Red
+      insulationResistance: 0.05,
+      tanDelta: 'Action Required',
       tanDeltaAmplitude: 1.45
     },
-    'S1-115kV-2020-JOI-PEA-S1-JT42': {
+    [baseAssets[4].equipmentId]: {
       number: 5,
       timestamp: '2026-07-17 15:55:00',
       operatorName: 'Prasert Rakdee',
-      equipmentId: 'S1-115kV-2020-JOI-PEA-S1-JT42',
+      equipmentId: baseAssets[4].equipmentId,
       loadCurrent: 220,
       sheathCurrent: 15,
       surfaceTemperature: 38,
@@ -794,11 +810,11 @@ export function getMockAssets(): CableAsset[] {
       tanDelta: 'No Action Required',
       tanDeltaAmplitude: 0.02
     },
-    'N2-115kV-2021-GRO-PEA-N2-GB01': {
+    [baseAssets[5].equipmentId]: {
       number: 6,
       timestamp: '2026-07-18 08:40:00',
       operatorName: 'Anan Suksamran',
-      equipmentId: 'N2-115kV-2021-GRO-PEA-N2-GB01',
+      equipmentId: baseAssets[5].equipmentId,
       loadCurrent: 190,
       sheathCurrent: 8,
       surfaceTemperature: 41,
@@ -809,37 +825,37 @@ export function getMockAssets(): CableAsset[] {
       tanDelta: 'No Action Required',
       tanDeltaAmplitude: 0.04
     },
-    'S2-115kV-2010-UND-PEA-S2-UG02': {
+    [baseAssets[6].equipmentId]: {
       number: 7,
       timestamp: '2026-07-18 10:55:00',
       operatorName: 'Sawat PEA',
-      equipmentId: 'S2-115kV-2010-UND-PEA-S2-UG02',
+      equipmentId: baseAssets[6].equipmentId,
       loadCurrent: 250,
-      sheathCurrent: 110, // Extreme Sheath Current
-      surfaceTemperature: 82, // Orange/Red thermal hotspot
-      externalDischarge: 580, // Red PD
-      pdResult: 'Treeing', // Red: Treeing insulation degradation
+      sheathCurrent: 110,
+      surfaceTemperature: 82,
+      externalDischarge: 580,
+      pdResult: 'Treeing',
       onlinePdAmplitude: 510,
-      insulationResistance: 0.08, // Red IR
-      tanDelta: 'Action Required', // Red
+      insulationResistance: 0.08,
+      tanDelta: 'Action Required',
       tanDeltaAmplitude: 1.82
     }
   };
 
   const visualInfo: Record<string, VisualInformation> = {
-    'N1-115kV-2018-UND-PEA-N1-UG01': {
+    [baseAssets[0].equipmentId]: {
       number: 1,
       timestamp: '2026-07-15 10:30:00',
       operatorName: 'Somsak PEA',
-      equipmentId: 'N1-115kV-2018-UND-PEA-N1-UG01',
+      equipmentId: baseAssets[0].equipmentId,
       visualPictureUrl: 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400',
       thermalImageUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'
     },
-    'N1-115kV-2018-TER-PEA-N1-TR01': {
+    [baseAssets[1].equipmentId]: {
       number: 2,
       timestamp: '2026-07-16 11:24:00',
       operatorName: 'Somsak PEA',
-      equipmentId: 'N1-115kV-2018-TER-PEA-N1-TR01',
+      equipmentId: baseAssets[1].equipmentId,
       visualPictureUrl: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=400',
       thermalImageUrl: 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=400'
     }
