@@ -227,21 +227,49 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
   const handleFetchGuidance = async () => {
     setAiLoading(true);
     try {
+      const cleanAssets = criticalAssetsForAI.map(a => ({
+        equipmentId: a.equipmentId || '',
+        equipmentType: a.equipmentType || '',
+        voltageLevel: a.voltageLevel || '',
+        substationName: a.substationName || '',
+        city: a.city || '',
+        yearOfRegistration: a.yearOfRegistration || 2020,
+        healthScore: typeof a.healthScore === 'number' ? a.healthScore : 100,
+        healthStatus: a.healthStatus || 'Green',
+        surfaceTemperature: a.surfaceTemperature ?? 35,
+        externalDischarge: a.externalDischarge ?? 0,
+        insulationResistance: a.insulationResistance ?? 15,
+        sheathCurrent: a.sheathCurrent ?? 0,
+        loadCurrent: a.loadCurrent ?? 0,
+        tanDeltaValue: a.tanDeltaValue ?? 0,
+        oilDielectricKV: a.oilDielectricKV ?? 0,
+        mainDefectReason: a.mainDefectReason || '',
+        peaNumber: a.peaNumber || ''
+      }));
+
       const res = await fetch('/api/ai-guidance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          assets: criticalAssetsForAI,
+          assets: cleanAssets,
           area: `${userArea} (${PEA_AREA_NAMES[userArea]})`
         })
       });
 
       if (!res.ok) {
-        throw new Error('Failed to generate AI advisory guidance');
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          const text = await res.text();
+          if (text) errMsg = text;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
-      setAiGuidanceContent(data.guidance);
+      setAiGuidanceContent(data.guidance || '');
     } catch (err: any) {
       alert(`AI Advisory Error: ${err.message || 'Cannot retrieve guidance details'}`);
     } finally {

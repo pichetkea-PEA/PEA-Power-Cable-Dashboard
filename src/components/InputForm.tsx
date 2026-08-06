@@ -200,19 +200,16 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   // Unique Equipment ID generator helper
   const computedEquipmentId = useMemo(() => {
-    const finalPeaNumber = (peaNumber || '').trim();
-    const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-    const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-    return generateEquipmentId(
-      selectedArea,
-      voltage,
-      regYear,
-      eqType,
-      finalPeaNumber,
-      finalAssetNumber,
-      finalAdsNumber
-    );
-  }, [selectedArea, voltage, regYear, eqType, peaNumber, assetNumber, adsNumber]);
+    return generateEquipmentId({
+      area: selectedArea,
+      voltage: String(voltage),
+      year: regYear,
+      locationType,
+      equipmentType: eqType,
+      city,
+      peaNumber: (peaNumber || '').trim()
+    });
+  }, [selectedArea, voltage, regYear, locationType, eqType, city, peaNumber]);
 
   // Image preview handlers
   const handleImageChange = (e: ChangeEvent<HTMLInputElement>, type: 'visual' | 'thermal') => {

@@ -9,7 +9,31 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+
+// Helper to sanitize asset object for AI processing (strips heavy base64 image strings and history arrays)
+function sanitizeAssetForAI(a: any) {
+  if (!a || typeof a !== 'object') return {};
+  return {
+    equipmentId: a.equipmentId || '',
+    equipmentType: a.equipmentType || '',
+    voltageLevel: a.voltageLevel || '',
+    substationName: a.substationName || '',
+    city: a.city || '',
+    yearOfRegistration: a.yearOfRegistration || 2020,
+    healthScore: typeof a.healthScore === 'number' ? a.healthScore : 100,
+    healthStatus: a.healthStatus || 'Green',
+    surfaceTemperature: a.surfaceTemperature ?? 35,
+    externalDischarge: a.externalDischarge ?? 0,
+    insulationResistance: a.insulationResistance ?? 15,
+    sheathCurrent: a.sheathCurrent ?? 0,
+    loadCurrent: a.loadCurrent ?? 0,
+    tanDeltaValue: a.tanDeltaValue ?? 0,
+    oilDielectricKV: a.oilDielectricKV ?? 0,
+    mainDefectReason: a.mainDefectReason || '',
+    peaNumber: a.peaNumber || ''
+  };
+}
 
 // Lazy initializer for Gemini client to prevent crash on startup if key is missing
 let aiClient: GoogleGenAI | null = null;
@@ -332,34 +356,69 @@ app.post('/api/ai-report', async (req, res) => {
     return;
   }
 
+  const cleanAssets = assets.map(sanitizeAssetForAI);
+
   try {
     const ai = getGeminiClient();
+
+    // Prepare a compact summary payload to avoid exceeding token limits
+    const total = cleanAssets.length;
+    const red = cleanAssets.filter(a => a.healthStatus === 'Red').length;
+    const orange = cleanAssets.filter(a => a.healthStatus === 'Orange').length;
+    const yellow = cleanAssets.filter(a => a.healthStatus === 'Yellow').length;
+    const green = cleanAssets.filter(a => a.healthStatus === 'Green').length;
+
+    const currentYear = new Date().getFullYear();
+    const ages = cleanAssets.map(a => currentYear - (a.yearOfRegistration || currentYear));
+    const avgAge = ages.length > 0 ? (ages.reduce((sum, val) => sum + val, 0) / ages.length).toFixed(1) : '12.0';
+
+    const equipmentBreakdown: Record<string, number> = {};
+    cleanAssets.forEach(a => {
+      if (a.equipmentType) {
+        equipmentBreakdown[a.equipmentType] = (equipmentBreakdown[a.equipmentType] || 0) + 1;
+      }
+    });
+
+    const criticalItems = cleanAssets
+      .filter(a => a.healthStatus === 'Red' || a.healthStatus === 'Orange')
+      .sort((a, b) => a.healthScore - b.healthScore)
+      .slice(0, 15);
+
+    const summaryPayload = {
+      totalAssets: total,
+      healthCounts: { Red: red, Orange: orange, Yellow: yellow, Green: green },
+      averageAgeYears: avgAge,
+      equipmentTypes: equipmentBreakdown,
+      topCriticalAssets: criticalItems
+    };
+
     const prompt = `
 You are an expert Cable Asset Integrity Engineer and consultant representing the Provincial Electricity Authority (PEA) of Thailand.
 Your task is to write a highly professional, comprehensive, and clear Executive Summary Asset Report.
-Here is the raw cable asset data currently registered:
-${JSON.stringify(assets, null, 2)}
+Here is the summarized cable asset portfolio data:
+${JSON.stringify(summaryPayload, null, 2)}
 
 Please write the report in Markdown format with the following structure:
 1. **Title**: Executive Summary: PEA Cable Asset Integrity Report
-2. **Executive Summary**: High-level corporate summary of the asset portfolio, total count, overall health score distribution, and average age.
-3. **Equipment Breakdown Analysis**: Quantitative analysis of the condition of each equipment type (Cables, Terminations, Joints, Surge Arresters, etc.).
-4. **Geographical Distribution & Regional Hotspots**: Detail which PEA Areas and Cities have the highest concentration of high-risk (Red and Orange) equipment.
-5. **Key Engineering Highlights**: Analyze load vs. sheath currents, temperature abnormalities, insulation degradation, and tan delta anomalies.
-6. **Strategic Strategic Advisory & Recommendations**: Strategic, actionable directives for PEA senior executives for budget allocation and asset life expansion.
+2. **Executive Summary**: High-level corporate summary of the asset portfolio, total count (${total}), overall health score distribution, and average age (${avgAge} yrs).
+3. **Equipment Breakdown Analysis**: Quantitative analysis of the condition of each equipment type (${Object.keys(equipmentBreakdown).join(', ')}).
+4. **Geographical Distribution & Regional Hotspots**: Detail areas/cities with the highest concentration of high-risk (Red and Orange) equipment.
+5. **Key Engineering Highlights**: Analyze load vs. sheath currents, temperature abnormalities, insulation degradation, and tan delta anomalies based on the critical assets.
+6. **Strategic Advisory & Recommendations**: Strategic, actionable directives for PEA senior executives for budget allocation and asset life expansion.
 
-Use formal, polished engineering terminology suitable for C-level presentation. Do not include internal json formats, raw syntax, or placeholders. Make it comprehensive, detailed, and visually compelling.
+Use formal, polished engineering terminology suitable for C-level presentation. Make it comprehensive, detailed, and visually compelling.
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt
     });
 
     res.json({ report: response.text });
   } catch (error: any) {
+    console.warn('[AI Report Notice] Gemini API deferred, using dynamic fallback report generator:', error.message || error);
     // Graceful fallback to dynamic report
-    const fallbackReport = generateFallbackReport(assets);
+    const fallbackReport = generateFallbackReport(cleanAssets);
     res.json({ report: fallbackReport, isFallback: true });
   }
 });
@@ -372,19 +431,40 @@ app.post('/api/ai-plan', async (req, res) => {
     return;
   }
 
+  const cleanAssets = assets.map(sanitizeAssetForAI);
+
   try {
     const ai = getGeminiClient();
+
+    // Prepare compact maintenance plan payload
+    const total = cleanAssets.length;
+    const criticalItems = cleanAssets
+      .filter(a => a.healthStatus === 'Red' || a.healthStatus === 'Orange')
+      .sort((a, b) => a.healthScore - b.healthScore)
+      .slice(0, 15);
+
+    const yellowCount = cleanAssets.filter(a => a.healthStatus === 'Yellow').length;
+    const greenCount = cleanAssets.filter(a => a.healthStatus === 'Green').length;
+
+    const planPayload = {
+      totalAssetsRegistered: total,
+      urgentActionItemsCount: criticalItems.length,
+      routineTrackingCount: yellowCount,
+      scheduledInspectionCount: greenCount,
+      priorityAssetsForImmediateAction: criticalItems
+    };
+
     const prompt = `
 You are an expert PEA Power Grid Maintenance Planner.
 Create a highly detailed, professional Yearly and Monthly Cable Asset Maintenance Plan in Markdown format.
-The assets registered are:
-${JSON.stringify(assets, null, 2)}
+Here is the prioritized maintenance payload:
+${JSON.stringify(planPayload, null, 2)}
 
 Your maintenance plan MUST prioritize based on their Health Index (Red: Urgent, Orange: Routine Monitor, Yellow: Routine Tracking, Green: Scheduled Inspection).
 Please structure the plan with:
 1. **Title**: PEA System Yearly & Monthly Asset Maintenance Plan
-2. **Risk-Prioritized Inspection Hierarchy**: Highlight which Equipment IDs require immediate attention (Red) with specific engineering justifications (high temperature, online PD result, low insulation, etc.).
-3. **Monthly Maintenance Plan (Next 12 Months)**: Clear schedule month-by-month of what should be inspected, who is responsible, and specific test plans.
+2. **Risk-Prioritized Inspection Hierarchy**: Highlight which Equipment IDs require immediate attention (Red/Orange) with specific engineering justifications (high temperature, online PD result, low insulation, etc.).
+3. **Monthly Maintenance Schedule (Next 12 Months)**: Clear schedule month-by-month of what should be inspected, who is responsible, and specific test plans.
 4. **Yearly Capital Expenditure & Operational Recommendations**: Recommendations for asset replacement (CAPEX) or intensive maintenance (OPEX) for the upcoming fiscal year.
 5. **Standard Operating Procedures (SOP)**: Brief SOP for operator safety and testing steps (PD testing, Thermal scanning, Tan Delta verification).
 
@@ -392,14 +472,15 @@ Keep it professional, highly detailed, and formatted as a printable layout.
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt
     });
 
     res.json({ plan: response.text });
   } catch (error: any) {
+    console.warn('[AI Plan Notice] Gemini API deferred, using dynamic fallback plan generator:', error.message || error);
     // Graceful fallback to dynamic plan
-    const fallbackPlan = generateFallbackPlan(assets);
+    const fallbackPlan = generateFallbackPlan(cleanAssets);
     res.json({ plan: fallbackPlan, isFallback: true });
   }
 });
@@ -482,13 +563,15 @@ app.post('/api/ai-guidance', async (req, res) => {
     return;
   }
 
+  const cleanAssets = assets.slice(0, 10).map(sanitizeAssetForAI);
+
   try {
     const ai = getGeminiClient();
     const prompt = `
 You are an AI Grid Assistant for the Provincial Electricity Authority (PEA) of Thailand, specifically advising the regional team for Area: ${area || 'Selected Region'}.
 Provide an Expert AI Guidance Checklist and troubleshooting advisory for the top 10 most critical assets in this region.
 The assets are:
-${JSON.stringify(assets.slice(0, 10), null, 2)}
+${JSON.stringify(cleanAssets, null, 2)}
 
 Provide your guidance in Markdown format:
 1. **Summary of Area Health**: General health assessment of the region.
@@ -499,19 +582,20 @@ Keep the advice direct, clear, actionable, and formatted for area engineers to r
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt
     });
 
     res.json({ guidance: response.text });
   } catch (error: any) {
+    console.warn('[AI Guidance Notice] Gemini API deferred, using dynamic fallback guidance generator:', error.message || error);
     // Graceful fallback to regional dynamic guidance
-    const fallbackGuidance = generateFallbackGuidance(assets, area || 'Selected Sector');
+    const fallbackGuidance = generateFallbackGuidance(cleanAssets, area || 'Selected Sector');
     res.json({ guidance: fallbackGuidance, isFallback: true });
   }
 });
 
-// Single asset custom AI recommendation (Free fallback / Gemini 3.5 Flash)
+// Single asset custom AI recommendation (Free fallback / Gemini 2.5 Flash)
 app.post('/api/ai-recommendation', async (req, res) => {
   const { asset } = req.body;
   if (!asset || typeof asset !== 'object') {
@@ -519,17 +603,19 @@ app.post('/api/ai-recommendation', async (req, res) => {
     return;
   }
 
+  const cleanAsset = sanitizeAssetForAI(asset);
+
   try {
     const ai = getGeminiClient();
     const prompt = `
 You are an expert Power Grid Cable Asset Integrity Advisor for the Provincial Electricity Authority (PEA) of Thailand.
 Analyze this specific electrical cable system asset and generate a highly professional diagnostic advisory report:
-${JSON.stringify(asset, null, 2)}
+${JSON.stringify(cleanAsset, null, 2)}
 
 Structure your report in Markdown:
-1. **Title**: PEA Diagnostic Advisory Report - ${asset.equipmentId}
-2. **Current Health & Integrity Index**: Give an engineering assessment of their Health Score of ${asset.healthScore}/100 and status ${asset.healthStatus}.
-3. **Anomalous Telemetry Check**: Analyze the measured parameters (Temperature: ${asset.surfaceTemperature || 'N/A'}°C, Partial Discharge: ${asset.externalDischarge || 'N/A'} pC, Insulation Resistance: ${asset.insulationResistance || 'N/A'} GΩ, Sheath Current: ${asset.sheathCurrent || 'N/A'}A). State clearly if any values cross standard safe electrical limits.
+1. **Title**: PEA Diagnostic Advisory Report - ${cleanAsset.equipmentId}
+2. **Current Health & Integrity Index**: Give an engineering assessment of their Health Score of ${cleanAsset.healthScore}/100 and status ${cleanAsset.healthStatus}.
+3. **Anomalous Telemetry Check**: Analyze the measured parameters (Temperature: ${cleanAsset.surfaceTemperature || 'N/A'}°C, Partial Discharge: ${cleanAsset.externalDischarge || 'N/A'} pC, Insulation Resistance: ${cleanAsset.insulationResistance || 'N/A'} GΩ, Sheath Current: ${cleanAsset.sheathCurrent || 'N/A'}A). State clearly if any values cross standard safe electrical limits.
 4. **Actionable Troubleshooting Checklist**: Provide 4-5 direct step-by-step instructions for field operators visiting this exact site.
 5. **Future Preventive Maintenance**: Give localized suggestions to expand this specific asset's lifecycle.
 
@@ -537,13 +623,14 @@ Make it clean, authoritative, engineering-focused, and suitable for technical op
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt
     });
 
     res.json({ recommendation: response.text });
   } catch (error: any) {
-    const fallbackRec = generateFallbackRecommendation(asset);
+    console.warn('[AI Recommendation Notice] Gemini API deferred, using dynamic fallback recommendation generator:', error.message || error);
+    const fallbackRec = generateFallbackRecommendation(cleanAsset);
     res.json({ recommendation: fallbackRec, isFallback: true });
   }
 });

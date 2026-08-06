@@ -992,16 +992,8 @@ export default function AssetRecord({
         const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
         const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
 
-        const assetArea = selectedAsset.equipmentId.split('-')[0];
-        const updatedEquipmentId = generateEquipmentId(
-          assetArea,
-          editVoltage,
-          editRegYear,
-          editEqType,
-          finalPeaNumber,
-          finalAssetNumber,
-          finalAdsNumber
-        );
+        // Preserve original equipmentId when editing an existing asset
+        const updatedEquipmentId = selectedAsset.equipmentId;
 
         // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Asset Value, Column AG (32): Equipment ID
         const generalRow = [
@@ -1189,16 +1181,8 @@ export default function AssetRecord({
       const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
       const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
 
-      const assetArea = selectedAsset.equipmentId.split('-')[0];
-      const updatedEquipmentId = generateEquipmentId(
-        assetArea,
-        editVoltage,
-        editRegYear,
-        editEqType,
-        finalPeaNumber,
-        finalAssetNumber,
-        finalAdsNumber
-      );
+      // Preserve original equipmentId when logging a new maintenance record for an existing asset
+      const updatedEquipmentId = selectedAsset.equipmentId;
 
       // 2. Write as Appended Rows
       const generalRow = [

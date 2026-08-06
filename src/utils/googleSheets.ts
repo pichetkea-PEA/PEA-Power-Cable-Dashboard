@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId } from './peaData';
+import { calculateHealth, generateEquipmentId, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -566,8 +566,9 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     throw new Error(`Failed to fetch spreadsheet data (Status: ${res.status}). ${advice}`);
   }
 
-  // Trigger background conversion of existing sheet timestamps to Bangkok UTC+7
+  // Trigger background conversion of existing sheet timestamps to Bangkok UTC+7 & equipment ID format migration
   convertExistingSheetTimestampsToUTC7(accessToken, spreadsheetId).catch(() => {});
+  migrateExistingSheetEquipmentIds(accessToken, spreadsheetId).catch(() => {});
 
   const data = await res.json();
   const valueRanges = data.valueRanges || [];
@@ -857,8 +858,29 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     } as CableAsset;
   });
 
+  // Deduplicate and group results by equipmentId so multiple audit/maintenance rows for 1 asset count as 1 asset
+  const assetMap = new Map<string, CableAsset>();
+  results.forEach(asset => {
+    const key = asset.equipmentId ? asset.equipmentId.trim() : `ROW_${asset.number}`;
+    if (!assetMap.has(key)) {
+      assetMap.set(key, { ...asset, history: [asset] });
+    } else {
+      const existing = assetMap.get(key)!;
+      const history = [...(existing.history || []), asset];
+      const existingTime = existing.timestamp ? new Date(existing.timestamp.replace(/-/g, '/')).getTime() : 0;
+      const currTime = asset.timestamp ? new Date(asset.timestamp.replace(/-/g, '/')).getTime() : 0;
+      if (currTime >= existingTime) {
+        assetMap.set(key, { ...asset, history });
+      } else {
+        assetMap.set(key, { ...existing, history });
+      }
+    }
+  });
+
+  let deduplicatedResults = Array.from(assetMap.values());
+
   if (allowedArea) {
-    return results.filter(asset => {
+    deduplicatedResults = deduplicatedResults.filter(asset => {
       let assetArea = '';
       if (asset.equipmentId) {
         const parts = asset.equipmentId.split('-');
@@ -874,7 +896,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     });
   }
 
-  return results;
+  return deduplicatedResults;
 }
 
 // Helper function for fetching with exponential backoff on HTTP 429 / Rate Limit
@@ -1370,5 +1392,194 @@ export async function convertExistingSheetTimestampsToUTC7(accessToken: string, 
   }
 
   return convertedCount;
+}
+
+/**
+ * Scans an existing Google Sheet file and migrates all equipment IDs
+ * across all 3 sheets ('General Information', 'Engineering Information', 'Visual & Thermal Images')
+ * to conform to the new PEA Equipment ID format:
+ * "S2-115TLTM-2020-TRT#00001-550009"
+ */
+export async function migrateExistingSheetEquipmentIds(accessToken: string, spreadsheetId: string): Promise<number> {
+  if (!accessToken || !spreadsheetId) return 0;
+  let updatedCount = 0;
+
+  try {
+    let areaCode = 'S2';
+    try {
+      const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        const title = meta.properties?.title || '';
+        const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) ||
+                      title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+        if (match) {
+          areaCode = match[1].trim().toUpperCase();
+        }
+      }
+    } catch (err) {
+      console.warn("Title fetch failed for migration area code:", err);
+    }
+
+    const ranges = [
+      "'General Information'!A1:AZ",
+      "'Engineering Information'!A1:AZ",
+      "'Visual & Thermal Images'!A1:AZ"
+    ];
+
+    const res = await fetchWithRetry(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+
+    if (!res.ok) return 0;
+    const data = await res.json();
+    const valueRanges = data.valueRanges || [];
+
+    const genRows = valueRanges[0]?.values || [];
+    const engRows = valueRanges[1]?.values || [];
+    const visRows = valueRanges[2]?.values || [];
+
+    if (genRows.length <= 1) return 0;
+
+    const genHeaders = genRows[0] || [];
+    const engHeaders = engRows[0] || [];
+    const visHeaders = visRows[0] || [];
+
+    const cleanStr = (val: any) => (val === undefined || val === null) ? '' : String(val).trim();
+
+    const findColIdx = (headers: string[], names: string[], fallbackIdx: number) => {
+      const idx = headers.findIndex((h: string) => {
+        const norm = normalizeHeader(h);
+        return names.includes(norm);
+      });
+      return idx !== -1 ? idx : fallbackIdx;
+    };
+
+    const genEqIdIdx = findColIdx(genHeaders, ['equipmentid'], 32);
+    const engEqIdIdx = findColIdx(engHeaders, ['equipmentid'], 3);
+    const visEqIdIdx = findColIdx(visHeaders, ['equipmentid'], 3);
+
+    const voltageIdx = findColIdx(genHeaders, ['voltagelevelkv', 'voltagelevel', 'voltage'], 3);
+    const cityIdx = findColIdx(genHeaders, ['city', 'province'], 4);
+    const eqTypeIdx = findColIdx(genHeaders, ['equipmenttype'], 5);
+    const locTypeIdx = findColIdx(genHeaders, ['locationtype'], 8);
+    const yearIdx = findColIdx(genHeaders, ['yearofregistration', 'registrationyear'], 12);
+    const peaIdx = findColIdx(genHeaders, ['peanumberid', 'peanumber'], 13);
+
+    const eqIdMap: Record<string, string> = {};
+    const cityCounters: Record<string, number> = {};
+
+    genRows.slice(1).forEach((row: any[]) => {
+      let oldEqId = genEqIdIdx < row.length ? cleanStr(row[genEqIdIdx]) : '';
+      if (!oldEqId && row.length > 31) oldEqId = cleanStr(row[31]);
+      if (!oldEqId && row.length > 15) oldEqId = cleanStr(row[15]);
+
+      const voltage = voltageIdx < row.length ? cleanStr(row[voltageIdx]) : '115';
+      const city = cityIdx < row.length ? cleanStr(row[cityIdx]) : 'Trat';
+      const eqType = eqTypeIdx < row.length ? cleanStr(row[eqTypeIdx]) : 'Underground Cable';
+      const locType = locTypeIdx < row.length ? cleanStr(row[locTypeIdx]) : 'Transmission line';
+      const year = yearIdx < row.length ? cleanStr(row[yearIdx]) : '2020';
+      const peaNumber = peaIdx < row.length ? cleanStr(row[peaIdx]) : '';
+
+      const cityAbbr = getCityAbbreviation(city);
+
+      let key = oldEqId;
+      if (!key) {
+        key = `${city}_${eqType}_${peaNumber || row[0]}`;
+      }
+
+      if (!eqIdMap[key]) {
+        cityCounters[cityAbbr] = (cityCounters[cityAbbr] || 0) + 1;
+        const cityIndex = cityCounters[cityAbbr];
+        const newEqId = generateEquipmentId(
+          areaCode,
+          voltage,
+          year,
+          locType,
+          eqType,
+          city,
+          cityIndex,
+          peaNumber
+        );
+        eqIdMap[key] = newEqId;
+      }
+    });
+
+    const getColLetter = (colIdx: number) => {
+      if (colIdx < 26) return String.fromCharCode(65 + colIdx);
+      const first = String.fromCharCode(65 + Math.floor(colIdx / 26) - 1);
+      const second = String.fromCharCode(65 + (colIdx % 26));
+      return `${first}${second}`;
+    };
+
+    const updates: { range: string; values: any[][] }[] = [];
+
+    // 1. General Information updates
+    const genLetter = getColLetter(genEqIdIdx);
+    genRows.slice(1).forEach((row: any[], rIdx: number) => {
+      const rowNum = rIdx + 2;
+      let oldEqId = genEqIdIdx < row.length ? cleanStr(row[genEqIdIdx]) : '';
+      if (!oldEqId && row.length > 31) oldEqId = cleanStr(row[31]);
+      if (!oldEqId && row.length > 15) oldEqId = cleanStr(row[15]);
+
+      const city = cityIdx < row.length ? cleanStr(row[cityIdx]) : 'Trat';
+      const eqType = eqTypeIdx < row.length ? cleanStr(row[eqTypeIdx]) : 'Underground Cable';
+      const peaNumber = peaIdx < row.length ? cleanStr(row[peaIdx]) : '';
+
+      let key = oldEqId;
+      if (!key) key = `${city}_${eqType}_${peaNumber || row[0]}`;
+
+      const targetEqId = eqIdMap[key] || eqIdMap[oldEqId];
+      if (targetEqId && oldEqId !== targetEqId) {
+        updates.push({
+          range: `'General Information'!${genLetter}${rowNum}`,
+          values: [[targetEqId]]
+        });
+        updatedCount++;
+      }
+    });
+
+    // 2. Engineering Information updates
+    const engLetter = getColLetter(engEqIdIdx);
+    engRows.slice(1).forEach((row: any[], rIdx: number) => {
+      const rowNum = rIdx + 2;
+      const oldEqId = engEqIdIdx < row.length ? cleanStr(row[engEqIdIdx]) : (row.length > 3 ? cleanStr(row[3]) : '');
+      const targetEqId = eqIdMap[oldEqId];
+      if (targetEqId && oldEqId !== targetEqId) {
+        updates.push({
+          range: `'Engineering Information'!${engLetter}${rowNum}`,
+          values: [[targetEqId]]
+        });
+        updatedCount++;
+      }
+    });
+
+    // 3. Visual & Thermal Images updates
+    const visLetter = getColLetter(visEqIdIdx);
+    visRows.slice(1).forEach((row: any[], rIdx: number) => {
+      const rowNum = rIdx + 2;
+      const oldEqId = visEqIdIdx < row.length ? cleanStr(row[visEqIdIdx]) : (row.length > 3 ? cleanStr(row[3]) : '');
+      const targetEqId = eqIdMap[oldEqId];
+      if (targetEqId && oldEqId !== targetEqId) {
+        updates.push({
+          range: `'Visual & Thermal Images'!${visLetter}${rowNum}`,
+          values: [[targetEqId]]
+        });
+        updatedCount++;
+      }
+    });
+
+    if (updates.length > 0) {
+      await batchUpdateSheetRows(accessToken, spreadsheetId, updates);
+      console.log(`Migrated ${updatedCount} equipment ID cell(s) in spreadsheet ${spreadsheetId} to new PEA format.`);
+    }
+  } catch (err) {
+    console.warn("Error migrating spreadsheet equipment IDs:", err);
+  }
+
+  return updatedCount;
 }
 

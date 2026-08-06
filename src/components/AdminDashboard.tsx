@@ -266,22 +266,51 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh }: Adm
     setAiLoading(true);
     setAiType(type);
     try {
+      // Strip out heavy base64 image data and history arrays before posting
+      const cleanAssets = filteredAssets.map(a => ({
+        equipmentId: a.equipmentId || '',
+        equipmentType: a.equipmentType || '',
+        voltageLevel: a.voltageLevel || '',
+        substationName: a.substationName || '',
+        city: a.city || '',
+        yearOfRegistration: a.yearOfRegistration || 2020,
+        healthScore: typeof a.healthScore === 'number' ? a.healthScore : 100,
+        healthStatus: a.healthStatus || 'Green',
+        surfaceTemperature: a.surfaceTemperature ?? 35,
+        externalDischarge: a.externalDischarge ?? 0,
+        insulationResistance: a.insulationResistance ?? 15,
+        sheathCurrent: a.sheathCurrent ?? 0,
+        loadCurrent: a.loadCurrent ?? 0,
+        tanDeltaValue: a.tanDeltaValue ?? 0,
+        oilDielectricKV: a.oilDielectricKV ?? 0,
+        mainDefectReason: a.mainDefectReason || '',
+        peaNumber: a.peaNumber || ''
+      }));
+
       const endpoint = type === 'report' ? '/api/ai-report' : '/api/ai-plan';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assets: filteredAssets })
+        body: JSON.stringify({ assets: cleanAssets })
       });
 
       if (!res.ok) {
-        throw new Error(`Failed to generate: ${res.statusText}`);
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          const text = await res.text();
+          if (text) errMsg = text;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
       if (type === 'report') {
-        setAiReportContent(data.report);
+        setAiReportContent(data.report || '');
       } else {
-        setAiPlanContent(data.plan);
+        setAiPlanContent(data.plan || '');
       }
     } catch (err: any) {
       alert(`AI Engine Error: ${err.message || 'Error occurred while contacting server.'}`);

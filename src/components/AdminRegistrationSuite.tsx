@@ -1729,16 +1729,7 @@ export default function AdminRegistrationSuite({
           const finalAssetNumber = editAds.trim();
           const finalAdsNumber = editAa.trim();
           
-          const assetArea = editingAsset.equipmentId.split('-')[0];
-          const updatedEquipmentId = generateEquipmentId(
-            assetArea,
-            editingAsset.voltageLevel,
-            editingAsset.yearOfRegistration,
-            editingAsset.equipmentType,
-            finalPeaNumber,
-            finalAssetNumber,
-            finalAdsNumber
-          );
+          const updatedEquipmentId = editingAsset.equipmentId;
 
           // Build generalRow with 32 columns
           const generalRow = [
@@ -1822,16 +1813,7 @@ export default function AdminRegistrationSuite({
             const finalPeaNumber = editPea.trim();
             const finalAssetNumber = editAds.trim();
             const finalAdsNumber = editAa.trim();
-            const assetArea = editingAsset.equipmentId.split('-')[0];
-            const updatedEquipmentId = generateEquipmentId(
-              assetArea,
-              editingAsset.voltageLevel,
-              editingAsset.yearOfRegistration,
-              editingAsset.equipmentType,
-              finalPeaNumber,
-              finalAssetNumber,
-              finalAdsNumber
-            );
+            const updatedEquipmentId = editingAsset.equipmentId;
             
             parsed[idx] = {
               ...parsed[idx],

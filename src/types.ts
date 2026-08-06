@@ -143,6 +143,7 @@ export interface CableAsset extends GeneralInformation {
   latestUpdatedBy?: string;
   latestUpdatedAt?: string;
   spreadsheetId?: string;
+  history?: CableAsset[];
 }
 
 export interface DashboardFilters {

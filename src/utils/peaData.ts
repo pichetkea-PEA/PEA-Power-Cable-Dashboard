@@ -294,58 +294,290 @@ export function calculateHealth(eng: Partial<EngineeringInformation>): { score: 
   return { score, status };
 }
 
+export const CITY_ABBREVIATIONS: Record<string, string> = {
+  'krabi': 'KBI',
+  'bangkok': 'BKK',
+  'kanchanaburi': 'KRI',
+  'kalasin': 'KSN',
+  'kamphaeng phet': 'KPT',
+  'kamphaengphet': 'KPT',
+  'khon kaen': 'KKN',
+  'khonkaen': 'KKN',
+  'chanthaburi': 'CTI',
+  'chachoengsao': 'CCO',
+  'chon buri': 'CBI',
+  'chonburi': 'CBI',
+  'chai nat': 'CNT',
+  'chainat': 'CNT',
+  'chaiyaphum': 'CPM',
+  'chumphon': 'CPN',
+  'chiang rai': 'CRI',
+  'chiangrai': 'CRI',
+  'chiang mai': 'CMI',
+  'chiangmai': 'CMI',
+  'trang': 'TRG',
+  'trat': 'TRT',
+  'tak': 'TAK',
+  'nakhon nayok': 'NYK',
+  'nakhonnayok': 'NYK',
+  'nakhon pathom': 'NPT',
+  'nakhonpathom': 'NPT',
+  'nakhon phanom': 'NPM',
+  'nakhonphanom': 'NPM',
+  'nakhon ratchasima': 'NMA',
+  'nakhonratchasima': 'NMA',
+  'korat': 'NMA',
+  'nakhon si thammarat': 'NRT',
+  'nakhonsithammarat': 'NRT',
+  'nakhon sawan': 'NSN',
+  'nakhonsawan': 'NSN',
+  'nonthaburi': 'NBI',
+  'narathiwat': 'NWT',
+  'nan': 'NAN',
+  'bueng kan': 'BKN',
+  'buengkan': 'BKN',
+  'buri ram': 'BRM',
+  'buriram': 'BRM',
+  'pathum thani': 'PTE',
+  'pathumthani': 'PTE',
+  'prachuap khiri khan': 'PKN',
+  'prachuapkhirikhan': 'PKN',
+  'prachin buri': 'PRI',
+  'prachinburi': 'PRI',
+  'pattani': 'PTN',
+  'phayao': 'PYO',
+  'phra nakhon si ayutthaya': 'AYA',
+  'ayutthaya': 'AYA',
+  'phang nga': 'PNA',
+  'phangnga': 'PNA',
+  'phatthalung': 'PLG',
+  'phichit': 'PCK',
+  'phitsanulok': 'PLK',
+  'phetchaburi': 'PBI',
+  'phetchabun': 'PNB',
+  'phrae': 'PRE',
+  'phuket': 'PKT',
+  'maha sarakham': 'MKM',
+  'mahasarakham': 'MKM',
+  'mukdahan': 'MDH',
+  'mae hong son': 'MSN',
+  'maehongson': 'MSN',
+  'yasothon': 'YST',
+  'yala': 'YLA',
+  'roi et': 'RET',
+  'roiet': 'RET',
+  'ranong': 'RNG',
+  'rayong': 'RYG',
+  'ratchaburi': 'RBR',
+  'lop buri': 'LRI',
+  'lopburi': 'LRI',
+  'lampang': 'LPG',
+  'lamphun': 'LPN',
+  'loei': 'LEI',
+  'sisaket': 'SSK',
+  'sakon nakhon': 'SNK',
+  'sakonnakhon': 'SNK',
+  'songkhla': 'SKA',
+  'satun': 'STN',
+  'samut prakan': 'SPK',
+  'samutprakan': 'SPK',
+  'samut songkhram': 'SKM',
+  'samutsongkhram': 'SKM',
+  'samut sakhon': 'SKN',
+  'samutsakhon': 'SKN',
+  'sa kaeo': 'SKW',
+  'sakaeo': 'SKW',
+  'saraburi': 'SRI',
+  'sing buri': 'SBR',
+  'singburi': 'SBR',
+  'sukhothai': 'STI',
+  'suphan buri': 'SPB',
+  'suphanburi': 'SPB',
+  'surat thani': 'SNI',
+  'suratthani': 'SNI',
+  'surin': 'SRN',
+  'nong khai': 'NKI',
+  'nongkhai': 'NKI',
+  'nong bua lamphu': 'NBP',
+  'nongbualamphu': 'NBP',
+  'ang thong': 'ATG',
+  'angthong': 'ATG',
+  'amnat charoen': 'ACR',
+  'amnatcharoen': 'ACR',
+  'udon thani': 'UDN',
+  'udonthani': 'UDN',
+  'uttaradit': 'UTT',
+  'uthai thani': 'UTI',
+  'uthaithani': 'UTI',
+  'ubon ratchathani': 'UBN',
+  'ubonratchathani': 'UBN',
+  'hat yai': 'SKA',
+  'hatyai': 'SKA'
+};
+
+export function getCityAbbreviation(city: string): string {
+  const norm = (city || '').toLowerCase().trim();
+  if (!norm) return 'BKK';
+
+  if (CITY_ABBREVIATIONS[norm]) {
+    return CITY_ABBREVIATIONS[norm];
+  }
+
+  for (const [key, abbr] of Object.entries(CITY_ABBREVIATIONS)) {
+    if (norm.includes(key) || key.includes(norm)) {
+      return abbr;
+    }
+  }
+
+  const clean = norm.replace(/[^a-z]/g, '');
+  if (clean.length >= 3) {
+    return clean.substring(0, 3).toUpperCase();
+  }
+  return 'BKK';
+}
+
+export function getLocationTypeAbbreviation(locType: string): string {
+  const norm = (locType || '').toLowerCase().trim();
+  if (norm.includes('transmission') || norm === 'tl') return 'TL';
+  if (norm.includes('substation') || norm === 'su') return 'SU';
+  if (norm.includes('distribution') || norm === 'dt') return 'DT';
+  return 'TL';
+}
+
+export function getEquipmentTypeAbbreviation2(eqType: string): string {
+  const norm = (eqType || '').toLowerCase().trim();
+  if (norm.includes('underground cable') || norm === 'ug') return 'UG';
+  if (norm.includes('oil insulated termination') || norm.includes('dry type termination') || norm.includes('heat shrink termination') || norm.includes('plug in termination') || norm.includes('termination') || norm === 'tm') return 'TM';
+  if (norm.includes('joint') || norm === 'jo') return 'JO';
+  if (norm.includes('gnd link box') || norm.includes('ground box') || norm === 'gb') return 'GB';
+  if (norm.includes('lightning arrester') || norm.includes('surge arrester') || norm === 'la') return 'LA';
+  if (norm.includes('air break switch') || norm === 'ab') return 'AB';
+  if (norm.includes('ring main unit') || norm.includes('unit substation') || norm === 'ru') return 'RU';
+  if (norm.includes('distribution circuit') || norm === 'dc') return 'DC';
+  if (norm.includes('hv ats') || norm === 'hs') return 'HS';
+  if (norm.includes('lv ats') || norm === 'ls') return 'LS';
+  return 'UG';
+}
+
+export function getVoltageCode(voltage: string): string {
+  if (!voltage) return '115';
+  const digits = String(voltage).replace(/\D/g, '');
+  return digits || '115';
+}
+
+export function getPea6Digits(peaNumber: string): string {
+  const clean = (peaNumber || '').trim();
+  if (!clean || clean.toUpperCase() === 'N/A' || clean.toUpperCase() === 'NONE') {
+    return 'XXXXXX';
+  }
+
+  // If there's a dash, extract digits from the part after the dash (e.g., "TM66-550001" -> "550001")
+  const partAfterDash = clean.includes('-') ? clean.substring(clean.lastIndexOf('-') + 1) : clean;
+  let digits = partAfterDash.replace(/\D/g, '');
+
+  if (!digits) {
+    // Fallback: search digits across entire string if part after dash had none
+    digits = clean.replace(/\D/g, '');
+  }
+
+  if (digits.length >= 6) {
+    return digits.substring(0, 6);
+  }
+  if (digits.length > 0) {
+    return digits.padStart(6, '0');
+  }
+
+  const alpha = clean.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (alpha.length >= 6) return alpha.substring(0, 6);
+  if (alpha.length > 0) return alpha.padStart(6, 'X');
+  return 'XXXXXX';
+}
+
 export const EQUIPMENT_TYPE_ABBREVIATIONS: Record<string, string> = {
-  'Underground Cable': 'UGC',
-  'Oil Insulated Termination': 'OTE',
-  'Joint': 'JOT',
-  'GND Link box': 'GNB',
-  'Lightning Arrester': 'LNA',
-  'Heat Shrink Termination': 'HST',
-  'Plug in Termination': 'PLT',
-  'Air Break Switch': 'ABS',
-  'Dry Type Termination': 'DTE',
-  'Ring Main Unit': 'RMU',
-  'Unit Substation': 'UNS',
-  'HV ATS': 'HAT',
-  'LV ATS': 'LAT',
-  'Distribution Circuit': 'DSC'
+  'Underground Cable': 'UG',
+  'Oil Insulated Termination': 'TM',
+  'Dry Type Termination': 'TM',
+  'Heat Shrink Termination': 'TM',
+  'Plug in Termination': 'TM',
+  'Joint': 'JO',
+  'GND Link box': 'GB',
+  'Lightning Arrester': 'LA',
+  'Air Break Switch': 'AB',
+  'Ring Main Unit': 'RU',
+  'Unit Substation': 'RU',
+  'Distribution Circuit': 'DC',
+  'HV ATS': 'HS',
+  'LV ATS': 'LS'
 };
 
 export function getEquipmentTypeAbbreviation(type: string): string {
-  if (EQUIPMENT_TYPE_ABBREVIATIONS[type]) {
-    return EQUIPMENT_TYPE_ABBREVIATIONS[type];
-  }
-  if (type === 'Submarine Cable') return 'UGC';
-  if (type === 'Termination') return 'OTE';
-  if (type === 'Surge Arrester') return 'LNA';
-  if (type === 'Ground Box') return 'GNB';
-  if (type === 'SVL') return 'GNB';
-  return (type || '').substring(0, 3).toUpperCase() || 'EQP';
+  return getEquipmentTypeAbbreviation2(type);
 }
 
-// Generate Equipment ID helper
+// Generate Equipment ID helper: {AREA}-{VOLTAGE}{LOC_TYPE}{EQ_TYPE}-{YEAR}-{CITY_ABBR}#{RUNNING_NO}-{PEA_6DIGITS}
 export function generateEquipmentId(
-  area: string,
-  voltage: string,
-  year: number,
-  type: string,
-  peaNumber: string,
-  assetNumber?: string,
-  adsNumber?: string
+  p1: any,
+  p2?: any,
+  p3?: any,
+  p4?: any,
+  p5?: any,
+  p6?: any,
+  p7?: any,
+  p8?: any
 ): string {
-  const typeCode = getEquipmentTypeAbbreviation(type);
-  const cleanPea = (peaNumber || '').trim().replace(/\s+/g, '');
-  const cleanAsset = (assetNumber || '').trim().replace(/\s+/g, '');
-  const cleanAds = (adsNumber || '').trim().replace(/\s+/g, '');
-  
-  let suffix = cleanPea;
-  if (!suffix) {
-    if (cleanAsset) suffix = cleanAsset;
-    else if (cleanAds) suffix = cleanAds;
-    else suffix = 'TEMP-' + Math.floor(1000 + Math.random() * 9000);
+  let area = 'S2';
+  let voltage = '115';
+  let year: any = 2020;
+  let locationType = 'Transmission line';
+  let equipmentType = 'Underground Cable';
+  let city = 'Trat';
+  let cityIndex = 1;
+  let peaNumber = '';
+
+  if (typeof p1 === 'object' && p1 !== null) {
+    area = p1.area || area;
+    voltage = p1.voltage || voltage;
+    year = p1.year || year;
+    locationType = p1.locationType || locationType;
+    equipmentType = p1.equipmentType || equipmentType;
+    city = p1.city || city;
+    cityIndex = p1.cityIndex ?? p1.index ?? cityIndex;
+    peaNumber = p1.peaNumber || peaNumber;
+  } else if (typeof p4 === 'string' && (p4.toLowerCase().includes('transmission') || p4.toLowerCase().includes('substation') || p4.toLowerCase().includes('distribution') || p4 === 'TL' || p4 === 'SU' || p4 === 'DT')) {
+    area = p1 || area;
+    voltage = p2 || voltage;
+    year = p3 || year;
+    locationType = p4 || locationType;
+    equipmentType = p5 || equipmentType;
+    city = p6 || city;
+    cityIndex = p7 ?? cityIndex;
+    peaNumber = p8 || peaNumber;
+  } else {
+    area = p1 || area;
+    voltage = p2 || voltage;
+    year = p3 || year;
+    equipmentType = p4 || equipmentType;
+    if (typeof p6 === 'number' || (typeof p6 === 'string' && !isNaN(Number(p6)))) {
+      city = p5 || city;
+      cityIndex = Number(p6) || 1;
+      peaNumber = p7 || '';
+    } else {
+      peaNumber = p5 || '';
+      if (p6 && typeof p6 === 'string' && isNaN(Number(p6))) city = p6;
+      if (p7 && (typeof p7 === 'number' || !isNaN(Number(p7)))) cityIndex = Number(p7);
+    }
   }
-  
-  return `${area}-${voltage}kV-${year}-${typeCode}-${suffix}`;
+
+  const cleanArea = String(area || 'S2').trim().split('-')[0].toUpperCase() || 'S2';
+  const vCode = getVoltageCode(String(voltage));
+  const locCode = getLocationTypeAbbreviation(String(locationType));
+  const eqCode = getEquipmentTypeAbbreviation2(String(equipmentType));
+  const yearStr = String(year || '2020').replace(/\D/g, '') || '2020';
+  const cityAbbr = getCityAbbreviation(String(city));
+  const indexStr = String(cityIndex || 1).padStart(5, '0');
+  const peaCode = getPea6Digits(String(peaNumber));
+
+  return `${cleanArea}-${vCode}${locCode}${eqCode}-${yearStr}-${cityAbbr}#${indexStr}-${peaCode}`;
 }
 
 // Generate beautiful high-fidelity mock data for initial load/fallback
