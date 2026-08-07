@@ -78,6 +78,384 @@ export function getAreaFromCity(city: string): string | null {
   return null;
 }
 
+export const THAI_CITY_TRANSLATIONS: Record<string, string> = {
+  'ปทุมธานี': 'Pathum Thani',
+  'นนทบุรี': 'Nonthaburi',
+  'อยุธยา': 'Phra Nakhon Si Ayutthaya',
+  'พระนครศรีอยุธยา': 'Phra Nakhon Si Ayutthaya',
+  'กรุงเทพ': 'Bangkok',
+  'กรุงเทพมหานคร': 'Bangkok',
+  'สมุทรปราการ': 'Samut Prakan',
+  'สมุทรสาคร': 'Samut Sakhon',
+  'สมุทรสงคราม': 'Samut Songkhram',
+  'ชลบุรี': 'Chon Buri',
+  'ระยอง': 'Rayong',
+  'ฉะเชิงเทรา': 'Chachoengsao',
+  'จันทบุรี': 'Chanthaburi',
+  'ตราด': 'Trat',
+  'นครนายก': 'Nakhon Nayok',
+  'ปราจีนบุรี': 'Prachin Buri',
+  'สระแก้ว': 'Sa Kaeo',
+  'สระบุรี': 'Saraburi',
+  'อ่างทอง': 'Ang Thong',
+  'เชียงใหม่': 'Chiang Mai',
+  'เชียงราย': 'Chiang Rai',
+  'ลำปาง': 'Lampang',
+  'ลำพูน': 'Lamphun',
+  'แม่ฮ่องสอน': 'Mae Hong Son',
+  'พะเยา': 'Phayao',
+  'พิษณุโลก': 'Phitsanulok',
+  'กำแพงเพชร': 'Kamphaeng Phet',
+  'น่าน': 'Nan',
+  'พิจิตร': 'Phichit',
+  'แพร่': 'Phrae',
+  'สุโขทัย': 'Sukhothai',
+  'ตาก': 'Tak',
+  'อุตรดิตถ์': 'Uttaradit',
+  'ลพบุรี': 'Lop Buri',
+  'ชัยนาท': 'Chai Nat',
+  'นครสวรรค์': 'Nakhon Sawan',
+  'เพชรบูรณ์': 'Phetchabun',
+  'สิงห์บุรี': 'Sing Buri',
+  'อุทัยธานี': 'Uthai Thani',
+  'อุดรธานี': 'Udon Thani',
+  'บึงกาฬ': 'Bueng Kan',
+  'ขอนแก่น': 'Khon Kaen',
+  'เลย': 'Loei',
+  'นครพนม': 'Nakhon Phanom',
+  'หนองบัวลำภู': 'Nong Bua Lamphu',
+  'หนองคาย': 'Nong Khai',
+  'สกลนคร': 'Sakon Nakhon',
+  'อุบลราชธานี': 'Ubon Ratchathani',
+  'อำนาจเจริญ': 'Amnat Charoen',
+  'กาฬสินธุ์': 'Kalasin',
+  'มหาสารคาม': 'Maha Sarakham',
+  'มุกดาหาร': 'Mukdahan',
+  'ร้อยเอ็ด': 'Roi Et',
+  'ศรีสะเกษ': 'Sisaket',
+  'ยโสธร': 'Yasothon',
+  'นครราชสีมา': 'Nakhon Ratchasima',
+  'โคราช': 'Nakhon Ratchasima',
+  'ปักธงชัย': 'Nakhon Ratchasima',
+  'บุรีรัมย์': 'Buri Ram',
+  'ชัยภูมิ': 'Chaiyaphum',
+  'สุรินทร์': 'Surin',
+  'นครปฐม': 'Nakhon Pathom',
+  'กาญจนบุรี': 'Kanchanaburi',
+  'สุพรรณบุรี': 'Suphan Buri',
+  'เพชรบุรี': 'Phetchaburi',
+  'ชุมพร': 'Chumphon',
+  'ประจวบคีรีขันธ์': 'Prachuap Khiri Khan',
+  'ระนอง': 'Ranong',
+  'ราชบุรี': 'Ratchaburi',
+  'นครศรีธรรมราช': 'Nakhon Si Thammarat',
+  'กระบี่': 'Krabi',
+  'พังงา': 'Phang Nga',
+  'ภูเก็ต': 'Phuket',
+  'สุราษฎร์ธานี': 'Surat Thani',
+  'ตรัง': 'Trang',
+  'ยะลา': 'Yala',
+  'นราธิวาส': 'Narathiwat',
+  'ปัตตานี': 'Pattani',
+  'พัทลุง': 'Phatthalung',
+  'สตูล': 'Satun',
+  'สงขลา': 'Songkhla'
+};
+
+export function normalizeVoltageLevel(raw: string, secondaryText?: string): string {
+  const primary = (raw || '').trim().toLowerCase();
+  const secondary = (secondaryText || '').trim().toLowerCase();
+  const combined = `${primary} ${secondary}`.toLowerCase();
+
+  if (!combined.trim()) return '22';
+
+  // 1. Explicit check for low voltage / 0.4
+  if (
+    combined.includes('แรงต่ำ') ||
+    combined.includes('0.4') ||
+    combined.includes('400v') ||
+    combined.includes('400 v') ||
+    combined.includes('low voltage') ||
+    combined.includes('lv')
+  ) {
+    return '0.4';
+  }
+
+  // 2. Explicit check for 115 kV
+  if (combined.includes('115') || combined.includes('115000')) return '115';
+
+  // 3. Explicit check for 33 kV
+  if (combined.includes('33') || combined.includes('33000')) return '33';
+
+  // 4. Explicit check for 22 kV
+  if (combined.includes('22') || combined.includes('22000')) return '22';
+
+  // 5. Numeric fallback
+  const numericOnly = primary.replace(/[^0-9.]/g, '');
+  if (numericOnly) {
+    const val = parseFloat(numericOnly);
+    if (!isNaN(val)) {
+      if (val >= 100) return '115';
+      if (val >= 30) return '33';
+      if (val >= 10) return '22';
+      if (val > 0) return '0.4';
+    }
+  }
+
+  return '22';
+}
+
+export function normalizeEquipmentType(
+  raw: string,
+  manufacturer?: string,
+  model?: string,
+  voltage?: string
+): EquipmentType {
+  if (!raw) raw = '';
+  const clean = raw.trim().toLowerCase();
+  const mfrClean = (manufacturer || '').trim().toLowerCase();
+  const modelClean = (model || '').trim().toLowerCase();
+  const voltClean = normalizeVoltageLevel(voltage || '', raw);
+
+  // Check 1: Thai or English Distribution Circuit ("ระบบจำหน่าย")
+  if (
+    clean.includes('ระบบจำหน่าย') ||
+    clean.includes('distribution circuit') ||
+    clean.includes('dist circuit') ||
+    clean.includes('distribution line')
+  ) {
+    return 'Distribution Circuit';
+  }
+
+  // Check 2: Intelligent Termination Detection
+  const isTerm =
+    clean.includes('terminat') ||
+    clean.includes('pothead') ||
+    clean.includes('tm') ||
+    clean.includes('end cap') ||
+    clean.includes('head termination') ||
+    clean.includes('cable termination') ||
+    clean.includes('outdoor termination') ||
+    clean.includes('indoor termination') ||
+    clean.includes('gis termination') ||
+    clean.includes('oil insulated') ||
+    clean.includes('heat shrink') ||
+    clean.includes('plug in') ||
+    clean.includes('plugin') ||
+    clean.includes('dry type') ||
+    mfrClean.includes('pfisterer') ||
+    mfrClean.includes('euromold') ||
+    mfrClean.includes('centuray') ||
+    mfrClean.includes('arkasil');
+
+  if (isTerm) {
+    const combined = `${clean} ${mfrClean} ${modelClean}`.toLowerCase();
+
+    // A. Check Plug in Termination
+    if (
+      combined.includes('plug in') ||
+      combined.includes('plugin') ||
+      combined.includes('plug-in') ||
+      combined.includes('separable') ||
+      combined.includes('elbow') ||
+      combined.includes('t-body') ||
+      combined.includes('deadbreak') ||
+      combined.includes('inner cone') ||
+      combined.includes('outer cone') ||
+      combined.includes('connex') ||
+      combined.includes('rsti') ||
+      mfrClean.includes('euromold') ||
+      mfrClean.includes('elastimold') ||
+      (mfrClean.includes('pfisterer') && !combined.includes('oil'))
+    ) {
+      return 'Plug in Termination';
+    }
+
+    // B. Check Oil Insulated Termination
+    if (
+      combined.includes('oil insulated') ||
+      combined.includes('oil termination') ||
+      combined.includes('oil filled') ||
+      combined.includes('oil-filled') ||
+      combined.includes('fluid filled') ||
+      combined.includes('fluid-filled') ||
+      combined.includes('oil-immersed') ||
+      combined.includes('oil')
+    ) {
+      return 'Oil Insulated Termination';
+    }
+
+    // C. Check Heat Shrink Termination (Only for <115kV)
+    if (
+      voltClean !== '115' && (
+        combined.includes('heat shrink') ||
+        combined.includes('heat-shrink') ||
+        combined.includes('thermofit') ||
+        combined.includes('heatshrink') ||
+        combined.includes('cold shrink') ||
+        combined.includes('cold-shrink') ||
+        combined.includes('hst') ||
+        (mfrClean.includes('raychem') && !combined.includes('connex') && !combined.includes('rsti') && !combined.includes('dry')) ||
+        (mfrClean.includes('3m') && !combined.includes('elbow'))
+      )
+    ) {
+      return 'Heat Shrink Termination';
+    }
+
+    // D. Check Dry Type Termination
+    if (
+      combined.includes('dry type') ||
+      combined.includes('dry-type') ||
+      combined.includes('dry outdoor') ||
+      combined.includes('dry indoor') ||
+      combined.includes('composite') ||
+      combined.includes('porcelain') ||
+      combined.includes('dry gis') ||
+      combined.includes('flexible dry') ||
+      combined.includes('dry') ||
+      mfrClean.includes('centuray') ||
+      mfrClean.includes('arkasil') ||
+      mfrClean.includes('g&w')
+    ) {
+      return 'Dry Type Termination';
+    }
+
+    // E. Default termination choice based on voltage
+    if (voltClean === '115') {
+      return 'Dry Type Termination';
+    } else {
+      return 'Heat Shrink Termination';
+    }
+  }
+
+  // Check 3: Other equipment types
+  if (clean.includes('unit substation') || clean.includes('compact unit') || clean.includes('substation') || clean.includes('cus')) {
+    return 'Unit Substation';
+  }
+  if (clean.includes('ring main') || clean.includes('rmu')) {
+    return 'Ring Main Unit';
+  }
+  if (clean.includes('gnd') || clean.includes('link box') || clean.includes('ground link')) {
+    return 'GND Link box';
+  }
+  if (clean.includes('lightning') || clean.includes('arrester') || clean.includes('la')) {
+    return 'Lightning Arrester';
+  }
+  if (clean.includes('air break') || clean.includes('abs')) {
+    return 'Air Break Switch';
+  }
+  if (clean.includes('joint')) {
+    return 'Joint';
+  }
+  if (clean.includes('hv ats')) {
+    return 'HV ATS';
+  }
+  if (clean.includes('lv ats')) {
+    return 'LV ATS';
+  }
+  if (clean.includes('underground cable') || clean.includes('ug cable') || clean.includes('cable')) {
+    return 'Underground Cable';
+  }
+
+  for (const eq of ALL_EQUIPMENT_TYPES) {
+    const eqLower = eq.toLowerCase();
+    if (clean.includes(eqLower) || eqLower.includes(clean)) {
+      return eq;
+    }
+  }
+
+  return 'Underground Cable';
+}
+
+export function normalizeLocationType(rawLoc: string, volt: string): string {
+  const normVolt = normalizeVoltageLevel(volt);
+  const clean = (rawLoc || '').trim();
+
+  const isBlankOrNA = !clean || clean === 'N/A' || clean === '[Blank]' || clean === '-' || clean.toLowerCase() === 'null' || clean.toLowerCase() === 'none';
+
+  if (isBlankOrNA) {
+    if (normVolt === '115') {
+      return 'Transmission Line';
+    } else {
+      return 'Distribution Line';
+    }
+  }
+
+  const lower = clean.toLowerCase();
+  if (lower.includes('transmission')) return 'Transmission Line';
+  if (lower.includes('distribution')) return 'Distribution Line';
+  if (lower.includes('substation')) return 'Substation';
+  if (lower.includes('overhead')) return 'Overhead Line';
+  if (lower.includes('underground')) return 'Underground Cable';
+
+  return clean;
+}
+
+export function normalizeCity(rawCity: string, currentArea?: string): { city: string; area: string } {
+  let cleanCity = (rawCity || '').trim();
+  let defaultArea = (currentArea || 'N1').trim();
+
+  if (!cleanCity || cleanCity === 'N/A' || cleanCity === '[Blank]') {
+    return { city: defaultArea, area: defaultArea };
+  }
+
+  for (const [thai, eng] of Object.entries(THAI_CITY_TRANSLATIONS)) {
+    if (cleanCity.includes(thai)) {
+      cleanCity = eng;
+      break;
+    }
+  }
+
+  const inferredArea = getAreaFromCity(cleanCity);
+  const finalArea = inferredArea || defaultArea;
+
+  return { city: cleanCity, area: finalArea };
+}
+
+export function normalizeInstallationDate(rawDate: string): string {
+  if (!rawDate) {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  const clean = rawDate.trim();
+
+  if (/^\d{8}$/.test(clean)) {
+    if (clean.startsWith('19') || clean.startsWith('20')) {
+      const year = clean.substring(0, 4);
+      const month = clean.substring(4, 6);
+      const day = clean.substring(6, 8);
+      return `${day}/${month}/${year}`;
+    } else {
+      const day = clean.substring(0, 2);
+      const month = clean.substring(2, 4);
+      const year = clean.substring(4, 8);
+      return `${day}/${month}/${year}`;
+    }
+  }
+
+  if (clean.includes('-')) {
+    const parts = clean.split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return parts.join('/');
+    }
+  }
+
+  if (clean.includes('.')) {
+    const parts = clean.split('.');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return parts.join('/');
+    }
+  }
+
+  return clean;
+}
+
 export const ALL_EQUIPMENT_TYPES: EquipmentType[] = [
   'Underground Cable',
   'Oil Insulated Termination',
@@ -209,7 +587,7 @@ export const COUNTRIES_OF_ORIGIN = Array.from(new Set([
   'Unknown'
 ]));
 
-export const VOLTAGE_LEVELS = ['115', '33', '22'];
+export const VOLTAGE_LEVELS = ['115', '33', '22', '0.4'];
 
 export const TAN_DELTA_OPTIONS: TanDeltaResult[] = [
   'No Action Required',

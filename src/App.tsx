@@ -500,16 +500,18 @@ export default function App() {
     }
   }, []);
 
-  // Ref to prevent duplicate parallel sheet fetching
-  const isFetchingRef = React.useRef<boolean>(false);
+  // Counter to ensure newer sheet fetch sessions supersede older ones
+  const fetchSessionCounterRef = React.useRef<number>(0);
 
   // Load spreadsheet data once spreadsheetId is verified
   const handleLoadSpreadsheet = async (token: string, sheetIds: string[], isAdminUser = false) => {
-    if (!token || isFetchingRef.current) return;
+    if (!token) return;
     const uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
     if (uniqueIds.length === 0) return;
 
-    isFetchingRef.current = true;
+    // Increment fetch session counter so a newer call with all 12 sheets supersedes any older call
+    const currentSession = ++fetchSessionCounterRef.current;
+
     setIsSyncingCentralDb(true);
     setIsLoading(true);
     setErrorMessage('');
@@ -529,6 +531,10 @@ export default function App() {
     try {
       let allAssets: CableAsset[] = [];
       for (let i = 0; i < uniqueIds.length; i++) {
+        if (currentSession !== fetchSessionCounterRef.current) {
+          console.log(`Sheet fetch session ${currentSession} superseded by newer session ${fetchSessionCounterRef.current}`);
+          return;
+        }
         const id = uniqueIds[i];
         setSyncProgress({
           current: i + 1,
@@ -540,8 +546,12 @@ export default function App() {
           // Add 150ms delay between consecutive spreadsheet batch gets to avoid HTTP 429 rate limit
           await new Promise(resolve => setTimeout(resolve, 150));
         }
+
+        if (currentSession !== fetchSessionCounterRef.current) return;
+
         try {
           const data = await fetchSheetsData(token, id);
+          if (currentSession !== fetchSessionCounterRef.current) return;
           allAssets = [...allAssets, ...data];
           // Progressive update so dashboard updates live
           if (allAssets.length > 0) {
@@ -559,6 +569,9 @@ export default function App() {
           console.warn(`Failed to fetch sheet ${id}:`, err);
         }
       }
+
+      if (currentSession !== fetchSessionCounterRef.current) return;
+
       if (allAssets.length > 0) {
         setAssets(allAssets);
         saveCentralAssetsCache(allAssets).catch(() => {});
@@ -621,9 +634,10 @@ export default function App() {
         setFirestoreQuotaExceeded(true);
       }
     } finally {
-      setIsLoading(false);
-      setIsSyncingCentralDb(false);
-      isFetchingRef.current = false;
+      if (currentSession === fetchSessionCounterRef.current) {
+        setIsLoading(false);
+        setIsSyncingCentralDb(false);
+      }
     }
   };
 
@@ -877,6 +891,37 @@ export default function App() {
       setAssets(getMockAssets());
     });
   };
+
+  // Auto sign-out system when user has no activity for 30 minutes
+  useEffect(() => {
+    if (!user || needsAuth) return;
+
+    const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const resetInactivityTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        alert("Inactivity Timeout: You have been automatically signed out due to 30 minutes of inactivity.");
+        handleLogout();
+      }, INACTIVITY_TIMEOUT_MS);
+    };
+
+    const userActivityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    userActivityEvents.forEach(evt => {
+      window.addEventListener(evt, resetInactivityTimer, { passive: true });
+    });
+
+    // Start timer upon sign in
+    resetInactivityTimer();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      userActivityEvents.forEach(evt => {
+        window.removeEventListener(evt, resetInactivityTimer);
+      });
+    };
+  }, [user, needsAuth]);
 
   // Re-fetch spreadsheet assets across ALL registered roles
   const handleManualRefresh = () => {

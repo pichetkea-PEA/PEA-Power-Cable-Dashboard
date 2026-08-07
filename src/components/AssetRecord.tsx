@@ -1624,10 +1624,9 @@ export default function AssetRecord({
                           className={getInputClassName(true)}
                         >
                           <option value="115">115 kV</option>
-                          {(currentAssetArea === 'S2' || currentAssetArea === 'S3') && (
-                            <option value="33">33 kV</option>
-                          )}
+                          <option value="33">33 kV</option>
                           <option value="22">22 kV</option>
+                          <option value="0.4">0.4 kV</option>
                         </select>
                       </div>
 

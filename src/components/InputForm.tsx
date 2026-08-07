@@ -510,6 +510,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     <option value="115">115 kV (Transmission)</option>
                     <option value="33">33 kV (Distribution)</option>
                     <option value="22">22 kV (Distribution)</option>
+                    <option value="0.4">0.4 kV (Low Voltage)</option>
                   </select>
                 </div>
 

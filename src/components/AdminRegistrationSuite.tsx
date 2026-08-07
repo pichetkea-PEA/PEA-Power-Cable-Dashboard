@@ -10,7 +10,12 @@ import {
   getEquipmentTypeAbbreviation,
   getManufacturersForEquipmentType,
   COUNTRIES_OF_ORIGIN,
-  generateEquipmentId
+  generateEquipmentId,
+  normalizeVoltageLevel,
+  normalizeEquipmentType,
+  normalizeLocationType,
+  normalizeCity,
+  normalizeInstallationDate
 } from '../utils/peaData';
 import { 
   ShieldAlert, 
@@ -24,6 +29,7 @@ import {
   Edit, 
   Save, 
   X, 
+  XCircle,
   Sparkles, 
   Lock,
   RefreshCw,
@@ -118,6 +124,8 @@ export default function AdminRegistrationSuite({
   const [csvFileObj, setCsvFileObj] = useState<File | null>(null);
   const [csvParsedRows, setCsvParsedRows] = useState<string[][]>([]);
   const [selectedCsvOption, setSelectedCsvOption] = useState<1 | 2 | null>(null);
+  const [isLoadingOption1Review, setIsLoadingOption1Review] = useState<boolean>(false);
+  const [isLoadingOption2Review, setIsLoadingOption2Review] = useState<boolean>(false);
   const [option1ReviewList, setOption1ReviewList] = useState<any[]>([]);
   const [option2ReviewList, setOption2ReviewList] = useState<any[]>([]);
   const [showCsvModal, setShowCsvModal] = useState<boolean>(false);
@@ -571,7 +579,45 @@ export default function AdminRegistrationSuite({
         delimiter = '\t';
       }
 
-      const rows = lines.map(line => parseCsvLine(line, delimiter));
+      const allParsedRows = lines.map(line => parseCsvLine(line, delimiter));
+      if (allParsedRows.length <= 1) {
+        setValidationErrors(["CSV file is empty or only contains headers."]);
+        return;
+      }
+
+      const headerRow = allParsedRows[0];
+      const rawDataRows = allParsedRows.slice(1);
+
+      // Asset Amount Checking & Strict Trailing Empty Row Truncation:
+      // Stop counting assets immediately after finding an empty row of data in the first column or any column.
+      const validDataRows: string[][] = [];
+      for (let i = 0; i < rawDataRows.length; i++) {
+        const row = rawDataRows[i];
+
+        // 1. Check if all cells in the row are empty or whitespace
+        const isAllCellsEmpty = row.every(cell => !cell || cell.trim() === '');
+
+        // 2. Check if the first column (Voltage Level / Col A) is empty or blank
+        const isFirstColEmpty = !row[0] || row[0].trim() === '';
+
+        // 3. Check if all essential identifier columns (Col A Voltage, Col B Area, Col H EqType) are blank
+        const isCoreDataEmpty = !row[0]?.trim() && !row[1]?.trim() && !row[7]?.trim();
+
+        if (isAllCellsEmpty || isFirstColEmpty || isCoreDataEmpty) {
+          console.log(`[CSV Asset Count Check] Empty row encountered at row #${i + 2}. Stopping row count. Successfully detected ${validDataRows.length} valid asset records.`);
+          break;
+        }
+
+        validDataRows.push(row);
+      }
+
+      if (validDataRows.length === 0) {
+        setValidationErrors(["No valid asset data rows found below header (first data row is empty or missing required values)."]);
+        setCsvParsedRows([]);
+        return;
+      }
+
+      const rows = [headerRow, ...validDataRows];
       setCsvParsedRows(rows);
       setValidationErrors([]);
       setSelectedCsvOption(null);
@@ -746,10 +792,20 @@ export default function AdminRegistrationSuite({
     return `${patternPrefix}${seqStr}`;
   };
 
+  const handleCancelCsvUpload = () => {
+    setSelectedCsvOption(null);
+    setOption1ReviewList([]);
+    setOption2ReviewList([]);
+    setCsvFileObj(null);
+    setCsvParsedRows([]);
+    setOption2StatusMsg('');
+  };
+
   const handleSelectOption1 = async () => {
     if (csvParsedRows.length <= 1) return;
     setSelectedCsvOption(1);
-    setIsProcessingOption1(true);
+    setIsLoadingOption1Review(true);
+    setOption1ReviewList([]);
 
     try {
       const allCollectedAssets: { pea: string; area: string }[] = [];
@@ -786,6 +842,9 @@ export default function AdminRegistrationSuite({
 
       for (let i = 0; i < dataRows.length; i++) {
         const cols = dataRows[i];
+        if (cols.every(cell => !cell || cell.trim() === '') || (!cols[0] || cols[0].trim() === '')) {
+          break; // Stop counting if an empty row or empty first column is found
+        }
         // Col A (0): Voltage Level
         // Col B (1): PEA Area
         // Col C (2): City
@@ -816,14 +875,14 @@ export default function AdminRegistrationSuite({
         // Col AB (27): Class
         // Col AC (28): Contract Number
 
-        const volt = (cols[0] || '115').trim();
-        const area = (cols[1] || 'N1').trim();
-        const city = (cols[2] || area).trim();
+        const rawVolt = (cols[0] || '115').trim();
+        const rawArea = (cols[1] || 'N1').trim();
+        const rawCity = (cols[2] || rawArea).trim();
         const gps = (cols[3] || '').trim();
-        const locationType = (cols[4] || '').trim();
+        const rawLoc = (cols[4] || '').trim();
         const adsNumber = (cols[5] || '').trim(); // Col F
         const assetNumber = (cols[6] || '').trim(); // Col G
-        const eqType = (cols[7] || 'Underground Cable').trim();
+        const rawEqType = (cols[7] || 'Underground Cable').trim();
         const size = (cols[8] || '').trim(); // Col I: Leave blank if empty
         const operateId = (cols[10] || '').trim();
         const serialNumber = (cols[11] || '').trim();
@@ -836,7 +895,7 @@ export default function AdminRegistrationSuite({
         const substationId = (cols[18] || '').trim();
         const feeder = (cols[19] || '').trim();
         const landmark = (cols[20] || '').trim();
-        const installationDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
+        const rawInstDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
         const wbs = (cols[22] || '').trim();
         const workOrder = (cols[23] || '').trim();
         const businessType = (cols[24] || '').trim();
@@ -845,6 +904,14 @@ export default function AdminRegistrationSuite({
         const cls = (cols[27] || '').trim();
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
+
+        // Smart Normalizations
+        const volt = normalizeVoltageLevel(rawVolt, rawEqType);
+        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, volt);
+        const locationType = normalizeLocationType(rawLoc, volt);
+        const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
+        const area = derivedArea || rawArea || 'N1';
+        const installationDate = normalizeInstallationDate(rawInstDate);
 
         // Automatically assign latest PEA number searching sheet data using Col B, A, H, I and Installation Date (Col R)
         const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration);
@@ -893,6 +960,7 @@ export default function AdminRegistrationSuite({
     } catch (err: any) {
       alert(`Option 1 parse error: ${err.message}`);
     } finally {
+      setIsLoadingOption1Review(false);
       setIsProcessingOption1(false);
     }
   };
@@ -921,10 +989,18 @@ export default function AdminRegistrationSuite({
       originalRows.forEach((row, idx) => {
         const rec = reviewList[idx];
         const newRow = [...row];
-        while (newRow.length <= peaColIdx) {
+        while (newRow.length <= 29) {
           newRow.push('');
         }
-        newRow[peaColIdx] = rec ? rec.peaNumber : '';
+        if (rec) {
+          newRow[0] = rec.voltageLevel || newRow[0];
+          newRow[1] = rec.area || newRow[1];
+          newRow[2] = rec.city || newRow[2];
+          newRow[4] = rec.locationType || newRow[4];
+          newRow[7] = rec.equipmentType || newRow[7];
+          newRow[9] = rec.peaNumber || newRow[9];
+          newRow[21] = rec.installationDate || newRow[21];
+        }
         csvLines.push(newRow.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(','));
       });
     } else {
@@ -969,15 +1045,223 @@ export default function AdminRegistrationSuite({
     URL.revokeObjectURL(url);
   };
 
-  const commitOption1Assets = async (downloadCsv: boolean = false) => {
+  const generateAndDownloadSapTxt = (
+    reviewList: any[],
+    originalRows?: string[][]
+  ) => {
+    const headers = [
+      'RM63E-EQUNR', 'RM63E-DATSL', 'RM63E-EQTYP', 'ITOB-SHTXT', 'ITOB-EQART',
+      'ITOB-BRGEW', 'ITOB-GEWEI', 'ITOB-GROES', 'ITOB-INVNR', 'ITOB-INBDT',
+      'ITOB-ANSWT', 'ITOB-WAERS', 'ITOB-ANSDT', 'ITOB-HERST', 'ITOB-HERLD',
+      'ITOB-TYPBZ', 'ITOB-BAUJJ', 'ITOB-BAUMM', 'ITOB-MAPAR', 'ITOB-SERGE',
+      'ITOB-BUKRS', 'ITOB-GSBER', 'ITOB-ANLNR', 'ITOB-ANLUN', 'ITOB-KOSTL',
+      'ITOB-IWERK', 'ITOB-INGRP', 'ITOBATTR-GEWRK', 'ITOBATTR-WERGW', 'ITOB-RBNR',
+      'IEQINSTALL-TPLNR', 'IEQINSTALL-DATUM', 'IEQINSTALL-UZEIT', 'ITOB-SUBMT',
+      'WCHECK_V_H-GWLDT_I', 'WCHECK_V_H-GWLEN_I', 'ITOB-ELIEF', 'J_STMAINT-ANWS',
+      'ITOB_PROID', 'RMCLF-KLART', 'RMCLF-CLASS(1)', 'Z_CONTRACT'
+    ];
+
+    const lines: string[] = [headers.join('\t')];
+
+    const formatDateDDMMYYYY = (dateStr: string) => {
+      if (!dateStr) return '';
+      const trimmed = String(dateStr).trim();
+      if (!trimmed) return '';
+
+      if (/^\d{8}$/.test(trimmed)) {
+        return trimmed;
+      }
+
+      if (trimmed.includes('/') || trimmed.includes('.') || (trimmed.includes('-') && !trimmed.startsWith('20'))) {
+        const parts = trimmed.split(/[/.-]/);
+        if (parts.length === 3) {
+          let [d, m, y] = parts;
+          if (y.length === 2) y = '20' + y;
+          return `${d.padStart(2, '0')}${m.padStart(2, '0')}${y}`;
+        }
+      }
+
+      if (trimmed.includes('-')) {
+        const parts = trimmed.split('T')[0].split('-');
+        if (parts.length === 3 && parts[0].length === 4) {
+          const [y, m, d] = parts;
+          return `${d.padStart(2, '0')}${m.padStart(2, '0')}${y}`;
+        }
+      }
+
+      const dObj = new Date(trimmed);
+      if (!isNaN(dObj.getTime())) {
+        const dd = String(dObj.getDate()).padStart(2, '0');
+        const mm = String(dObj.getMonth() + 1).padStart(2, '0');
+        const yyyy = String(dObj.getFullYear());
+        return `${dd}${mm}${yyyy}`;
+      }
+      return trimmed.replace(/\D/g, '');
+    };
+
+    const formatMonth = (mStr: string) => {
+      if (!mStr) return '';
+      const num = parseInt(mStr, 10);
+      if (!isNaN(num) && num >= 1 && num <= 12) {
+        return String(num).padStart(2, '0');
+      }
+      return mStr;
+    };
+
+    const mapCountryToCode = (c: string) => {
+      if (!c) return '';
+      const upper = c.trim().toUpperCase();
+      if (upper === 'CHINA' || upper === 'CN') return 'CN';
+      if (upper === 'UNITED KINGDOM' || upper === 'UK' || upper === 'GREAT BRITAIN' || upper === 'GB') return 'UK';
+      if (upper === 'THAILAND' || upper === 'TH') return 'TH';
+      if (upper === 'JAPAN' || upper === 'JP') return 'JP';
+      if (upper === 'GERMANY' || upper === 'DE') return 'DE';
+      if (upper === 'USA' || upper === 'UNITED STATES' || upper === 'US') return 'US';
+      if (upper.length === 2) return upper;
+      return upper.slice(0, 2);
+    };
+
+    reviewList.forEach((rec, idx) => {
+      const origRow = originalRows && originalRows[idx] ? originalRows[idx] : [];
+
+      // Auto-generate RM63E-EQUNR starting from 1000000001
+      const equnr = String(1000000001 + idx);
+      const datsl = '';
+      const eqtyp = 'M';
+
+      const shtxt = rec.equipmentType || origRow[7] || rec.landmark || origRow[20] || 'Cable Asset';
+
+      // Object category based on voltage
+      const voltStr = String(rec.voltageLevel || origRow[0] || '').trim();
+      let eqart = 'Z4110';
+      if (voltStr.includes('22') || voltStr.includes('33')) {
+        eqart = 'Z4200';
+      } else if (voltStr.includes('0.4') || voltStr === '240' || voltStr === '400') {
+        eqart = 'Z4300';
+      }
+
+      const brgew = '';
+      const gewei = '';
+      const groes = rec.size || origRow[8] || '';
+      const invnr = rec.peaNumber || origRow[9] || ''; // UPDATED PEA NUMBER
+      const inbdt = formatDateDDMMYYYY(rec.installationDate || origRow[21] || '');
+
+      const rawVal = (rec.assetValue || origRow[29] || '').toString().replace(/,/g, '').trim();
+      const numVal = parseFloat(rawVal);
+      const answt = !isNaN(numVal) && numVal > 0 ? numVal.toFixed(2) : (rawVal || '');
+      const waers = answt ? 'THB' : '';
+      const ansdt = '';
+      const herst = rec.manufacturer || origRow[12] || '';
+      const herld = mapCountryToCode(rec.country || origRow[14] || '');
+      const typbz = rec.model || origRow[13] || '';
+      const baujj = rec.yearOfRegistration || origRow[16] || '';
+      const baumm = formatMonth(rec.productionMonth || origRow[15] || '');
+      const mapar = '';
+      const serge = rec.serialNumber || origRow[11] || '';
+      const bukrs = '9000';
+
+      let gsber = rec.businessType || origRow[24] || '';
+      if (!gsber && (rec.costCenter || origRow[25])) {
+        const cc = rec.costCenter || origRow[25];
+        if (cc && cc.length >= 5) {
+          gsber = cc[0] + cc.slice(2, 5);
+        }
+      }
+      if (!gsber) gsber = 'F071';
+
+      const anlnr = rec.assetNumber || origRow[6] || '';
+      const anlun = '';
+      const kostl = rec.costCenter || origRow[25] || '';
+      const iwerk = '';
+      const ingrp = '';
+      const gewrk = '';
+      const wergw = '';
+      const rbnr = '';
+      const tplnr = rec.gistag || origRow[26] || '';
+      const datum = '';
+      const uzeit = '';
+      const submt = '';
+      const gwldt = '';
+      const gwlen = '';
+      const elief = '';
+      const anws = '';
+      const proid = rec.wbs || origRow[22] || '';
+      const klart = '002';
+      const class1 = rec.class || origRow[27] || '';
+      const zcontract = rec.contractNumber || origRow[28] || '';
+
+      const row = [
+        equnr, datsl, eqtyp, shtxt, eqart, brgew, gewei, groes,
+        invnr, inbdt, answt, waers, ansdt, herst, herld, typbz,
+        baujj, baumm, mapar, serge, bukrs, gsber, anlnr, anlun,
+        kostl, iwerk, ingrp, gewrk, wergw, rbnr, tplnr, datum,
+        uzeit, submt, gwldt, gwlen, elief, anws, proid, klart,
+        class1, zcontract
+      ];
+
+      lines.push(row.join('\t'));
+    });
+
+    const encodeAnsiTis620 = (str: string): Uint8Array => {
+      const bytes = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) {
+        const code = str.charCodeAt(i);
+        if (code <= 0x7f) {
+          bytes[i] = code;
+        } else if (code >= 0x0e01 && code <= 0x0e5b) {
+          bytes[i] = code - 0x0e00 + 0xa0;
+        } else if (code === 0x20ac) {
+          bytes[i] = 0x80;
+        } else if (code === 0x2013) {
+          bytes[i] = 0x96;
+        } else if (code === 0x2014) {
+          bytes[i] = 0x97;
+        } else if (code === 0x2018 || code === 0x2019) {
+          bytes[i] = 0x27;
+        } else if (code === 0x201c || code === 0x201d) {
+          bytes[i] = 0x22;
+        } else {
+          bytes[i] = code <= 0xff ? code : 0x3f;
+        }
+      }
+      return bytes;
+    };
+
+    const txtContent = lines.join('\r\n');
+    const encodedBytes = encodeAnsiTis620(txtContent);
+    const blob = new Blob([encodedBytes], { type: 'text/plain;charset=windows-874;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    const dateStr = new Date().toISOString().substring(0, 10);
+    link.setAttribute('download', `SAP_Upload_Data_${dateStr}.txt`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const commitOption1Assets = async (downloadMode: 'both' | 'csv' | 'txt' | 'none' | boolean = 'none') => {
     if (option1ReviewList.length === 0) return;
 
-    if (downloadCsv) {
+    const shouldDownloadCsv = downloadMode === true || downloadMode === 'both' || downloadMode === 'csv';
+    const shouldDownloadTxt = downloadMode === 'both' || downloadMode === 'txt';
+
+    if (shouldDownloadCsv) {
       generateAndDownloadCsv(
         option1ReviewList,
         csvParsedRows[0],
         csvParsedRows.slice(1)
       );
+    }
+
+    if (shouldDownloadTxt) {
+      setTimeout(() => {
+        generateAndDownloadSapTxt(
+          option1ReviewList,
+          csvParsedRows.slice(1)
+        );
+      }, shouldDownloadCsv ? 350 : 0);
     }
 
     setIsProcessingOption1(true);
@@ -1249,118 +1533,149 @@ export default function AdminRegistrationSuite({
 
   const handleSelectOption2 = async () => {
     if (csvParsedRows.length <= 1) return;
-    
-    // File Integrity Check: Check if all data rows have a PEA number in column J (index 9)
-    const dataRows = csvParsedRows.slice(1);
-    const missingPeaRows: number[] = [];
-    
-    for (let i = 0; i < dataRows.length; i++) {
-      const cols = dataRows[i];
-      const targetPea = (cols[9] || '').trim();
-      if (!targetPea) {
-        missingPeaRows.push(i + 2); // 1-based row number including header
-      }
-    }
-
-    if (dataRows.length === 0 || missingPeaRows.length > 0) {
-      const errMsg = missingPeaRows.length > 0
-        ? `File Integrity Check Failed!\n\nThe uploaded CSV file is missing PEA number in Column J at row(s): ${missingPeaRows.slice(0, 5).join(', ')}${missingPeaRows.length > 5 ? '...' : ''}.\n\nThe uploaded file is NOT ready for Option 2 update and the upload process is cancelled.`
-        : `File Integrity Check Failed!\n\nThe uploaded file contains no data rows. Process cancelled.`;
-
-      alert(errMsg);
-      setOption2StatusMsg(`Option 2 Cancelled: File integrity check failed (${missingPeaRows.length} rows missing PEA number in Column J).`);
-      setSelectedCsvOption(null);
-      setOption2ReviewList([]);
-      return;
-    }
-
-    // Integrity check passed! Show popup message and parse items for Review Panel
-    alert(`File Integrity Check Passed!\n\nAll ${dataRows.length} uploaded records have valid PEA numbers in Column J. Ready for review before updating ADS & AA numbers.`);
-
-    const parsedReview2: any[] = [];
-    for (let i = 0; i < dataRows.length; i++) {
-      const cols = dataRows[i];
-      const volt = (cols[0] || '115').trim();
-      const area = (cols[1] || 'N1').trim();
-      const city = (cols[2] || area).trim();
-      const gps = (cols[3] || '').trim();
-      const locationType = (cols[4] || '').trim();
-      const adsNumber = (cols[5] || '').trim(); // Col F: Equipment Number ADS
-      const assetNumber = (cols[6] || '').trim(); // Col G: Account Asset Number AA
-      const eqType = (cols[7] || 'Underground Cable').trim();
-      const size = (cols[8] || '').trim();
-      const peaNumber = (cols[9] || '').trim(); // Col J: PEA Number
-      const operateId = (cols[10] || '').trim();
-      const serialNumber = (cols[11] || '').trim();
-      const manufacturer = (cols[12] || '').trim();
-      const model = (cols[13] || '').trim();
-      const country = (cols[14] || '').trim();
-      const productionMonth = (cols[15] || '').trim();
-      const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
-      const substationName = (cols[17] || '').trim();
-      const substationId = (cols[18] || '').trim();
-      const feeder = (cols[19] || '').trim();
-      const landmark = (cols[20] || '').trim();
-      const installationDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
-      const wbs = (cols[22] || '').trim();
-      const workOrder = (cols[23] || '').trim();
-      const businessType = (cols[24] || '').trim();
-      const costCenter = (cols[25] || '').trim();
-      const gistag = (cols[26] || '').trim();
-      const cls = (cols[27] || '').trim();
-      const contractNumber = (cols[28] || '').trim();
-      const assetValue = (cols[29] || '').trim(); // Col AD
-
-      parsedReview2.push({
-        rowNum: i + 2,
-        area,
-        city,
-        gps,
-        voltageLevel: volt,
-        equipmentType: eqType,
-        manufacturer,
-        country,
-        locationType,
-        substationName,
-        substationId,
-        size,
-        peaNumber,
-        assetNumber,
-        adsNumber,
-        equipmentId: `${area}-${volt}kV-${new Date().getFullYear()}-${eqType}-${peaNumber}`,
-        productionMonth,
-        installationDate,
-        wbs,
-        businessType,
-        costCenter,
-        gistag,
-        class: cls,
-        contractNumber,
-        feeder,
-        landmark,
-        operateId,
-        serialNumber,
-        model,
-        workOrder,
-        yearOfRegistration,
-        assetValue
-      });
-    }
-
-    setOption2ReviewList(parsedReview2);
     setSelectedCsvOption(2);
-    setOption2StatusMsg(`File Integrity Check Passed! ${parsedReview2.length} records ready for ADS & AA update review.`);
+    setIsLoadingOption2Review(true);
+    setOption2ReviewList([]);
+
+    try {
+      // File Integrity Check: Check if all data rows have a PEA number in column J (index 9)
+      const dataRows = csvParsedRows.slice(1);
+      const missingPeaRows: number[] = [];
+      
+      for (let i = 0; i < dataRows.length; i++) {
+        const cols = dataRows[i];
+        if (cols.every(cell => !cell || cell.trim() === '') || (!cols[0] || cols[0].trim() === '')) {
+          break; // Stop counting if an empty row or empty first column is found
+        }
+        const targetPea = (cols[9] || '').trim();
+        if (!targetPea) {
+          missingPeaRows.push(i + 2); // 1-based row number including header
+        }
+      }
+
+      if (dataRows.length === 0 || missingPeaRows.length > 0) {
+        const errMsg = missingPeaRows.length > 0
+          ? `File Integrity Check Failed!\n\nThe uploaded CSV file is missing PEA number in Column J at row(s): ${missingPeaRows.slice(0, 5).join(', ')}${missingPeaRows.length > 5 ? '...' : ''}.\n\nThe uploaded file is NOT ready for Option 2 update and the upload process is cancelled.`
+          : `File Integrity Check Failed!\n\nThe uploaded file contains no data rows. Process cancelled.`;
+
+        alert(errMsg);
+        setOption2StatusMsg(`Option 2 Cancelled: File integrity check failed (${missingPeaRows.length} rows missing PEA number in Column J).`);
+        setSelectedCsvOption(null);
+        setOption2ReviewList([]);
+        return;
+      }
+
+      // Integrity check passed! Show popup message and parse items for Review Panel
+      alert(`File Integrity Check Passed!\n\nAll ${dataRows.length} uploaded records have valid PEA numbers in Column J. Ready for review before updating ADS & AA numbers.`);
+
+      const parsedReview2: any[] = [];
+      for (let i = 0; i < dataRows.length; i++) {
+        const cols = dataRows[i];
+        const rawVolt = (cols[0] || '115').trim();
+        const rawArea = (cols[1] || 'N1').trim();
+        const rawCity = (cols[2] || rawArea).trim();
+        const gps = (cols[3] || '').trim();
+        const rawLoc = (cols[4] || '').trim();
+        const adsNumber = (cols[5] || '').trim(); // Col F: Equipment Number ADS
+        const assetNumber = (cols[6] || '').trim(); // Col G: Account Asset Number AA
+        const rawEqType = (cols[7] || 'Underground Cable').trim();
+        const size = (cols[8] || '').trim();
+        const peaNumber = (cols[9] || '').trim(); // Col J: PEA Number
+        const operateId = (cols[10] || '').trim();
+        const serialNumber = (cols[11] || '').trim();
+        const manufacturer = (cols[12] || '').trim();
+        const model = (cols[13] || '').trim();
+        const country = (cols[14] || '').trim();
+        const productionMonth = (cols[15] || '').trim();
+        const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
+        const substationName = (cols[17] || '').trim();
+        const substationId = (cols[18] || '').trim();
+        const feeder = (cols[19] || '').trim();
+        const landmark = (cols[20] || '').trim();
+        const rawInstDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
+        const wbs = (cols[22] || '').trim();
+        const workOrder = (cols[23] || '').trim();
+        const businessType = (cols[24] || '').trim();
+        const costCenter = (cols[25] || '').trim();
+        const gistag = (cols[26] || '').trim();
+        const cls = (cols[27] || '').trim();
+        const contractNumber = (cols[28] || '').trim();
+        const assetValue = (cols[29] || '').trim(); // Col AD
+
+        // Smart Normalizations
+        const volt = normalizeVoltageLevel(rawVolt, rawEqType);
+        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, volt);
+        const locationType = normalizeLocationType(rawLoc, volt);
+        const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
+        const area = derivedArea || rawArea || 'N1';
+        const installationDate = normalizeInstallationDate(rawInstDate);
+
+        parsedReview2.push({
+          rowNum: i + 2,
+          area,
+          city,
+          gps,
+          voltageLevel: volt,
+          equipmentType: eqType,
+          manufacturer,
+          country,
+          locationType,
+          substationName,
+          substationId,
+          size,
+          peaNumber,
+          assetNumber,
+          adsNumber,
+          equipmentId: `${area}-${volt}kV-${new Date().getFullYear()}-${eqType}-${peaNumber}`,
+          productionMonth,
+          installationDate,
+          wbs,
+          businessType,
+          costCenter,
+          gistag,
+          class: cls,
+          contractNumber,
+          feeder,
+          landmark,
+          operateId,
+          serialNumber,
+          model,
+          workOrder,
+          yearOfRegistration,
+          assetValue
+        });
+      }
+
+      setOption2ReviewList(parsedReview2);
+      setOption2StatusMsg(`File Integrity Check Passed! ${parsedReview2.length} records ready for ADS & AA update review.`);
+    } catch (err: any) {
+      alert(`Option 2 error: ${err.message || 'Error processing Option 2'}`);
+    } finally {
+      setIsLoadingOption2Review(false);
+    }
   };
 
-  const commitOption2Assets = async (downloadCsv: boolean = false) => {
+  const commitOption2Assets = async (downloadMode: 'both' | 'csv' | 'txt' | 'none' | boolean = 'none') => {
     if (csvParsedRows.length <= 1 && option2ReviewList.length === 0) return;
 
-    if (downloadCsv) {
+    const shouldDownloadCsv = downloadMode === true || downloadMode === 'both' || downloadMode === 'csv';
+    const shouldDownloadTxt = downloadMode === 'both' || downloadMode === 'txt';
+
+    if (shouldDownloadCsv) {
       generateAndDownloadCsv(
         option2ReviewList.length > 0 ? option2ReviewList : [],
         csvParsedRows[0],
         csvParsedRows.slice(1)
       );
+    }
+
+    if (shouldDownloadTxt) {
+      setTimeout(() => {
+        generateAndDownloadSapTxt(
+          option2ReviewList.length > 0 ? option2ReviewList : [],
+          csvParsedRows.slice(1)
+        );
+      }, shouldDownloadCsv ? 350 : 0);
     }
 
     setIsProcessingOption2(true);
@@ -1936,6 +2251,7 @@ export default function AdminRegistrationSuite({
                   <option value="115">115 kV</option>
                   <option value="33">33 kV</option>
                   <option value="22">22 kV</option>
+                  <option value="0.4">0.4 kV</option>
                 </select>
               </div>
 
@@ -2059,179 +2375,234 @@ export default function AdminRegistrationSuite({
             </div>
 
             {/* Option 1 Review Panel */}
-            {selectedCsvOption === 1 && option1ReviewList.length > 0 && (
+            {selectedCsvOption === 1 && (
               <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
                 <div className="flex justify-between items-center">
                   <div>
                     <h4 className="text-xs font-black text-gray-900 uppercase">Option 1: New Asset Data Review Panel (30 Data Details)</h4>
                     <p className="text-[10px] text-gray-400">Verify extracted attributes & generated PEA numbers from uploaded file. Click "Check & Edit" to adjust any field.</p>
                   </div>
-                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg">
-                    {option1ReviewList.length} assets ready
+                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                    {isLoadingOption1Review ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
+                        Evaluating PEA Rules...
+                      </>
+                    ) : (
+                      `${option1ReviewList.length} assets ready`
+                    )}
                   </span>
                 </div>
 
-                <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
-                  {option1ReviewList.map((rec, rIdx) => (
-                    <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
-                      {/* Top Bar */}
-                      <div className="flex justify-between items-center border-b border-gray-100 pb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
-                          <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
-                          <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
-                        </div>
-                        <button
-                          onClick={() => setEditingOption1Item({ index: rIdx, data: { ...rec } })}
-                          className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                        >
-                          <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
-                        </button>
-                      </div>
-
-                      {/* 30 Data Details Grid */}
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
-                        <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
-                        <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">5. Assigned PEA No:</span> <span className="font-bold text-purple-900 font-mono">{rec.peaNumber}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">6. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">7. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">8. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">9. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">10. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">11. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">12. Equip No (ADS):</span> <span className="font-bold text-amber-700">{rec.adsNumber || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">13. Account Asset (AA):</span> <span className="font-bold text-amber-700">{rec.assetNumber || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">14. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">15. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">16. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">17. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">18. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">19. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">20. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">21. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">22. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">23. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">24. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">25. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">26. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">27. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">28. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">29. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">30. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">31. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
-                      </div>
+                {isLoadingOption1Review ? (
+                  <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
+                    <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+                    <div>
+                      <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Scanning Google Sheets & Evaluating PEA Rules</h5>
+                      <p className="text-[10px] text-purple-800/80 mt-1">Extracting 30 data details and auto-assigning next incremental PEA running numbers...</p>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ) : option1ReviewList.length > 0 ? (
+                  <>
+                    <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
+                      {option1ReviewList.map((rec, rIdx) => (
+                        <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
+                          {/* Top Bar */}
+                          <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
+                              <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
+                              <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
+                            </div>
+                            <button
+                              onClick={() => setEditingOption1Item({ index: rIdx, data: { ...rec } })}
+                              className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                            >
+                              <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
+                            </button>
+                          </div>
 
-                <button
-                  onClick={() => setShowCsvModal(true)}
-                  disabled={isProcessingOption1}
-                  className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                >
-                  {isProcessingOption1 ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Registering New Assets...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="w-4 h-4 text-yellow-400" />
-                      Register New Assets ({option1ReviewList.length} Records)
-                    </>
-                  )}
-                </button>
+                          {/* 30 Data Details Grid */}
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
+                            <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
+                            <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">5. Assigned PEA No:</span> <span className="font-bold text-purple-900 font-mono">{rec.peaNumber}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700">{rec.adsNumber || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700">{rec.assetNumber || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">10. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">11. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">12. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">17. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">18. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">22. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => setShowCsvModal(true)}
+                      disabled={isProcessingOption1}
+                      className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                    >
+                      {isProcessingOption1 ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          Registering New Assets...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4 text-yellow-400" />
+                          Register New Assets ({option1ReviewList.length} Records)
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={handleCancelCsvUpload}
+                      type="button"
+                      className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
+                    >
+                      <XCircle className="w-4 h-4 text-red-500" />
+                      Cancel Upload & Clear
+                    </button>
+                  </>
+                ) : null}
               </div>
             )}
 
             {/* Option 2 Review Panel */}
-            {selectedCsvOption === 2 && option2ReviewList.length > 0 && (
+            {selectedCsvOption === 2 && (
               <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
                 <div className="flex justify-between items-center">
                   <div>
                     <h4 className="text-xs font-black text-gray-900 uppercase">Option 2: ADS & AA Update Review Panel ({option2ReviewList.length} Records)</h4>
                     <p className="text-[10px] text-gray-400">Verify extracted attributes, PEA numbers (Col J), Equipment Code ADS (Col F), and Account Asset AA (Col G) before updating.</p>
                   </div>
-                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg">
-                    {option2ReviewList.length} assets ready for update
+                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                    {isLoadingOption2Review ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
+                        Validating Records...
+                      </>
+                    ) : (
+                      `${option2ReviewList.length} assets ready for update`
+                    )}
                   </span>
                 </div>
 
-                <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
-                  {option2ReviewList.map((rec, rIdx) => (
-                    <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
-                      {/* Top Bar */}
-                      <div className="flex justify-between items-center border-b border-gray-100 pb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
-                          <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
-                          <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
-                        </div>
-                        <button
-                          onClick={() => setEditingOption2Item({ index: rIdx, data: { ...rec } })}
-                          className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                        >
-                          <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
-                        </button>
-                      </div>
-
-                      {/* 30 Data Details Grid */}
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
-                        <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
-                        <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">5. PEA Number (Col J):</span> <span className="font-bold text-purple-900 font-mono bg-purple-100 px-1.5 py-0.5 rounded">{rec.peaNumber}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.adsNumber || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.assetNumber || '[Blank]'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">10. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">11. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">12. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">17. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">18. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">22. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
-                        <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
-                      </div>
+                {isLoadingOption2Review ? (
+                  <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
+                    <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+                    <div>
+                      <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Validating File Integrity & PEA Records</h5>
+                      <p className="text-[10px] text-purple-800/80 mt-1">Cross-checking Column J PEA IDs against sector databases...</p>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ) : option2ReviewList.length > 0 ? (
+                  <>
+                    <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
+                      {option2ReviewList.map((rec, rIdx) => (
+                        <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
+                          {/* Top Bar */}
+                          <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
+                              <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
+                              <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
+                            </div>
+                            <button
+                              onClick={() => setEditingOption2Item({ index: rIdx, data: { ...rec } })}
+                              className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                            >
+                              <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
+                            </button>
+                          </div>
 
-                <button
-                  onClick={() => setShowCsvModal(true)}
-                  disabled={isProcessingOption2}
-                  className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                >
-                  {isProcessingOption2 ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Updating ADS & AA Numbers...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="w-4 h-4 text-yellow-400" />
-                      Update ADS & AA Numbers ({option2ReviewList.length} Records)
-                    </>
-                  )}
-                </button>
+                          {/* 30 Data Details Grid */}
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
+                            <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
+                            <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">5. PEA Number (Col J):</span> <span className="font-bold text-purple-900 font-mono bg-purple-100 px-1.5 py-0.5 rounded">{rec.peaNumber}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.adsNumber || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.assetNumber || '[Blank]'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">10. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">11. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">12. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">17. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">18. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">22. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                            <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => setShowCsvModal(true)}
+                      disabled={isProcessingOption2}
+                      className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                    >
+                      {isProcessingOption2 ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          Updating ADS & AA Numbers...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4 text-yellow-400" />
+                          Update ADS & AA Numbers ({option2ReviewList.length} Records)
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={handleCancelCsvUpload}
+                      type="button"
+                      className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
+                    >
+                      <XCircle className="w-4 h-4 text-red-500" />
+                      Cancel Upload & Clear
+                    </button>
+                  </>
+                ) : null}
               </div>
             )}
           </div>
@@ -2274,6 +2645,11 @@ export default function AdminRegistrationSuite({
                 <span className="text-xs font-bold text-gray-700">
                   {csvFileObj ? csvFileObj.name : 'Drag CSV file here or click to select'}
                 </span>
+                {csvParsedRows.length > 1 && (
+                  <span className="mt-1.5 inline-block text-[10px] bg-emerald-100 text-emerald-900 font-extrabold px-2.5 py-0.5 rounded-full border border-emerald-200">
+                    {csvParsedRows.length - 1} Valid Assets Detected (Stopped at empty row)
+                  </span>
+                )}
                 <p className="text-[9px] text-gray-400 mt-1">Supports standard CSV file format with headers</p>
               </div>
 
@@ -2659,57 +3035,7 @@ export default function AdminRegistrationSuite({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-gray-400 uppercase">6. Manufacturer (Col M)</label>
-                <input
-                  type="text"
-                  value={editingOption1Item.data.manufacturer || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, manufacturer: e.target.value } })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-gray-400 uppercase">7. Substation Name (Col R)</label>
-                <input
-                  type="text"
-                  value={editingOption1Item.data.substationName || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, substationName: e.target.value } })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-gray-400 uppercase">8. Location Type (Col E)</label>
-                <input
-                  type="text"
-                  value={editingOption1Item.data.locationType || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, locationType: e.target.value } })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-gray-400 uppercase">9. GPS Coordinates (Col D)</label>
-                <input
-                  type="text"
-                  value={editingOption1Item.data.gps || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, gps: e.target.value } })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-gray-400 uppercase">10. City (Col C)</label>
-                <input
-                  type="text"
-                  value={editingOption1Item.data.city || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, city: e.target.value } })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-amber-600 uppercase">12. Equipment Number ADS (Col F)</label>
+                <label className="text-[9px] font-bold text-amber-600 uppercase">6. Equipment Number ADS (Col F)</label>
                 <input
                   type="text"
                   value={editingOption1Item.data.adsNumber || ''}
@@ -2720,13 +3046,63 @@ export default function AdminRegistrationSuite({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[9px] font-bold text-amber-600 uppercase">13. Account Asset Number AA (Col G)</label>
+                <label className="text-[9px] font-bold text-amber-600 uppercase">7. Account Asset Number AA (Col G)</label>
                 <input
                   type="text"
                   value={editingOption1Item.data.assetNumber || ''}
                   onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, assetNumber: e.target.value } })}
                   placeholder="[Blank for Option 1]"
                   className="w-full bg-amber-50/50 border border-amber-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-amber-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-gray-400 uppercase">8. Manufacturer (Col M)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.manufacturer || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, manufacturer: e.target.value } })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-gray-400 uppercase">9. Substation Name (Col R)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.substationName || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, substationName: e.target.value } })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-gray-400 uppercase">10. Location Type (Col E)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.locationType || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, locationType: e.target.value } })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-gray-400 uppercase">11. GPS Coordinates (Col D)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.gps || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, gps: e.target.value } })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] font-bold text-gray-400 uppercase">12. City (Col C)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.city || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, city: e.target.value } })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                 />
               </div>
 
@@ -3094,10 +3470,10 @@ export default function AdminRegistrationSuite({
         </div>
       )}
 
-      {/* Popup Modal for CSV Download Confirmation */}
+      {/* Popup Modal for CSV & SAP Text Document Download Confirmation */}
       {showCsvModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-purple-100 shadow-2xl space-y-5 relative">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-purple-100 shadow-2xl space-y-5 relative">
             <button 
               onClick={() => setShowCsvModal(false)} 
               className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
@@ -3107,20 +3483,20 @@ export default function AdminRegistrationSuite({
 
             <div className="flex items-center gap-3.5 border-b border-gray-100 pb-4">
               <div className="p-3 bg-purple-50 text-purple-700 rounded-2xl shrink-0">
-                <FileSpreadsheet className="w-7 h-7" />
+                <FileSpreadsheet className="w-7 h-7 text-purple-700" />
               </div>
               <div>
                 <span className="text-[10px] font-black uppercase tracking-wider text-purple-700 block">
                   Export Confirmation {selectedCsvOption === 2 ? '(Option 2: Update ADS & AA)' : '(Option 1: Registration)'}
                 </span>
                 <h3 className="text-base font-black text-gray-900 leading-tight">
-                  Do you want a CSV file with PEA number?
+                  Download Export Files (CSV & SAP .txt)?
                 </h3>
               </div>
             </div>
 
             <p className="text-xs text-gray-600 leading-relaxed">
-              This file will be an Excel CSV that contains all data from your uploaded file along with the assigned PEA numbers in Column J of each row.
+              You can download the updated PEA numbers in both Excel CSV format and UTF-8 encoded text document (.txt) for direct SAP software import before committing to the database.
             </p>
 
             <div className="bg-purple-50/70 p-3 rounded-2xl border border-purple-100 text-xs text-purple-900 font-semibold flex items-center justify-between">
@@ -3137,30 +3513,62 @@ export default function AdminRegistrationSuite({
                 onClick={() => {
                   setShowCsvModal(false);
                   if (selectedCsvOption === 2) {
-                    commitOption2Assets(true);
+                    commitOption2Assets('both');
                   } else {
-                    commitOption1Assets(true);
+                    commitOption1Assets('both');
                   }
                 }}
                 className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md hover:shadow-lg"
               >
                 <Download className="w-4 h-4 text-yellow-400" />
-                {selectedCsvOption === 2 ? 'Yes, Download CSV & Update' : 'Yes, Download CSV & Register'}
+                Download Both (CSV + SAP .txt) & {selectedCsvOption === 2 ? 'Update' : 'Register'}
               </button>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => {
+                    setShowCsvModal(false);
+                    if (selectedCsvOption === 2) {
+                      commitOption2Assets('csv');
+                    } else {
+                      commitOption1Assets('csv');
+                    }
+                  }}
+                  className="bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 py-2.5 px-3 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-purple-700 shrink-0" />
+                  CSV Only
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowCsvModal(false);
+                    if (selectedCsvOption === 2) {
+                      commitOption2Assets('txt');
+                    } else {
+                      commitOption1Assets('txt');
+                    }
+                  }}
+                  className="bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 py-2.5 px-3 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                  SAP .txt Only
+                </button>
+              </div>
 
               <button
                 onClick={() => {
                   setShowCsvModal(false);
                   if (selectedCsvOption === 2) {
-                    commitOption2Assets(false);
+                    commitOption2Assets('none');
                   } else {
-                    commitOption1Assets(false);
+                    commitOption1Assets('none');
                   }
                 }}
-                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-3 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
-                <CheckCircle className="w-4 h-4 text-purple-700" />
-                {selectedCsvOption === 2 ? 'No, Update Without CSV' : 'No, Register Without CSV'}
+                <CheckCircle className="w-4 h-4 text-gray-600" />
+                No Download, Just {selectedCsvOption === 2 ? 'Update' : 'Register'}
               </button>
 
               <button
