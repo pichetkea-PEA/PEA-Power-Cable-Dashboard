@@ -362,11 +362,11 @@ export function exportAssetToPDF(asset: CableAsset) {
             <div class="images-grid">
               <div class="image-box">
                 <div class="image-label">Visual Inspection Photo</div>
-                ${asset.visualPictureUrl ? `<img src="${asset.visualPictureUrl}" class="img-preview" referrerPolicy="no-referrer" />` : `<div class="no-img">No visual inspection image submitted</div>`}
+                ${asset.visualPictureUrl ? `<img src="${asset.visualPictureUrl}" class="img-preview" referrerPolicy="no-referrer" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';" />` : `<div class="no-img">No visual inspection image submitted</div>`}
               </div>
               <div class="image-box">
                 <div class="image-label">Thermal Hotspot Thermogram</div>
-                ${asset.thermalImageUrl ? `<img src="${asset.thermalImageUrl}" class="img-preview" referrerPolicy="no-referrer" />` : `<div class="no-img">No thermal scan submitted</div>`}
+                ${asset.thermalImageUrl ? `<img src="${asset.thermalImageUrl}" class="img-preview" referrerPolicy="no-referrer" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';" />` : `<div class="no-img">No thermal scan submitted</div>`}
               </div>
             </div>
           </div>
@@ -375,7 +375,10 @@ export function exportAssetToPDF(asset: CableAsset) {
           
           <div style="position: relative; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden; height: 260px; width: 100%; margin-bottom: 16px; background-color: #f8fafc; box-shadow: 0 2px 4px -1px rgba(0,0,0,0.05);">
             <a href="https://www.google.com/maps/search/?api=1&query=${asset.gps?.lat ?? 13.7563},${asset.gps?.lng ?? 100.5018}" target="_blank" style="display: block; width: 100%; height: 100%;">
-              <img src="${window.location.origin}/api/map-image?lat=${asset.gps?.lat ?? 13.7563}&lng=${asset.gps?.lng ?? 100.5018}" style="width: 100%; height: 100%; object-fit: cover;" referrerPolicy="no-referrer" />
+              <img src="${window.location.origin}/api/map-image?lat=${asset.gps?.lat ?? 13.7563}&lng=${asset.gps?.lng ?? 100.5018}" 
+                   onerror="this.onerror=null; this.src='https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${(asset.gps?.lng ?? 100.5018) - 0.002},${(asset.gps?.lat ?? 13.7563) - 0.001},${(asset.gps?.lng ?? 100.5018) + 0.002},${(asset.gps?.lat ?? 13.7563) + 0.001}&bboxSR=4326&size=600,300&format=png&f=image';"
+                   style="width: 100%; height: 100%; object-fit: cover;" 
+                   referrerPolicy="no-referrer" />
               <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -100%); text-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 50; display: flex; flex-direction: column; align-items: center;">
                 <span style="font-size: 36px; line-height: 1; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.4));">📍</span>
               </div>
@@ -406,9 +409,39 @@ export function exportAssetToPDF(asset: CableAsset) {
 
         <script>
           window.onload = function() {
-            setTimeout(function() {
+            const images = Array.from(document.querySelectorAll('img'));
+            let loadedCount = 0;
+            const totalImages = images.length;
+
+            if (totalImages === 0) {
               window.print();
-            }, 1200);
+              return;
+            }
+
+            function onImageLoadOrError() {
+              loadedCount++;
+              if (loadedCount === totalImages) {
+                setTimeout(function() {
+                  window.print();
+                }, 500);
+              }
+            }
+
+            images.forEach(function(img) {
+              if (img.complete) {
+                onImageLoadOrError();
+              } else {
+                img.addEventListener('load', onImageLoadOrError);
+                img.addEventListener('error', onImageLoadOrError);
+              }
+            });
+
+            // Fallback: print anyway after 4.5 seconds to prevent locking the screen
+            setTimeout(function() {
+              if (loadedCount < totalImages) {
+                window.print();
+              }
+            }, 4500);
           }
         </script>
       </body>
