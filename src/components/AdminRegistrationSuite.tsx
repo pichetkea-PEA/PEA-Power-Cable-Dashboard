@@ -1072,6 +1072,10 @@ export default function AdminRegistrationSuite({
         return trimmed;
       }
 
+      if (/^\d{7}$/.test(trimmed)) {
+        return '0' + trimmed;
+      }
+
       if (trimmed.includes('/') || trimmed.includes('.') || (trimmed.includes('-') && !trimmed.startsWith('20'))) {
         const parts = trimmed.split(/[/.-]/);
         if (parts.length === 3) {
@@ -1131,13 +1135,25 @@ export default function AdminRegistrationSuite({
 
       const shtxt = rec.equipmentType || origRow[7] || rec.landmark || origRow[20] || 'Cable Asset';
 
-      // Object category based on voltage
+      // Object category based on voltage & equipment type
       const voltStr = String(rec.voltageLevel || origRow[0] || '').trim();
+      const eqTypeStr = String(rec.equipmentType || origRow[7] || '').trim().toLowerCase();
+      const landmarkStr = String(rec.landmark || origRow[20] || '').trim().toLowerCase();
+      const classStr = String(rec.class || origRow[27] || '').trim().toLowerCase();
+      const fullText = `${eqTypeStr} ${landmarkStr} ${classStr}`;
+
+      const isCircuit = fullText.includes('circuit') || fullText.includes('วงจร') || fullText.includes('feeder') || fullText.includes('ฟีดเดอร์') || (fullText.includes('line') && !fullText.includes('termination') && !fullText.includes('joint'));
+
       let eqart = 'Z4110';
       if (voltStr.includes('22') || voltStr.includes('33')) {
-        eqart = 'Z4200';
-      } else if (voltStr.includes('0.4') || voltStr === '240' || voltStr === '400') {
-        eqart = 'Z4300';
+        // Z4200: Distribution Circuit only, Z4210: Equipment in 22kV / 33kV (RMU, Unit Substation, Heat Shrink Termination, etc.)
+        eqart = isCircuit ? 'Z4200' : 'Z4210';
+      } else if (voltStr.includes('0.4') || voltStr === '240' || voltStr === '400' || voltStr.toLowerCase().includes('lv')) {
+        eqart = isCircuit ? 'Z4300' : 'Z4310';
+      } else if (voltStr.includes('115')) {
+        eqart = isCircuit ? 'Z4100' : 'Z4110';
+      } else {
+        eqart = isCircuit ? 'Z4200' : 'Z4210';
       }
 
       const brgew = '';
