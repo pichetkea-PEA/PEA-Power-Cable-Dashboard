@@ -2489,17 +2489,6 @@ export default function AssetRecord({
                   <>
                     <button
                       type="button"
-                      onClick={() => {
-                        setQrAsset(selectedAsset);
-                        setShowQRModal(true);
-                      }}
-                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md animate-fadeIn"
-                    >
-                      <QrCode className="w-4 h-4" />
-                      Asset QR Code
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => exportAssetToPDF(selectedAsset!)}
                       className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md animate-fadeIn"
                     >
