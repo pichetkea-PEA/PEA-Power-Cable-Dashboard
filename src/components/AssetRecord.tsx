@@ -73,7 +73,8 @@ import {
   FileText,
   ChevronDown,
   ChevronUp,
-  QrCode
+  QrCode,
+  FileSpreadsheet
 } from 'lucide-react';
 import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
 
@@ -176,6 +177,115 @@ export default function AssetRecord({
         return aTime - bTime;
       });
   }, [selectedAsset, allAssets]);
+
+  const handleExportWBSCSV = () => {
+    if (wbsMatchingAssets.length === 0) return;
+
+    const headers = [
+      'Number',
+      'Timestamp',
+      'Operator Name',
+      'Voltage Level',
+      'City',
+      'Equipment Type',
+      'Manufacturer',
+      'Country',
+      'Location Type',
+      'Substation Name',
+      'Landmark',
+      'Latitude',
+      'Longitude',
+      'Year of Registration',
+      'PEA Number',
+      'Asset Number',
+      'ADS Number',
+      'Production Month',
+      'Installation Date',
+      'WBS Code',
+      'Business Type',
+      'Cost Center',
+      'GIS Tag',
+      'Asset Class',
+      'Contract Number',
+      'Feeder',
+      'Substation ID',
+      'Operate ID',
+      'Serial Number',
+      'Model',
+      'Work Order',
+      'Size',
+      'Asset Value',
+      'Equipment ID',
+      'QR Document (Col AH)',
+      'Health Score',
+      'Health Status',
+      'Latest Updated By',
+      'Latest Updated At'
+    ];
+
+    const escapeVal = (val: any) => {
+      if (val === undefined || val === null) return '';
+      let str = String(val).trim();
+      str = str.replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = wbsMatchingAssets.map((asset, index) => {
+      return [
+        escapeVal(index + 1),
+        escapeVal(asset.timestamp),
+        escapeVal(asset.operatorName),
+        escapeVal(asset.voltageLevel),
+        escapeVal(asset.city),
+        escapeVal(asset.equipmentType),
+        escapeVal(asset.manufacturer),
+        escapeVal(asset.country),
+        escapeVal(asset.locationType),
+        escapeVal(asset.substationName),
+        escapeVal(asset.landmark),
+        escapeVal(asset.gps?.lat),
+        escapeVal(asset.gps?.lng),
+        escapeVal(asset.yearOfRegistration),
+        escapeVal(asset.peaNumber),
+        escapeVal(asset.assetNumber),
+        escapeVal(asset.adsNumber),
+        escapeVal(asset.productionMonth),
+        escapeVal(asset.installationDate),
+        escapeVal(asset.wbs),
+        escapeVal(asset.businessType),
+        escapeVal(asset.costCenter),
+        escapeVal(asset.gistag),
+        escapeVal(asset.class),
+        escapeVal(asset.contractNumber),
+        escapeVal(asset.feeder),
+        escapeVal(asset.substationId),
+        escapeVal(asset.operateId),
+        escapeVal(asset.serialNumber),
+        escapeVal(asset.model),
+        escapeVal(asset.workOrder),
+        escapeVal(asset.size),
+        escapeVal(asset.assetValue),
+        escapeVal(asset.equipmentId),
+        escapeVal(asset.qrDocument),
+        escapeVal(asset.healthScore),
+        escapeVal(asset.healthStatus),
+        escapeVal(asset.latestUpdatedBy),
+        escapeVal(asset.latestUpdatedAt)
+      ].join(',');
+    });
+
+    const csvContent = "\uFEFF" + [headers.join(','), ...rows].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const cleanWbs = searchValue.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    link.setAttribute('download', `WBS_Export_${cleanWbs}_${new Date().toISOString().substring(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const editCount = useMemo(() => {
     return Math.max(0, selectedAssetHistory.length - 1);
@@ -1493,6 +1603,16 @@ export default function AssetRecord({
               </h3>
             </div>
             <div className="flex items-center gap-2">
+              {wbsMatchingAssets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExportWBSCSV}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-xs border border-emerald-500"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  Generate CSV file
+                </button>
+              )}
               <span className="bg-purple-100 text-purple-900 border border-purple-300 text-xs font-black px-3 py-1.5 rounded-lg shadow-2xs">
                 Total Equipment: {wbsMatchingAssets.length} Units
               </span>
