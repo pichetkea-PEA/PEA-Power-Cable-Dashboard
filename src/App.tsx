@@ -70,6 +70,16 @@ export default function App() {
   const [firestoreQuotaExceeded, setFirestoreQuotaExceeded] = useState<boolean>(false);
   const [lastFetchedTime, setLastFetchedTime] = useState<string | null>(() => localStorage.getItem('pea_last_fetched_time'));
 
+  // Auto-dismiss sync success notification after 5 seconds
+  useEffect(() => {
+    if (syncSuccessMessage) {
+      const timer = setTimeout(() => {
+        setSyncSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [syncSuccessMessage]);
+
   const updateLastFetchedTimestamp = (ts?: string) => {
     const timestamp = ts ? getBangkokTimestamp(ts) : getBangkokTimestamp();
     localStorage.setItem('pea_last_fetched_time', timestamp);
@@ -138,11 +148,10 @@ export default function App() {
     setIsLoading(true);
     setErrorMessage('');
 
-    // Pre-load Firestore central assets cache immediately if available
+    // Pre-load Firestore central assets cache immediately if available for instant initial layout
     try {
       const cached = await getCentralAssetsCache();
       if (cached && cached.length > 0) {
-        console.log("Central DB Sync: Pre-loaded cached central assets from Firestore:", cached.length);
         setAssets(cached);
       }
       if ((window as any).firestoreQuotaExceeded) {
@@ -150,9 +159,6 @@ export default function App() {
       }
     } catch (e) {
       console.warn("Firestore cache pre-load error:", e);
-      if ((window as any).firestoreQuotaExceeded) {
-        setFirestoreQuotaExceeded(true);
-      }
     }
 
     try {
@@ -199,89 +205,29 @@ export default function App() {
       if (targetSheetId) setSpreadsheetId(targetSheetId);
       if (targetFolderId) setFolderId(targetFolderId);
 
-      // Local Operator: load ONLY the telemetry data related to their assigned area
-      if (role === 'Local Operator' && area !== 'ALL') {
-        const areaSheetIds = targetSheetId ? [targetSheetId] : [];
-        let loadedFromCache = false;
-        try {
-          const cached = await getCentralAssetsCache();
-          if (cached && cached.length > 0) {
-            const areaAssets = cached.filter(a => 
-              a.equipmentId?.startsWith(area) || 
-              a.city?.toLowerCase().includes(area.toLowerCase()) || 
-              a.peaArea === area || 
-              a.equipmentId?.split('-')[0]?.trim() === area
-            );
-            if (areaAssets.length > 0) {
-              setAssets(areaAssets);
-              setSyncSuccessMessage(`Local Sector ${area} Telemetry Synchronized! Loaded ${areaAssets.length} cable assets for ${area} area.`);
-              loadedFromCache = true;
-            }
-          }
-        } catch (e) {}
+      // Perform full live auto-load directly from Google Sheets API when token is present
+      if (token) {
+        const idsToLoad = (role === 'Local Operator' && area !== 'ALL' && targetSheetId) 
+          ? [targetSheetId] 
+          : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
 
-        if (token && areaSheetIds.length > 0) {
-          if (!loadedFromCache) {
-            await handleLoadSpreadsheet(token, areaSheetIds, false);
-          } else {
-            // Refresh in background
-            handleLoadSpreadsheet(token, areaSheetIds, false).catch(() => {});
-          }
-        } else if (!loadedFromCache) {
-          let cached = await getCentralAssetsCache();
-          if (!cached || cached.length === 0) {
-            const backup = localStorage.getItem('pea_central_assets_backup');
-            if (backup) {
-              try { cached = JSON.parse(backup); } catch (e) {}
-            }
-          }
-          if (!cached || cached.length === 0) {
-            cached = getMockAssets();
-          }
-
-          // Strictly filter assets for the user's logged-in area (e.g. N1)
-          const areaAssets = cached.filter(a => 
-            a.equipmentId?.startsWith(area) || 
-            a.city?.toLowerCase().includes(area.toLowerCase()) || 
-            a.peaArea === area || 
-            a.equipmentId?.split('-')[0]?.trim() === area
-          );
-
-          setAssets(areaAssets.length > 0 ? areaAssets : cached);
-          setSyncSuccessMessage(`Local Sector ${area} Telemetry Synchronized! Loaded ${areaAssets.length} cable assets for ${area} area.`);
+        if (idsToLoad.length > 0) {
+          await handleLoadSpreadsheet(token, idsToLoad, isAdminUser, true);
+        } else {
+          setIsSyncingCentralDb(false);
+          setIsLoading(false);
         }
-      } else if (token && allSheetIds.length > 0) {
-        // Admin / Manager / National level: Pre-load cache first for instant login speed
-        let loadedFromCache = false;
+      } else {
+        // Offline / No token mode
+        let loaded = false;
         try {
           const cached = await getCentralAssetsCache();
           if (cached && cached.length > 0) {
             setAssets(cached);
             setSyncSuccessMessage(`Central Admin Database Synchronized! Loaded ${cached.length.toLocaleString()} cable assets from Admin database.`);
-            loadedFromCache = true;
-          }
-        } catch (e) {}
-
-        if (!loadedFromCache) {
-          await handleLoadSpreadsheet(token, allSheetIds, isAdminUser);
-        } else {
-          // Sync remaining sheets in background without holding up loading UI
-          handleLoadSpreadsheet(token, allSheetIds, isAdminUser).catch(() => {});
-        }
-      } else {
-        // Non-admin roles (Manager, Engineer, Area Head): load central assets from Firestore cache or local backup
-        let loaded = false;
-        try {
-          const cached = await getCentralAssetsCache();
-          if (cached && cached.length > 0) {
-            console.log("Central DB Sync: Loaded cached assets from Firestore for role", role, ":", cached.length);
-            setAssets(cached);
-            setSyncSuccessMessage(`Central Admin Database Synchronized! Loaded ${cached.length.toLocaleString()} cable assets from Admin Google Sheets database.`);
             loaded = true;
           }
-        } catch (e) {
-          console.warn("Error loading cached assets in syncCentralDatabase:", e);
-        }
+        } catch (e) {}
 
         if (!loaded) {
           const backup = localStorage.getItem('pea_central_assets_backup');
@@ -289,7 +235,6 @@ export default function App() {
             try {
               const parsed = JSON.parse(backup);
               if (Array.isArray(parsed) && parsed.length > 0) {
-                console.log("Central DB Sync: Loaded backup assets for role", role, ":", parsed.length);
                 setAssets(parsed);
                 setSyncSuccessMessage(`Central Admin Database Loaded from Backup! ${parsed.length.toLocaleString()} cable assets active.`);
                 loaded = true;
@@ -299,8 +244,6 @@ export default function App() {
         }
 
         if (!loaded) {
-          // Robust mock fallback so user is never left with an empty dashboard
-          console.log("Central DB Sync: Cache and backup unavailable, falling back to mock assets.");
           setAssets(getMockAssets());
           setSyncSuccessMessage(`Central Offline Mode Enabled! Loaded telemetry datasets.`);
         }
@@ -308,11 +251,12 @@ export default function App() {
         if ((window as any).firestoreQuotaExceeded) {
           setFirestoreQuotaExceeded(true);
         }
+        setIsSyncingCentralDb(false);
+        setIsLoading(false);
       }
     } catch (err: any) {
       console.error("Central Database Sync failure:", err);
       setErrorMessage(`Sync Warning: ${err.message || 'Unable to sync Google Sheet database.'}`);
-    } finally {
       setIsLoading(false);
       setIsSyncingCentralDb(false);
     }
@@ -362,9 +306,6 @@ export default function App() {
       return;
     }
 
-    setShowGameLoading(true);
-    setIsLoading(true);
-
     const finalArea = (role === 'Admin' || role === 'Manager') ? 'ALL' : area;
     const newUser: PEAUser = {
       uid,
@@ -378,17 +319,17 @@ export default function App() {
       setGoogleToken(token);
     }
 
-    await syncCentralDatabase(token || null, email, role, finalArea);
-
     setUser(newUser);
     setNeedsAuth(false);
-    
-    // Set default active view
+    setShowGameLoading(false);
+
     if (role === 'Admin' || role === 'Manager') {
       setActiveTab('admin');
     } else {
       setActiveTab('area');
     }
+
+    await syncCentralDatabase(token || null, email, role, finalArea);
   };
 
   // Shared helper to automatically discover existing sheets and load assets
@@ -461,12 +402,7 @@ export default function App() {
         const activeArea = (activeRole === 'Admin' || activeRole === 'Manager') ? 'ALL' : (registered ? registered.interestArea : currentSelectedArea);
 
         setGoogleToken(token);
-        setShowGameLoading(true);
         
-        if (token) {
-          await handleAutoDiscovery(token, email, activeArea, activeRole);
-        }
-
         setUser({
           uid: firebaseUser.uid,
           email,
@@ -482,6 +418,11 @@ export default function App() {
         }
 
         setNeedsAuth(false);
+        setShowGameLoading(false);
+
+        if (token) {
+          await handleAutoDiscovery(token, email, activeArea, activeRole);
+        }
       },
       () => {
         setNeedsAuth(true);
@@ -1056,56 +997,85 @@ export default function App() {
         />
       )}
 
-      {/* FLOATING CENTRAL DATABASE SYNC POPUP NOTIFICATION FOR MANAGER & USERS */}
+      {/* CENTERED GOOGLE SHEETS DATA LOADING POPUP MODAL */}
       {!showGameLoading && !needsAuth && user && (isSyncingCentralDb || syncSuccessMessage) && (
-        <div className="fixed bottom-6 right-6 z-[9999] max-w-md w-full bg-slate-900/95 border-2 border-purple-500/80 rounded-2xl p-4 shadow-2xl text-white font-sans animate-fade-in flex flex-col gap-3 backdrop-blur-md">
-          <div className="flex items-start justify-between">
-            <div className="flex items-start gap-3">
-              <div className={`p-2.5 rounded-xl mt-0.5 ${isSyncingCentralDb ? 'bg-purple-900/80 text-yellow-400 border border-purple-500/50' : 'bg-emerald-900/80 text-emerald-400 border border-emerald-500/50'}`}>
+        <div className={`fixed inset-0 z-[9999] flex items-center justify-center p-4 transition-all duration-300 ${
+          isSyncingCentralDb ? 'bg-slate-950/75 backdrop-blur-md' : 'bg-black/40 backdrop-blur-xs'
+        }`}>
+          <div className={`max-w-lg w-full rounded-3xl p-6 sm:p-7 shadow-2xl text-white font-sans flex flex-col gap-4 relative animate-in zoom-in-95 duration-200 border-2 ${
+            isSyncingCentralDb 
+              ? 'bg-slate-900/98 border-purple-500/90 shadow-purple-950/60' 
+              : 'bg-slate-900/98 border-emerald-500/90 shadow-emerald-950/60'
+          }`}>
+            <button 
+              onClick={() => { setSyncSuccessMessage(null); setIsSyncingCentralDb(false); }}
+              className="absolute top-4 right-4 text-gray-400 hover:text-white p-2 transition-colors rounded-full hover:bg-slate-800/80 cursor-pointer"
+              title="Dismiss notification"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-start gap-4">
+              <div className={`p-3.5 rounded-2xl shrink-0 mt-0.5 ${
+                isSyncingCentralDb 
+                  ? 'bg-purple-900/90 text-yellow-400 border border-purple-500/60 shadow-inner' 
+                  : 'bg-emerald-900/90 text-emerald-400 border border-emerald-500/60 shadow-inner'
+              }`}>
                 {isSyncingCentralDb ? (
-                  <Database className="w-5 h-5 animate-pulse text-yellow-400" />
+                  <Database className="w-7 h-7 animate-pulse text-yellow-400" />
                 ) : (
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                  <CheckCircle2 className="w-7 h-7 text-emerald-400" />
                 )}
               </div>
-              <div>
-                <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                  {isSyncingCentralDb ? "PEA Central DB Sync in Progress" : "Database Synchronized"}
-                  <span className="text-[10px] font-mono bg-purple-950 text-purple-300 px-2 py-0.5 rounded-full border border-purple-800">
+              <div className="flex-1 pr-6">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-base sm:text-lg font-black text-white tracking-tight">
+                    {isSyncingCentralDb ? "Loading Data from Google Sheets" : "Database Synchronized"}
+                  </h4>
+                  <span className="text-[10px] font-mono font-bold bg-purple-950 text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-700/80">
                     Admin Google Sheets
                   </span>
-                </h4>
-                <p className="text-xs text-gray-300 mt-1 leading-snug">
+                </div>
+                <p className="text-xs sm:text-sm text-gray-300 mt-1.5 leading-relaxed font-medium">
                   {isSyncingCentralDb 
                     ? (syncProgress.statusText || "Synchronizing 12 regional cable sector spreadsheets from Admin central database...") 
                     : syncSuccessMessage}
                 </p>
               </div>
             </div>
-            <button 
-              onClick={() => { setSyncSuccessMessage(null); setIsSyncingCentralDb(false); }}
-              className="text-gray-400 hover:text-white p-1 transition-colors rounded-lg"
-              title="Dismiss notification"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
 
-          {/* Progress Bar when syncing */}
-          {isSyncingCentralDb && syncProgress.total > 0 && (
-            <div className="w-full space-y-1 mt-1">
-              <div className="flex justify-between text-[11px] font-mono text-purple-300">
-                <span>Sector: {syncProgress.current}/{syncProgress.total}</span>
-                <span>{Math.round((syncProgress.current / syncProgress.total) * 100)}%</span>
+            {/* Progress Bar when loading data from Google Sheets */}
+            {isSyncingCentralDb && (
+              <div className="w-full space-y-2 pt-2 border-t border-slate-800">
+                <div className="flex justify-between items-center text-xs font-mono text-purple-300 font-bold">
+                  <span className="flex items-center gap-1.5 text-gray-200">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-yellow-400" />
+                    {syncProgress.total > 0 ? `Sector Progress: ${syncProgress.current} / ${syncProgress.total}` : 'Connecting...'}
+                  </span>
+                  <span className="text-yellow-400 font-black text-sm">
+                    {syncProgress.total > 0 ? `${Math.round((syncProgress.current / syncProgress.total) * 100)}%` : '0%'}
+                  </span>
+                </div>
+                <div className="w-full bg-slate-950 rounded-full h-3.5 overflow-hidden border border-purple-800/80 p-0.5 shadow-inner">
+                  <div 
+                    className="bg-gradient-to-r from-purple-600 via-yellow-400 to-emerald-400 h-full rounded-full transition-all duration-300 shadow-sm" 
+                    style={{ width: `${Math.max(5, syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 10)}%` }}
+                  />
+                </div>
               </div>
-              <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-purple-900">
-                <div 
-                  className="bg-gradient-to-r from-purple-500 via-yellow-400 to-emerald-400 h-full rounded-full transition-all duration-300" 
-                  style={{ width: `${Math.max(5, Math.round((syncProgress.current / syncProgress.total) * 100))}%` }}
-                />
+            )}
+
+            {!isSyncingCentralDb && syncSuccessMessage && (
+              <div className="pt-2 flex justify-end">
+                <button
+                  onClick={() => setSyncSuccessMessage(null)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-5 rounded-xl transition-all cursor-pointer shadow-md"
+                >
+                  OK, Continue
+                </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
