@@ -54,6 +54,10 @@ let inMemoryAssetsCache: any[] | null = null;
 let inMemorySectorsCache: { [area: string]: { spreadsheetId: string, folderId: string } } | null = null;
 let inMemoryAdminConfigCache: CentralAdminConfig | null = null;
 
+export function clearCentralAssetsCache(): void {
+  inMemoryAssetsCache = null;
+}
+
 export async function getSectorSpreadsheet(interestArea: string): Promise<{ spreadsheetId: string, folderId: string } | null> {
   if (!interestArea) return null;
   // 1. Check local cache first

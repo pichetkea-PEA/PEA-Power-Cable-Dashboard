@@ -669,14 +669,17 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Number (ID)</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">
+                    PEA Number (ID) {eqType === 'Distribution Circuit' && <span className="text-purple-600 font-normal text-[9px]">(Blank for Distribution Circuit)</span>}
+                  </label>
                   <input
                     type="text"
-                    required
-                    placeholder="e.g. PEA-N1-UG01"
-                    value={peaNumber}
+                    required={eqType !== 'Distribution Circuit'}
+                    disabled={eqType === 'Distribution Circuit'}
+                    placeholder={eqType === 'Distribution Circuit' ? 'Leave blank for Distribution Circuit' : 'e.g. PEA-N1-UG01'}
+                    value={eqType === 'Distribution Circuit' ? '' : peaNumber}
                     onChange={e => setPeaNumber(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 disabled:opacity-50 disabled:bg-gray-100"
                   />
                 </div>
 

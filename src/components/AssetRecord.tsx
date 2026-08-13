@@ -101,7 +101,7 @@ export default function AssetRecord({
   const [filterVoltage, setFilterVoltage] = useState<string>('All');
   const [filterEqType, setFilterEqType] = useState<string>('All');
   const [filterYear, setFilterYear] = useState<string>('All');
-  const [searchType, setSearchType] = useState<'PEA Number' | 'Equipment Number ADS' | 'Account Asset Number (AA)' | 'Equipment ID'>('PEA Number');
+  const [searchType, setSearchType] = useState<'PEA Number' | 'Equipment Number ADS' | 'Account Asset Number (AA)' | 'Equipment ID' | 'WBS'>('PEA Number');
   const [searchValue, setSearchValue] = useState<string>('');
 
   // --- Database State ---
@@ -156,6 +156,13 @@ export default function AssetRecord({
     }
     return Array.from(map.values());
   }, [allAssets]);
+
+  // Derived state: find all equipment matching the current WBS search query
+  const wbsMatchingAssets = useMemo(() => {
+    if (searchType !== 'WBS' || !searchValue.trim()) return [];
+    const query = searchValue.trim().toLowerCase();
+    return latestAssets.filter(a => a.wbs?.trim().toLowerCase().includes(query));
+  }, [searchType, searchValue, latestAssets]);
 
   // Derived state: find all revisions (edit history) of the selected equipment ID
   const selectedAssetHistory = useMemo(() => {
@@ -687,6 +694,9 @@ export default function AssetRecord({
         if (searchType === 'Equipment ID') {
           return a.equipmentId?.trim().toLowerCase().includes(normalizedSearch);
         }
+        if (searchType === 'WBS') {
+          return a.wbs?.trim().toLowerCase().includes(normalizedSearch);
+        }
         return false;
       });
 
@@ -697,7 +707,8 @@ export default function AssetRecord({
             a.peaNumber?.trim().toLowerCase().includes(normalizedSearch) ||
             a.assetNumber?.trim().toLowerCase().includes(normalizedSearch) ||
             a.adsNumber?.trim().toLowerCase().includes(normalizedSearch) ||
-            a.equipmentId?.trim().toLowerCase().includes(normalizedSearch)
+            a.equipmentId?.trim().toLowerCase().includes(normalizedSearch) ||
+            a.wbs?.trim().toLowerCase().includes(normalizedSearch)
           );
         });
       }
@@ -1421,6 +1432,7 @@ export default function AssetRecord({
               <option value="Equipment Number ADS">Equipment Number ADS</option>
               <option value="Account Asset Number (AA)">Account Asset Number (AA)</option>
               <option value="Equipment ID">Equipment ID</option>
+              <option value="WBS">WBS Code</option>
             </select>
           </div>
 
@@ -1462,6 +1474,128 @@ export default function AssetRecord({
         <div className="bg-purple-50 text-purple-700 border border-purple-100 p-4 rounded-xl text-xs font-semibold flex items-center gap-2.5">
           <Loader2 className="w-4 h-4 animate-spin shrink-0" />
           <span>{syncStatus}</span>
+        </div>
+      )}
+
+      {/* WBS Summary Report Section */}
+      {searchType === 'WBS' && searchValue.trim() !== '' && (
+        <div className="bg-white rounded-2xl border border-purple-200 p-6 shadow-md space-y-4" id="wbs-summary-card">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-purple-100 pb-3">
+            <div>
+              <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest block">
+                Work Breakdown Structure (WBS) Summary Report
+              </span>
+              <h3 className="text-base font-black text-gray-900 uppercase tracking-tight mt-0.5">
+                WBS Code: {searchValue.trim()}
+              </h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="bg-purple-100 text-purple-900 border border-purple-300 text-xs font-black px-3 py-1.5 rounded-lg shadow-2xs">
+                Total Equipment: {wbsMatchingAssets.length} Units
+              </span>
+            </div>
+          </div>
+
+          {/* Health Index Breakdown Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-emerald-700 uppercase block">Normal Health</span>
+                <span className="text-lg font-black text-emerald-900">
+                  {wbsMatchingAssets.filter(a => a.healthStatus === 'Green').length}
+                </span>
+              </div>
+              <Check className="w-5 h-5 text-emerald-600" />
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-amber-700 uppercase block">Fair / Monitor</span>
+                <span className="text-lg font-black text-amber-900">
+                  {wbsMatchingAssets.filter(a => a.healthStatus === 'Yellow').length}
+                </span>
+              </div>
+              <AlertCircle className="w-5 h-5 text-amber-600" />
+            </div>
+
+            <div className="bg-orange-50 border border-orange-200 p-3 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-orange-700 uppercase block">Further Study</span>
+                <span className="text-lg font-black text-orange-900">
+                  {wbsMatchingAssets.filter(a => a.healthStatus === 'Orange').length}
+                </span>
+              </div>
+              <AlertCircle className="w-5 h-5 text-orange-600" />
+            </div>
+
+            <div className="bg-red-50 border border-red-200 p-3 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-red-700 uppercase block">Action Required</span>
+                <span className="text-lg font-black text-red-900">
+                  {wbsMatchingAssets.filter(a => a.healthStatus === 'Red').length}
+                </span>
+              </div>
+              <X className="w-5 h-5 text-red-600" />
+            </div>
+          </div>
+
+          {/* Individual Equipment List under this WBS */}
+          {wbsMatchingAssets.length > 0 ? (
+            <div className="space-y-2">
+              <span className="text-[10px] font-bold text-gray-500 uppercase block">
+                Select Equipment Below to View / Edit Technical Details
+              </span>
+              <div className="max-h-72 overflow-y-auto border border-gray-200 rounded-xl divide-y divide-gray-100">
+                {wbsMatchingAssets.map((item, idx) => (
+                  <div 
+                    key={item.equipmentId || idx}
+                    className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-purple-50/50 transition-all ${
+                      selectedAsset?.equipmentId === item.equipmentId ? 'bg-purple-50 border-l-4 border-purple-700' : 'bg-white'
+                    }`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs font-black text-gray-900">
+                          {item.equipmentId || `Equipment #${item.number}`}
+                        </span>
+                        <span className="text-[10px] font-bold bg-gray-100 text-gray-700 px-2 py-0.5 rounded-sm">
+                          {item.equipmentType}
+                        </span>
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded-sm uppercase ${
+                          item.healthStatus === 'Green' ? 'bg-emerald-100 text-emerald-800' :
+                          item.healthStatus === 'Yellow' ? 'bg-amber-100 text-amber-800' :
+                          item.healthStatus === 'Orange' ? 'bg-orange-100 text-orange-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {item.healthStatus}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-500">
+                        {item.substationName ? `Substation: ${item.substationName}` : ''} 
+                        {item.feeder ? ` | Feeder: ${item.feeder}` : ''}
+                        {item.peaNumber ? ` | PEA: ${item.peaNumber}` : ''}
+                        {item.assetNumber ? ` | ADS: ${item.assetNumber}` : ''}
+                        {item.adsNumber ? ` | AA: ${item.adsNumber}` : ''}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => selectAsset(item)}
+                      className="bg-purple-900 hover:bg-purple-950 text-white text-xs font-bold px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 self-start sm:self-center cursor-pointer shrink-0"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      Show Details
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500 italic p-3 text-center bg-gray-50 rounded-xl">
+              No equipment found matching WBS code "{searchValue.trim()}".
+            </p>
+          )}
         </div>
       )}
 

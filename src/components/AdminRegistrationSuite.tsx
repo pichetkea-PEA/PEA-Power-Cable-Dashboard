@@ -4,6 +4,7 @@ import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
   PEA_AREAS, 
   PEA_AREA_NAMES, 
+  PEA_AREA_CITIES,
   EQUIPMENT_TYPES, 
   ALL_EQUIPMENT_TYPES,
   VOLTAGE_LEVELS,
@@ -116,9 +117,17 @@ export default function AdminRegistrationSuite({
   }, [equipmentType, yearOfRegistration, voltageLevel, size, runningNumber]);
 
   const generatedEquipmentId = useMemo(() => {
-    const typeCode = getEquipmentTypeAbbreviation(equipmentType) || 'EQP';
-    return `${selectedArea}-${voltageLevel}kV-${yearOfRegistration}-${typeCode}-${generatedPeaNumber}`;
-  }, [selectedArea, voltageLevel, yearOfRegistration, equipmentType, generatedPeaNumber]);
+    return generateEquipmentId({
+      area: selectedArea,
+      voltage: voltageLevel,
+      year: yearOfRegistration,
+      locationType,
+      equipmentType,
+      city: PEA_AREA_CITIES[selectedArea]?.[0] || 'Pathum Thani',
+      cityIndex: runningNumber,
+      peaNumber: generatedPeaNumber
+    });
+  }, [selectedArea, voltageLevel, yearOfRegistration, locationType, equipmentType, runningNumber, generatedPeaNumber]);
 
   // CSV Bulk File Import states
   const [csvFileObj, setCsvFileObj] = useState<File | null>(null);
@@ -638,6 +647,12 @@ export default function AdminRegistrationSuite({
     installationDate?: string,
     regYear?: string
   ) => {
+    // Distribution Circuit assets do not generate a new PEA number
+    const eqLower = (eqType || '').toLowerCase();
+    if (eqLower.includes('distribution circuit') || eqLower === 'distribution circuit') {
+      return '';
+    }
+
     // New Concept: PEA Number is generated using Column R "Installation Date" year converted to Buddhist Era (BE)
     const dateOrYearStr = (installationDate && installationDate.trim()) ? installationDate : (regYear || '');
     let yearNum = new Date().getFullYear();
@@ -658,7 +673,6 @@ export default function AdminRegistrationSuite({
     const yy = String(buddhistYr).slice(-2);
 
     let prefix = 'UG';
-    const eqLower = (eqType || '').toLowerCase();
     if (eqLower.includes('termination')) {
       prefix = 'TM';
     } else if (eqLower.includes('lightning') || eqLower.includes('arrester')) {
@@ -904,6 +918,7 @@ export default function AdminRegistrationSuite({
         const cls = (cols[27] || '').trim();
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
+        const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
 
         // Smart Normalizations
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
@@ -915,10 +930,20 @@ export default function AdminRegistrationSuite({
 
         // Automatically assign latest PEA number searching sheet data using Col B, A, H, I and Installation Date (Col R)
         const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration);
-        allCollectedAssets.push({ pea: autoPea, area });
+        if (autoPea) {
+          allCollectedAssets.push({ pea: autoPea, area });
+        }
 
-        const typeCode = getEquipmentTypeAbbreviation(eqType as EquipmentType) || 'EQP';
-        const autoEqId = `${area}-${volt}kV-${new Date().getFullYear()}-${typeCode}-${autoPea}`;
+        const autoEqId = generateEquipmentId({
+          area,
+          voltage: volt,
+          year: yearOfRegistration || new Date().getFullYear(),
+          locationType,
+          equipmentType: eqType,
+          city,
+          cityIndex: i + 1,
+          peaNumber: autoPea
+        });
 
         parsedReview.push({
           rowNum: i + 2,
@@ -936,7 +961,7 @@ export default function AdminRegistrationSuite({
           peaNumber: autoPea,
           assetNumber,
           adsNumber,
-          equipmentId: autoEqId,
+          equipmentId: inputEqId || autoEqId,
           productionMonth,
           installationDate,
           wbs,
@@ -983,6 +1008,9 @@ export default function AdminRegistrationSuite({
       if (!headers[peaColIdx] || headers[peaColIdx].trim() === '') {
         headers[peaColIdx] = 'Assigned PEA Number';
       }
+      if (headers.length > 30 && (!headers[30] || headers[30].trim() === '' || headers[30].trim().toLowerCase() === 'individual id')) {
+        headers[30] = 'Equipment ID';
+      }
 
       csvLines.push(headers.map(h => `"${(h || '').toString().replace(/"/g, '""')}"`).join(','));
 
@@ -998,8 +1026,13 @@ export default function AdminRegistrationSuite({
           newRow[2] = rec.city || newRow[2];
           newRow[4] = rec.locationType || newRow[4];
           newRow[7] = rec.equipmentType || newRow[7];
-          newRow[9] = rec.peaNumber || newRow[9];
+          const isDistCircuit = (rec.equipmentType || newRow[7] || '').toLowerCase().includes('distribution circuit');
+          newRow[9] = isDistCircuit ? '' : (rec.peaNumber || newRow[9]);
           newRow[21] = rec.installationDate || newRow[21];
+          if (rec.equipmentId) {
+            while (newRow.length <= 30) newRow.push('');
+            newRow[30] = rec.equipmentId; // Column AE (Equipment ID)
+          }
         }
         csvLines.push(newRow.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(','));
       });
@@ -1012,7 +1045,8 @@ export default function AdminRegistrationSuite({
         'Production Month', 'Year of Registration', 'Substation Name', 'Substation ID',
         'Feeder', 'Landmark Location', 'Installation Date', 'WBS', 'Work Order',
         'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number',
-        'Asset Value' // Column AD (Index 29)
+        'Asset Value', // Column AD (Index 29)
+        'Equipment ID' // Column AE (Index 30)
       ];
       csvLines.push(headers.map(h => `"${h}"`).join(','));
 
@@ -1025,7 +1059,8 @@ export default function AdminRegistrationSuite({
           rec.productionMonth, rec.yearOfRegistration, rec.substationName, rec.substationId,
           rec.feeder, rec.landmark, rec.installationDate, rec.wbs, rec.workOrder,
           rec.businessType, rec.costCenter, rec.gistag, rec.class, rec.contractNumber,
-          rec.assetValue || '' // Column AD (Index 29)
+          rec.assetValue || '', // Column AD (Index 29)
+          rec.equipmentId || '' // Column AE (Index 30)
         ];
         csvLines.push(row.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(','));
       });
@@ -1159,7 +1194,8 @@ export default function AdminRegistrationSuite({
       const brgew = '';
       const gewei = '';
       const groes = rec.size || origRow[8] || '';
-      const invnr = rec.peaNumber || origRow[9] || ''; // UPDATED PEA NUMBER
+      const isDistCircuit = eqTypeStr.includes('distribution circuit') || (rec.equipmentType || '').toLowerCase().includes('distribution circuit');
+      const invnr = isDistCircuit ? '' : (rec.peaNumber || origRow[9] || ''); // UPDATED PEA NUMBER (Blank for Distribution Circuit)
       const inbdt = formatDateDDMMYYYY(rec.installationDate || origRow[21] || '');
 
       const rawVal = (rec.assetValue || origRow[29] || '').toString().replace(/,/g, '').trim();
@@ -1263,23 +1299,6 @@ export default function AdminRegistrationSuite({
     const shouldDownloadCsv = downloadMode === true || downloadMode === 'both' || downloadMode === 'csv';
     const shouldDownloadTxt = downloadMode === 'both' || downloadMode === 'txt';
 
-    if (shouldDownloadCsv) {
-      generateAndDownloadCsv(
-        option1ReviewList,
-        csvParsedRows[0],
-        csvParsedRows.slice(1)
-      );
-    }
-
-    if (shouldDownloadTxt) {
-      setTimeout(() => {
-        generateAndDownloadSapTxt(
-          option1ReviewList,
-          csvParsedRows.slice(1)
-        );
-      }, shouldDownloadCsv ? 350 : 0);
-    }
-
     setIsProcessingOption1(true);
     setProgressModal({
       isOpen: true,
@@ -1358,6 +1377,19 @@ export default function AdminRegistrationSuite({
           sheetLastNum += 1;
           const nextIdx = sheetLastNum;
           const timestamp = getBangkokTimestamp();
+
+          // Generate final standardized equipment ID (matching Google Sheets Column AG)
+          const finalEqId = generateEquipmentId({
+            area: rec.area,
+            voltage: rec.voltageLevel,
+            year: rec.yearOfRegistration || new Date().getFullYear(),
+            locationType: rec.locationType,
+            equipmentType: rec.equipmentType,
+            city: rec.city,
+            cityIndex: nextIdx,
+            peaNumber: rec.peaNumber
+          });
+          rec.equipmentId = finalEqId;
 
           const genRow = [
             nextIdx,
@@ -1517,6 +1549,24 @@ export default function AdminRegistrationSuite({
       }
 
       setCommitSuccess(`Option 1 Registration Succeeded! Registered ${totalRegisteredCount} new assets (PEA numbers assigned, ADS & AA left for Option 2 update).`);
+
+      if (shouldDownloadCsv) {
+        generateAndDownloadCsv(
+          option1ReviewList,
+          csvParsedRows[0],
+          csvParsedRows.slice(1)
+        );
+      }
+
+      if (shouldDownloadTxt) {
+        setTimeout(() => {
+          generateAndDownloadSapTxt(
+            option1ReviewList,
+            csvParsedRows.slice(1)
+          );
+        }, shouldDownloadCsv ? 350 : 0);
+      }
+
       setOption1ReviewList([]);
       setCsvParsedRows([]);
       setSelectedCsvOption(null);
@@ -1554,9 +1604,9 @@ export default function AdminRegistrationSuite({
     setOption2ReviewList([]);
 
     try {
-      // File Integrity Check: Check if all data rows have a PEA number in column J (index 9)
+      // File Integrity Check: Check if all data rows have a PEA number in column J (index 9) or Equipment ID in Column AE (index 30)
       const dataRows = csvParsedRows.slice(1);
-      const missingPeaRows: number[] = [];
+      const missingIdentifierRows: number[] = [];
       
       for (let i = 0; i < dataRows.length; i++) {
         const cols = dataRows[i];
@@ -1564,25 +1614,26 @@ export default function AdminRegistrationSuite({
           break; // Stop counting if an empty row or empty first column is found
         }
         const targetPea = (cols[9] || '').trim();
-        if (!targetPea) {
-          missingPeaRows.push(i + 2); // 1-based row number including header
+        const targetEqId = (cols[30] || '').trim();
+        if (!targetPea && !targetEqId) {
+          missingIdentifierRows.push(i + 2); // 1-based row number including header
         }
       }
 
-      if (dataRows.length === 0 || missingPeaRows.length > 0) {
-        const errMsg = missingPeaRows.length > 0
-          ? `File Integrity Check Failed!\n\nThe uploaded CSV file is missing PEA number in Column J at row(s): ${missingPeaRows.slice(0, 5).join(', ')}${missingPeaRows.length > 5 ? '...' : ''}.\n\nThe uploaded file is NOT ready for Option 2 update and the upload process is cancelled.`
+      if (dataRows.length === 0 || missingIdentifierRows.length > 0) {
+        const errMsg = missingIdentifierRows.length > 0
+          ? `File Integrity Check Failed!\n\nThe uploaded CSV file is missing both PEA Number (Column J) and Equipment ID (Column AE) at row(s): ${missingIdentifierRows.slice(0, 5).join(', ')}${missingIdentifierRows.length > 5 ? '...' : ''}.\n\nThe uploaded file is NOT ready for Option 2 update and the upload process is cancelled.`
           : `File Integrity Check Failed!\n\nThe uploaded file contains no data rows. Process cancelled.`;
 
         alert(errMsg);
-        setOption2StatusMsg(`Option 2 Cancelled: File integrity check failed (${missingPeaRows.length} rows missing PEA number in Column J).`);
+        setOption2StatusMsg(`Option 2 Cancelled: File integrity check failed (${missingIdentifierRows.length} rows missing PEA number or Equipment ID).`);
         setSelectedCsvOption(null);
         setOption2ReviewList([]);
         return;
       }
 
       // Integrity check passed! Show popup message and parse items for Review Panel
-      alert(`File Integrity Check Passed!\n\nAll ${dataRows.length} uploaded records have valid PEA numbers in Column J. Ready for review before updating ADS & AA numbers.`);
+      alert(`File Integrity Check Passed!\n\nAll ${dataRows.length} uploaded records have valid PEA numbers or Equipment IDs. Ready for review before updating ADS & AA numbers.`);
 
       const parsedReview2: any[] = [];
       for (let i = 0; i < dataRows.length; i++) {
@@ -1617,6 +1668,7 @@ export default function AdminRegistrationSuite({
         const cls = (cols[27] || '').trim();
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
+        const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
 
         // Smart Normalizations
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
@@ -1625,6 +1677,17 @@ export default function AdminRegistrationSuite({
         const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
         const area = derivedArea || rawArea || 'N1';
         const installationDate = normalizeInstallationDate(rawInstDate);
+
+        const autoEqId = generateEquipmentId({
+          area,
+          voltage: volt,
+          year: yearOfRegistration || new Date().getFullYear(),
+          locationType,
+          equipmentType: eqType,
+          city,
+          cityIndex: i + 1,
+          peaNumber
+        });
 
         parsedReview2.push({
           rowNum: i + 2,
@@ -1642,7 +1705,8 @@ export default function AdminRegistrationSuite({
           peaNumber,
           assetNumber,
           adsNumber,
-          equipmentId: `${area}-${volt}kV-${new Date().getFullYear()}-${eqType}-${peaNumber}`,
+          equipmentId: inputEqId || autoEqId,
+          inputEquipmentId: inputEqId,
           productionMonth,
           installationDate,
           wbs,
@@ -1695,21 +1759,40 @@ export default function AdminRegistrationSuite({
     }
 
     setIsProcessingOption2(true);
-    setOption2StatusMsg('Validating & updating PEA numbers in column J across all regional spreadsheets...');
+    setOption2StatusMsg('Validating & updating asset records across all regional spreadsheets...');
     setOption2TotalToUpdate(0);
     setOption2CurrentIndex(0);
     setOption2CurrentPea('');
 
     try {
-      const listToProcess = option2ReviewList.length > 0 ? option2ReviewList : csvParsedRows.slice(1).map((cols, i) => ({
-        rowNum: i + 2,
-        adsNumber: cols[5] || '',
-        assetNumber: cols[6] || '',
-        peaNumber: cols[9] || '',
-        voltageLevel: cols[0] || '',
-        equipmentType: cols[7] || '',
-        manufacturer: cols[12] || ''
-      }));
+      const listToProcess = option2ReviewList.length > 0 ? option2ReviewList : csvParsedRows.slice(1).map((cols, i) => {
+        const rawVolt = cols[0] || '';
+        const rawArea = cols[1] || '';
+        const adsNumber = cols[5] || '';
+        const assetNumber = cols[6] || '';
+        const rawEqType = cols[7] || '';
+        const peaNumber = cols[9] || '';
+        const inputEqId = cols[30] || '';
+        const autoEqId = generateEquipmentId({
+          area: rawArea,
+          voltage: rawVolt,
+          year: new Date().getFullYear(),
+          equipmentType: rawEqType,
+          cityIndex: i + 1,
+          peaNumber
+        });
+        return {
+          rowNum: i + 2,
+          adsNumber,
+          assetNumber,
+          peaNumber,
+          equipmentId: inputEqId || autoEqId,
+          inputEquipmentId: inputEqId,
+          voltageLevel: rawVolt,
+          equipmentType: rawEqType,
+          manufacturer: cols[12] || ''
+        };
+      });
 
       setOption2TotalToUpdate(listToProcess.length);
 
@@ -1735,19 +1818,21 @@ export default function AdminRegistrationSuite({
 
       // Phase 1: Validate all items in memory and group them by spreadsheetId
       const batchUpdatesBySheet: { [spreadsheetId: string]: { range: string; values: any[][] }[] } = {};
-      const assetsToUpdateInMemory: { targetPea: string; newAds: string; newAa: string }[] = [];
+      const assetsToUpdateInMemory: { targetEqId: string; targetPea: string; newAds: string; newAa: string }[] = [];
 
       for (let i = 0; i < listToProcess.length; i++) {
         const item = listToProcess[i];
         const newAds = item.adsNumber || '';
         const newAa = item.assetNumber || '';
-        const targetPea = item.peaNumber || '';
+        const targetPea = (item.peaNumber || '').trim();
+        // Only use explicit inputEquipmentId / Column AE from uploaded CSV when searching by Equipment ID!
+        const targetEqId = (item.inputEquipmentId || '').trim();
 
         setOption2CurrentIndex(i + 1);
-        setOption2CurrentPea(`Validating ${targetPea}...`);
+        setOption2CurrentPea(`Validating ${targetPea || targetEqId}...`);
 
-        if (!targetPea || targetPea.trim() === '') {
-          alert(`Row ${item.rowNum || (i + 2)}: Missing PEA number in column J.`);
+        if (!targetPea && !targetEqId) {
+          alert(`Row ${item.rowNum || (i + 2)}: Missing both PEA number (Column J) and Equipment ID (Column AE).`);
           setIsProcessingOption2(false);
           return;
         }
@@ -1757,7 +1842,21 @@ export default function AdminRegistrationSuite({
         for (const sId of sheetsToCheck) {
           const sheetRowsData = cachedSheetsData[sId] || [];
           sheetRowsData.forEach((asset) => {
-            if (asset.peaNumber && asset.peaNumber.trim().toLowerCase() === targetPea.trim().toLowerCase()) {
+            let isMatch = false;
+            // Condition 1: If uploaded file has a valid PEA number, search by PEA number
+            if (targetPea) {
+              if (asset.peaNumber && asset.peaNumber.trim().toLowerCase() === targetPea.toLowerCase()) {
+                isMatch = true;
+              }
+            } 
+            // Condition 2: If uploaded file has NO PEA number, search by Column AE ("Equipment ID") against Column AG ("Equipment ID") in Google Sheet
+            else if (targetEqId) {
+              if (asset.equipmentId && asset.equipmentId.trim().toLowerCase() === targetEqId.toLowerCase()) {
+                isMatch = true;
+              }
+            }
+
+            if (isMatch) {
               foundLocations.push({
                 spreadsheetId: sId,
                 rowIndex: asset.number + 1,
@@ -1772,7 +1871,17 @@ export default function AdminRegistrationSuite({
           if (localSaved) {
             const parsedLocal = JSON.parse(localSaved);
             parsedLocal.forEach((ast: any, idx: number) => {
-              if (ast.peaNumber && ast.peaNumber.trim().toLowerCase() === targetPea.trim().toLowerCase()) {
+              let isMatch = false;
+              if (targetPea) {
+                if (ast.peaNumber && ast.peaNumber.trim().toLowerCase() === targetPea.toLowerCase()) {
+                  isMatch = true;
+                }
+              } else if (targetEqId) {
+                if (ast.equipmentId && ast.equipmentId.trim().toLowerCase() === targetEqId.toLowerCase()) {
+                  isMatch = true;
+                }
+              }
+              if (isMatch) {
                 foundLocations.push({
                   spreadsheetId: 'local',
                   rowIndex: idx + 1,
@@ -1784,13 +1893,13 @@ export default function AdminRegistrationSuite({
         }
 
         if (foundLocations.length === 0) {
-          alert(`PEA Number "${targetPea}" (Row ${item.rowNum || (i + 2)}) not found in any regional spreadsheet or database.`);
+          alert(`Record "${targetPea || targetEqId}" (Row ${item.rowNum || (i + 2)}) not found in any regional spreadsheet or database.`);
           setIsProcessingOption2(false);
           return;
         }
 
         if (foundLocations.length > 1) {
-          alert(`Found duplicated PEA number ("${targetPea}") across multiple sheets or rows. Please fix this before upload.`);
+          alert(`Found duplicated asset record ("${targetPea || targetEqId}") across multiple sheets or rows. Please fix this before upload.`);
           setIsProcessingOption2(false);
           return;
         }
@@ -1799,6 +1908,9 @@ export default function AdminRegistrationSuite({
         const existing = match.rowData;
 
         if (googleToken && match.spreadsheetId !== 'local') {
+          const updatedAds = newAds ? newAds : (existing.assetNumber || '');
+          const updatedAa = newAa ? newAa : (existing.adsNumber || '');
+
           const fullRowValues = [
             existing.number,
             existing.timestamp ? getBangkokTimestamp(existing.timestamp) : getBangkokTimestamp(),
@@ -1814,8 +1926,8 @@ export default function AdminRegistrationSuite({
             existing.gps ? `${existing.gps.lat}, ${existing.gps.lng}` : '13.7563, 100.5018',
             existing.yearOfRegistration,
             existing.peaNumber,
-            newAds,
-            newAa,
+            updatedAds,
+            updatedAa,
             existing.productionMonth || '',
             existing.installationDate || '',
             existing.wbs || '',
@@ -1844,7 +1956,7 @@ export default function AdminRegistrationSuite({
           });
         }
 
-        assetsToUpdateInMemory.push({ targetPea, newAds, newAa });
+        assetsToUpdateInMemory.push({ targetEqId, targetPea, newAds, newAa });
       }
 
       // Phase 2: Execute batch updates grouped by spreadsheetId
@@ -1865,12 +1977,19 @@ export default function AdminRegistrationSuite({
       }
 
       // Also update assets in memory and central cache
-      assetsToUpdateInMemory.forEach(({ targetPea, newAds, newAa }) => {
+      assetsToUpdateInMemory.forEach(({ targetEqId, targetPea, newAds, newAa }) => {
         if (assets && assets.length > 0) {
-          const targetIndex = assets.findIndex(ast => ast.peaNumber?.trim().toLowerCase() === targetPea.trim().toLowerCase());
+          const targetIndex = assets.findIndex(ast => {
+            if (targetPea) {
+              return ast.peaNumber && ast.peaNumber.trim().toLowerCase() === targetPea.toLowerCase();
+            } else if (targetEqId) {
+              return ast.equipmentId && ast.equipmentId.trim().toLowerCase() === targetEqId.toLowerCase();
+            }
+            return false;
+          });
           if (targetIndex !== -1) {
-            assets[targetIndex].assetNumber = newAds;
-            assets[targetIndex].adsNumber = newAa;
+            if (newAds) assets[targetIndex].assetNumber = newAds;
+            if (newAa) assets[targetIndex].adsNumber = newAa;
           }
         }
       });

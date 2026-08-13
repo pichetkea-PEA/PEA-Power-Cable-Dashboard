@@ -2,7 +2,7 @@ import React, { useState, useEffect, FormEvent } from 'react';
 import { PEAUser, CableAsset, UserRole } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
-import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache } from "./utils/firestore";
+import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
 import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
 import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
@@ -504,10 +504,28 @@ export default function App() {
   const fetchSessionCounterRef = React.useRef<number>(0);
 
   // Load spreadsheet data once spreadsheetId is verified
-  const handleLoadSpreadsheet = async (token: string, sheetIds: string[], isAdminUser = false) => {
+  const handleLoadSpreadsheet = async (token: string, sheetIds: string[], isAdminUser = false, isForceRefresh = false) => {
     if (!token) return;
-    const uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
+    let uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
+
+    // Auto-discover if we have fewer than 12 regional sheets
+    if (uniqueIds.length < 12) {
+      try {
+        const discovered = await autoDiscoverAndSync(token);
+        if (discovered.spreadsheets) {
+          const discoveredIds = Object.values(discovered.spreadsheets).filter(Boolean);
+          uniqueIds = Array.from(new Set([...uniqueIds, ...discoveredIds]));
+        }
+      } catch (e) {
+        console.warn('Auto-discovery error during sheet load:', e);
+      }
+    }
+
     if (uniqueIds.length === 0) return;
+
+    if (isForceRefresh) {
+      clearCentralAssetsCache();
+    }
 
     // Increment fetch session counter so a newer call with all 12 sheets supersedes any older call
     const currentSession = ++fetchSessionCounterRef.current;
@@ -518,18 +536,27 @@ export default function App() {
     setSyncSuccessMessage(null);
     setSyncProgress({ current: 0, total: uniqueIds.length, statusText: 'Connecting to Admin Central Google Sheets...' });
 
-    // Pre-load Firestore central assets cache immediately so dashboard displays 7,000+ assets instantly
-    try {
-      const cached = await getCentralAssetsCache();
-      if (cached && cached.length > 0) {
-        setAssets(prev => (prev && prev.length >= 100 ? prev : cached));
+    // Pre-load Firestore central assets cache immediately into an asset map unless force refresh requested
+    const assetMap = new Map<string, CableAsset>();
+    if (!isForceRefresh) {
+      try {
+        const cached = await getCentralAssetsCache();
+        if (cached && cached.length > 0) {
+          cached.forEach(a => {
+            const key = a.equipmentId ? a.equipmentId.trim() : `ROW_${a.number}`;
+            assetMap.set(key, a);
+          });
+          setAssets(Array.from(assetMap.values()));
+        }
+      } catch (e) {
+        console.warn('Error preloading central cache:', e);
       }
-    } catch (e) {
-      console.warn('Error preloading central cache:', e);
     }
 
+    let successfulSectors = 0;
+    let failedSectors = 0;
+
     try {
-      let allAssets: CableAsset[] = [];
       for (let i = 0; i < uniqueIds.length; i++) {
         if (currentSession !== fetchSessionCounterRef.current) {
           console.log(`Sheet fetch session ${currentSession} superseded by newer session ${fetchSessionCounterRef.current}`);
@@ -539,7 +566,7 @@ export default function App() {
         setSyncProgress({
           current: i + 1,
           total: uniqueIds.length,
-          statusText: `Fetching sector spreadsheet ${i + 1} of ${uniqueIds.length} from Admin Central Drive...`
+          statusText: `Fetching sector ${i + 1} of ${uniqueIds.length} from Admin Central Drive... (${assetMap.size.toLocaleString()} assets active)`
         });
 
         if (i > 0) {
@@ -549,37 +576,88 @@ export default function App() {
 
         if (currentSession !== fetchSessionCounterRef.current) return;
 
-        try {
-          const data = await fetchSheetsData(token, id);
-          if (currentSession !== fetchSessionCounterRef.current) return;
-          allAssets = [...allAssets, ...data];
+        let sectorData: CableAsset[] | null = null;
+        let attempts = 0;
+        const maxAttempts = 3;
+
+        while (attempts < maxAttempts && !sectorData) {
+          attempts++;
+          try {
+            sectorData = await fetchSheetsData(token, id);
+          } catch (err: any) {
+            if (err.message?.includes('Status: 404')) {
+              console.warn(`Spreadsheet ${id} not found.`);
+              break;
+            }
+            console.warn(`Attempt ${attempts}/${maxAttempts} failed for sheet ${id}:`, err);
+            if (attempts < maxAttempts) {
+              await new Promise(r => setTimeout(r, 800 * attempts));
+            }
+          }
+        }
+
+        if (currentSession !== fetchSessionCounterRef.current) return;
+
+        if (sectorData && Array.isArray(sectorData)) {
+          successfulSectors++;
+
+          // STALE CACHE EVICTION FOR THIS SPREADSHEET / SECTOR:
+          // Determine the sector area prefix from live sheet data
+          let targetSectorArea = '';
+          if (sectorData.length > 0) {
+            const first = sectorData[0];
+            if (first.equipmentId) {
+              targetSectorArea = first.equipmentId.split('-')[0]?.trim().toUpperCase() || '';
+            }
+            if (!targetSectorArea && first.peaNumber) {
+              targetSectorArea = first.peaNumber.split('-')[1]?.trim().toUpperCase() || '';
+            }
+          }
+
+          // Delete all previously cached entries in assetMap originating from this spreadsheetId or sector area
+          for (const [key, existingAsset] of Array.from(assetMap.entries())) {
+            const matchSheet = existingAsset.spreadsheetId === id;
+            const matchArea = targetSectorArea && (
+              existingAsset.equipmentId?.split('-')[0]?.trim().toUpperCase() === targetSectorArea ||
+              (existingAsset as any).peaArea === targetSectorArea
+            );
+            if (matchSheet || matchArea) {
+              assetMap.delete(key);
+            }
+          }
+
+          // Insert fresh live rows from Google Sheets
+          sectorData.forEach(a => {
+            const key = a.equipmentId ? a.equipmentId.trim() : `ROW_${a.number}`;
+            assetMap.set(key, a);
+          });
+
           // Progressive update so dashboard updates live
-          if (allAssets.length > 0) {
-            setAssets(allAssets);
-          }
-        } catch (err: any) {
-          if (err.message?.includes('Status: 404')) {
-            console.warn(`Spreadsheet ${id} not found, skipping.`);
-            continue;
-          }
-          if (err.message?.includes('Status: 429')) {
-            console.warn(`Spreadsheet ${id} rate limited (429), proceeding with fetched assets.`);
-            continue;
-          }
-          console.warn(`Failed to fetch sheet ${id}:`, err);
+          setAssets(Array.from(assetMap.values()));
+        } else {
+          failedSectors++;
+          console.warn(`Sector sheet ${id} returned 0 records or failed after ${maxAttempts} attempts. Retaining cached assets for this sector.`);
         }
       }
 
       if (currentSession !== fetchSessionCounterRef.current) return;
 
-      if (allAssets.length > 0) {
-        setAssets(allAssets);
-        saveCentralAssetsCache(allAssets).catch(() => {});
+      const finalAssets = Array.from(assetMap.values());
+
+      if (finalAssets.length > 0) {
+        setAssets(finalAssets);
+        // Force save to central cache to sync clean live Google Sheets data across all users
+        saveCentralAssetsCache(finalAssets, true).catch(() => {});
         try {
-          localStorage.setItem('pea_central_assets_backup', JSON.stringify(allAssets));
+          localStorage.setItem('pea_central_assets_backup', JSON.stringify(finalAssets));
         } catch (e) {}
         updateLastFetchedTimestamp();
-        setSyncSuccessMessage(`Central Database Synchronized! Loaded ${allAssets.length.toLocaleString()} cable assets from Admin Google Sheets across ${uniqueIds.length} sectors.`);
+
+        if (failedSectors === 0) {
+          setSyncSuccessMessage(`Central Database Synchronized! 100% Verified with Google Sheets. Fully loaded ${finalAssets.length.toLocaleString()} cable assets across ${uniqueIds.length} sectors.`);
+        } else {
+          setSyncSuccessMessage(`Central Database Synchronized! Loaded ${finalAssets.length.toLocaleString()} cable assets (${successfulSectors}/${uniqueIds.length} sectors live).`);
+        }
       } else {
         let loaded = false;
         try {
@@ -617,27 +695,17 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('handleLoadSpreadsheet error:', err);
-      let loaded = false;
-      try {
-        const cached = await getCentralAssetsCache();
-        if (cached && cached.length > 0) {
-          setAssets(cached);
-          loaded = true;
-        }
-      } catch (e) {}
-
-      if (!loaded && assets.length === 0) {
+      const finalAssets = Array.from(assetMap.values());
+      if (finalAssets.length > 0) {
+        setAssets(finalAssets);
+        setSyncSuccessMessage(`Central Database Active! Loaded ${finalAssets.length.toLocaleString()} cable assets.`);
+      } else {
         setAssets(getMockAssets());
-      }
-
-      if ((window as any).firestoreQuotaExceeded) {
-        setFirestoreQuotaExceeded(true);
+        setSyncSuccessMessage("Central Database offline. Loaded offline backup telemetry datasets.");
       }
     } finally {
-      if (currentSession === fetchSessionCounterRef.current) {
-        setIsLoading(false);
-        setIsSyncingCentralDb(false);
-      }
+      setIsLoading(false);
+      setIsSyncingCentralDb(false);
     }
   };
 
@@ -925,13 +993,14 @@ export default function App() {
 
   // Re-fetch spreadsheet assets across ALL registered roles
   const handleManualRefresh = () => {
+    clearCentralAssetsCache();
     const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
     const isAdminUser = user?.role === 'Admin' || (user?.email ? isAdminAccount(user.email) : false);
     if (googleToken && idsToFetch.length > 0) {
-      handleLoadSpreadsheet(googleToken, idsToFetch, isAdminUser);
+      handleLoadSpreadsheet(googleToken, idsToFetch, isAdminUser, true);
     } else {
-      // Reload from central Firestore cache
-      getCentralAssetsCache().then(cached => {
+      // Reload from central Firestore cache with force refresh
+      getCentralAssetsCache(true).then(cached => {
         if (cached && cached.length > 0) {
           setAssets(cached);
           setSyncSuccessMessage(`Central Admin Database Refreshed! Loaded ${cached.length.toLocaleString()} cable assets from Admin Google Sheets database.`);
