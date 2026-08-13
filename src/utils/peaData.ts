@@ -908,6 +908,62 @@ export function getEquipmentTypeAbbreviation(type: string): string {
   return getEquipmentTypeAbbreviation2(type);
 }
 
+// Helper to get condition prefix string: {AREA}-{VOLTAGE}{LOC_TYPE}{EQ_TYPE}-{YEAR}-{CITY_ABBR}
+export function getEquipmentConditionPrefix(params: {
+  area?: string;
+  voltage?: string;
+  locationType?: string;
+  equipmentType?: string;
+  year?: string | number;
+  city?: string;
+}): string {
+  const cleanArea = String(params.area || 'S2').trim().split('-')[0].toUpperCase() || 'S2';
+  const vCode = getVoltageCode(String(params.voltage || '115'));
+  const locCode = getLocationTypeAbbreviation(String(params.locationType || 'Transmission Line'));
+  const eqCode = getEquipmentTypeAbbreviation2(String(params.equipmentType || 'Underground Cable'));
+  const yearStr = String(params.year || new Date().getFullYear()).replace(/\D/g, '') || String(new Date().getFullYear());
+  const cityAbbr = getCityAbbreviation(String(params.city || ''));
+
+  return `${cleanArea}-${vCode}${locCode}${eqCode}-${yearStr}-${cityAbbr}`;
+}
+
+// Calculate the latest running number among existing assets matching the exact condition prefix
+export function getLatestEquipmentRunningNumber(
+  existingAssets: Array<any>,
+  params: {
+    area?: string;
+    voltage?: string;
+    locationType?: string;
+    equipmentType?: string;
+    year?: string | number;
+    city?: string;
+  }
+): number {
+  const prefix = getEquipmentConditionPrefix(params);
+  let maxNum = 0;
+
+  if (Array.isArray(existingAssets)) {
+    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^${escapedPrefix}#(\\d{1,5})`, 'i');
+
+    for (const asset of existingAssets) {
+      if (!asset) continue;
+      const eqId = asset.equipmentId || asset.equipmentID || asset.eqId;
+      if (eqId) {
+        const match = String(eqId).trim().match(regex);
+        if (match && match[1]) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxNum) {
+            maxNum = num;
+          }
+        }
+      }
+    }
+  }
+
+  return maxNum;
+}
+
 // Generate Equipment ID helper: {AREA}-{VOLTAGE}{LOC_TYPE}{EQ_TYPE}-{YEAR}-{CITY_ABBR}#{RUNNING_NO}-{PEA_6DIGITS}
 export function generateEquipmentId(
   p1: any,
@@ -921,11 +977,11 @@ export function generateEquipmentId(
 ): string {
   let area = 'S2';
   let voltage = '115';
-  let year: any = 2020;
-  let locationType = 'Transmission line';
+  let year: any = new Date().getFullYear();
+  let locationType = 'Transmission Line';
   let equipmentType = 'Underground Cable';
-  let city = 'Trat';
-  let cityIndex = 1;
+  let city = '';
+  let cityIndex: number | null = null;
   let peaNumber = '';
 
   if (typeof p1 === 'object' && p1 !== null) {
@@ -935,7 +991,7 @@ export function generateEquipmentId(
     locationType = p1.locationType || locationType;
     equipmentType = p1.equipmentType || equipmentType;
     city = p1.city || city;
-    cityIndex = p1.cityIndex ?? p1.index ?? cityIndex;
+    cityIndex = p1.cityIndex ?? p1.runningNumber ?? p1.index ?? null;
     peaNumber = p1.peaNumber || peaNumber;
   } else if (typeof p4 === 'string' && (p4.toLowerCase().includes('transmission') || p4.toLowerCase().includes('substation') || p4.toLowerCase().includes('distribution') || p4 === 'TL' || p4 === 'SU' || p4 === 'DT')) {
     area = p1 || area;
@@ -944,7 +1000,7 @@ export function generateEquipmentId(
     locationType = p4 || locationType;
     equipmentType = p5 || equipmentType;
     city = p6 || city;
-    cityIndex = p7 ?? cityIndex;
+    cityIndex = p7 ?? null;
     peaNumber = p8 || peaNumber;
   } else {
     area = p1 || area;
@@ -953,7 +1009,7 @@ export function generateEquipmentId(
     equipmentType = p4 || equipmentType;
     if (typeof p6 === 'number' || (typeof p6 === 'string' && !isNaN(Number(p6)))) {
       city = p5 || city;
-      cityIndex = Number(p6) || 1;
+      cityIndex = Number(p6) || null;
       peaNumber = p7 || '';
     } else {
       peaNumber = p5 || '';
@@ -962,16 +1018,20 @@ export function generateEquipmentId(
     }
   }
 
-  const cleanArea = String(area || 'S2').trim().split('-')[0].toUpperCase() || 'S2';
-  const vCode = getVoltageCode(String(voltage));
-  const locCode = getLocationTypeAbbreviation(String(locationType));
-  const eqCode = getEquipmentTypeAbbreviation2(String(equipmentType));
-  const yearStr = String(year || '2020').replace(/\D/g, '') || '2020';
-  const cityAbbr = getCityAbbreviation(String(city));
-  const indexStr = String(cityIndex || 1).padStart(5, '0');
-  const peaCode = getPea6Digits(String(peaNumber));
+  const prefix = getEquipmentConditionPrefix({ area, voltage, locationType, equipmentType, year, city });
+  
+  const numToUse = (cityIndex !== null && cityIndex > 0) ? cityIndex : 1;
+  const indexStr = String(numToUse).padStart(5, '0');
 
-  return `${cleanArea}-${vCode}${locCode}${eqCode}-${yearStr}-${cityAbbr}#${indexStr}-${peaCode}`;
+  const eqCode = getEquipmentTypeAbbreviation2(String(equipmentType));
+  
+  // 1.9 Distribution Circuit or empty PEA number gets XXXXXX
+  let peaCode = 'XXXXXX';
+  if (eqCode !== 'DC' && peaNumber && String(peaNumber).trim() !== '' && String(peaNumber).toUpperCase() !== 'N/A' && String(peaNumber).toUpperCase() !== 'NONE') {
+    peaCode = getPea6Digits(String(peaNumber));
+  }
+
+  return `${prefix}#${indexStr}-${peaCode}`;
 }
 
 // Generate beautiful high-fidelity mock data for initial load/fallback

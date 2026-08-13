@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, ChangeEvent } from 'react';
 import { jsPDF } from 'jspdf';
+import { QRCodeSVG } from 'qrcode.react';
 import { 
   ResponsiveContainer, 
   AreaChart, 
@@ -455,6 +456,7 @@ export default function AssetRecord({
   const [editWorkOrder, setEditWorkOrder] = useState<string>('');
   const [editSize, setEditSize] = useState<string>('400 sq.mm');
   const [editAssetValue, setEditAssetValue] = useState<string>('');
+  const [editQrDocument, setEditQrDocument] = useState<string>('');
   const [showAdvancedEdit, setShowAdvancedEdit] = useState<boolean>(false);
 
   // 2 New Engineering columns
@@ -792,6 +794,7 @@ export default function AssetRecord({
     setEditWorkOrder(asset.workOrder || '');
     setEditSize(asset.size || '400 sq.mm');
     setEditAssetValue(asset.assetValue || '');
+    setEditQrDocument(asset.qrDocument || '');
 
     // Engineering
     setEditLoadCurrent(asset.loadCurrent?.toString() || '');
@@ -1006,7 +1009,7 @@ export default function AssetRecord({
         // Preserve original equipmentId when editing an existing asset
         const updatedEquipmentId = selectedAsset.equipmentId;
 
-        // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Asset Value, Column AG (32): Equipment ID
+        // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Asset Value, Column AG (32): Equipment ID, Column AH (33): QR Document URL
         const generalRow = [
           selectedAsset.number, timestamp, user.name, editVoltage, editCity, editEqType,
           editManufacturer || 'Prysmian Group', editCountry || 'Thailand', editLocationType,
@@ -1017,7 +1020,7 @@ export default function AssetRecord({
           editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
           editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
           editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
-          updatedEquipmentId
+          updatedEquipmentId, (editQrDocument || '').trim()
         ];
 
         const engineeringRow = [
@@ -1035,7 +1038,7 @@ export default function AssetRecord({
         ];
 
         // Execute batch row overwrites
-        await updateSheetRow(googleToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AG');
+        await updateSheetRow(googleToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AH');
         if (engRowIndex !== -1) {
           await updateSheetRow(googleToken, targetSpreadsheetId, 'Engineering Information', engRowIndex, engineeringRow, 'A:M');
         } else {
@@ -2104,6 +2107,69 @@ export default function AssetRecord({
                           disabled={!isEditing}
                           className={getInputClassName()}
                         />
+                      </div>
+                    </div>
+
+                    {/* Engineering Document QR Code (Column AH) */}
+                    <div className="pt-2">
+                      <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="p-1.5 bg-amber-500 text-white rounded-lg shadow-2xs">
+                              <QrCode className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <h4 className="text-[11px] font-black text-amber-950 uppercase tracking-wider">
+                                QR Document Link (Column AH)
+                              </h4>
+                              <p className="text-[9px] text-amber-800 font-medium">
+                                As-built drawings, catalogue, type test & routine test storage
+                              </p>
+                            </div>
+                          </div>
+                          {!isEditing && selectedAsset.qrDocument && (
+                            <a
+                              href={selectedAsset.qrDocument}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all shadow-2xs cursor-pointer shrink-0"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Open Document</span>
+                            </a>
+                          )}
+                        </div>
+
+                        {isEditing ? (
+                          <div className="space-y-1 pt-1">
+                            <label className="text-[9px] font-bold text-amber-900 uppercase block">Cloud Storage Link URL (Column AH)</label>
+                            <input
+                              type="url"
+                              value={editQrDocument}
+                              onChange={e => setEditQrDocument(e.target.value)}
+                              placeholder="https://drive.google.com/... or cloud document link"
+                              className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
+                            />
+                          </div>
+                        ) : selectedAsset.qrDocument ? (
+                          <div className="flex items-center gap-3 bg-white/90 p-2.5 rounded-lg border border-amber-100">
+                            <div className="p-1 bg-white rounded-lg border border-amber-200 shadow-2xs shrink-0">
+                              <QRCodeSVG value={selectedAsset.qrDocument} size={80} level="M" />
+                            </div>
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <div className="text-[11px] font-bold text-gray-800 font-mono truncate">
+                                {selectedAsset.qrDocument}
+                              </div>
+                              <p className="text-[10px] text-gray-500">
+                                Scan QR code with phone or tablet to open online engineering documents.
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-amber-800 italic bg-white/60 p-2 rounded-lg border border-amber-100 text-center">
+                            No cloud engineering document link registered in Column AH for this asset.
+                          </div>
+                        )}
                       </div>
                     </div>
 

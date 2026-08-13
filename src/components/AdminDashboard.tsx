@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { 
   CableAsset, 
   DashboardFilters, 
@@ -37,7 +38,8 @@ import {
   Calendar,
   ExternalLink,
   X,
-  FileSpreadsheet
+  FileSpreadsheet,
+  QrCode
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -1186,6 +1188,56 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
                     </div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Substation landmark:</span><span className="font-bold text-gray-800 truncate max-w-[180px]">{selectedAsset.landmark || 'N/A'}</span></div>
                     <div className="flex justify-between"><span className="text-gray-400 font-medium">Asset Valuation:</span><span className="font-bold text-emerald-700 font-mono">{selectedAsset.assetValue || 'N/A'}</span></div>
+                  </div>
+
+                  {/* Engineering Document QR Code (Column AH) */}
+                  <div className="mt-3 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200/80 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1 bg-amber-500 text-white rounded-md shadow-2xs">
+                          <QrCode className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <h5 className="text-[10px] font-black text-amber-950 uppercase tracking-wider">
+                            QR Document (Col AH)
+                          </h5>
+                          <p className="text-[9px] text-amber-800 font-medium">
+                            As-built drawings, catalog & type test cloud link
+                          </p>
+                        </div>
+                      </div>
+                      {selectedAsset.qrDocument && (
+                        <a
+                          href={selectedAsset.qrDocument}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-0.5 rounded-lg flex items-center gap-1 transition-all shadow-2xs cursor-pointer shrink-0"
+                        >
+                          <ExternalLink className="w-2.5 h-2.5" />
+                          <span>Open</span>
+                        </a>
+                      )}
+                    </div>
+
+                    {selectedAsset.qrDocument ? (
+                      <div className="flex items-center gap-2.5 bg-white/90 p-2 rounded-lg border border-amber-100">
+                        <div className="p-1 bg-white rounded-md border border-amber-200 shadow-2xs shrink-0">
+                          <QRCodeSVG value={selectedAsset.qrDocument} size={65} level="M" />
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="text-[10px] font-bold text-gray-800 font-mono truncate">
+                            {selectedAsset.qrDocument}
+                          </div>
+                          <p className="text-[9px] text-gray-500 leading-tight">
+                            Scan with camera to view equipment catalogue and drawings.
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-amber-800 italic bg-white/60 p-1.5 rounded-lg border border-amber-100 text-center">
+                        No cloud engineering document URL in Column AH.
+                      </div>
+                    )}
                   </div>
                 </div>
 

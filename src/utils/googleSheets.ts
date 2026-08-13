@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS } from './peaData';
+import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -479,6 +479,7 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     if (norm === 'size') return data.size ?? defaultValues[idx] ?? '';
     if (norm === 'assetvalue' || norm === 'value') return data.assetValue ?? defaultValues[idx] ?? '';
     if (norm === 'equipmentid') return data.equipmentId ?? defaultValues[idx] ?? '';
+    if (norm === 'qrdocument' || norm === 'qrdocumenturl' || norm === 'qrdocumentlink') return data.qrDocument ?? defaultValues[idx] ?? '';
     
     // Standard Engineering Information
     if (norm === 'loadcurrentamps' || norm === 'loadcurrent') return data.loadCurrent ?? defaultValues[idx] ?? '';
@@ -634,6 +635,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     const size = getVal('size');
     const assetValue = getVal('assetvalue') || getVal('value') || (row.length > 31 && !row[31]?.toString().includes('-') ? cleanStr(row[31]) : '');
     let equipmentId = getVal('equipmentid');
+    const qrDocument = getVal('qrdocument') || getVal('qrdocumenturl') || getVal('qrdocumentlink') || (row.length > 33 ? cleanStr(row[33]) : '');
 
     // Fallbacks if equipmentid didn't match directly
     if (!equipmentId) {
@@ -671,7 +673,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       'assetnumber', 'accountassetnumberaa', 'adsnumber', 'aanumber', 'productionmonth',
       'installationdate', 'wbs', 'wbscode', 'businesstype', 'costcenter', 'gistag', 'class',
       'contractnumber', 'feeder', 'substationid', 'operateid', 'serialnumber', 'model',
-      'workorder', 'size', 'assetvalue', 'value', 'equipmentid'
+      'workorder', 'size', 'assetvalue', 'value', 'equipmentid', 'qrdocument', 'qrdocumenturl', 'qrdocumentlink'
     ];
 
     const customFields: Record<string, string> = {};
@@ -716,6 +718,7 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
       size,
       assetValue,
       equipmentId,
+      qrDocument,
       customFields
     };
   });
@@ -1510,21 +1513,30 @@ export async function migrateExistingSheetEquipmentIds(
       const year = yearIdx < row.length ? cleanStr(row[yearIdx]) : '2020';
       const peaNumber = peaIdx < row.length ? cleanStr(row[peaIdx]) : '';
 
-      const cityAbbr = getCityAbbreviation(city);
-
       // Deduce row-specific area code if city explicitly maps to another area
       const rowArea = getAreaFromCity(city) || areaCode;
 
-      cityCounters[cityAbbr] = (cityCounters[cityAbbr] || 0) + 1;
-      const cityIndex = cityCounters[cityAbbr];
+      const condParams = { area: rowArea, voltage, year, locationType: locType, equipmentType: eqType, city };
+      const prefix = getEquipmentConditionPrefix(condParams);
+
+      let cityIndex: number;
+      const existingMatch = oldEqId ? oldEqId.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}#(\\d{1,5})`, 'i')) : null;
+
+      if (existingMatch && existingMatch[1]) {
+        cityIndex = parseInt(existingMatch[1], 10);
+        if (cityCounters[prefix] === undefined || cityIndex > cityCounters[prefix]) {
+          cityCounters[prefix] = cityIndex;
+        }
+      } else {
+        if (cityCounters[prefix] === undefined) {
+          cityCounters[prefix] = 0;
+        }
+        cityCounters[prefix] += 1;
+        cityIndex = cityCounters[prefix];
+      }
 
       const newEqId = generateEquipmentId({
-        area: rowArea,
-        voltage,
-        year,
-        locationType: locType,
-        equipmentType: eqType,
-        city,
+        ...condParams,
         cityIndex,
         peaNumber
       });

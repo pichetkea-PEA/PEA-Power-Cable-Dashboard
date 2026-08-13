@@ -12,6 +12,8 @@ import {
   getManufacturersForEquipmentType,
   COUNTRIES_OF_ORIGIN,
   generateEquipmentId,
+  getEquipmentConditionPrefix,
+  getLatestEquipmentRunningNumber,
   normalizeVoltageLevel,
   normalizeEquipmentType,
   normalizeLocationType,
@@ -117,17 +119,21 @@ export default function AdminRegistrationSuite({
   }, [equipmentType, yearOfRegistration, voltageLevel, size, runningNumber]);
 
   const generatedEquipmentId = useMemo(() => {
-    return generateEquipmentId({
+    const params = {
       area: selectedArea,
       voltage: voltageLevel,
       year: yearOfRegistration,
       locationType,
       equipmentType,
       city: PEA_AREA_CITIES[selectedArea]?.[0] || 'Pathum Thani',
-      cityIndex: runningNumber,
+    };
+    const latestNum = getLatestEquipmentRunningNumber(assets, params);
+    return generateEquipmentId({
+      ...params,
+      cityIndex: latestNum + 1,
       peaNumber: generatedPeaNumber
     });
-  }, [selectedArea, voltageLevel, yearOfRegistration, locationType, equipmentType, runningNumber, generatedPeaNumber]);
+  }, [selectedArea, voltageLevel, yearOfRegistration, locationType, equipmentType, assets, generatedPeaNumber]);
 
   // CSV Bulk File Import states
   const [csvFileObj, setCsvFileObj] = useState<File | null>(null);
@@ -182,6 +188,8 @@ export default function AdminRegistrationSuite({
     totalItems?: number;
     currentItemIndex?: number;
     currentItemName?: string;
+    actionButtonText?: string;
+    onAction?: () => void;
   }>({
     isOpen: false,
     title: 'Registering New Asset',
@@ -853,6 +861,7 @@ export default function AdminRegistrationSuite({
 
       const dataRows = csvParsedRows.slice(1);
       const parsedReview: any[] = [];
+      const batchConditionCounters: Record<string, number> = {};
 
       for (let i = 0; i < dataRows.length; i++) {
         const cols = dataRows[i];
@@ -934,14 +943,24 @@ export default function AdminRegistrationSuite({
           allCollectedAssets.push({ pea: autoPea, area });
         }
 
-        const autoEqId = generateEquipmentId({
+        const condParams = {
           area,
           voltage: volt,
           year: yearOfRegistration || new Date().getFullYear(),
           locationType,
           equipmentType: eqType,
-          city,
-          cityIndex: i + 1,
+          city
+        };
+        const prefix = getEquipmentConditionPrefix(condParams);
+        if (batchConditionCounters[prefix] === undefined) {
+          batchConditionCounters[prefix] = getLatestEquipmentRunningNumber(assets, condParams);
+        }
+        batchConditionCounters[prefix] += 1;
+        const runningNum = batchConditionCounters[prefix];
+
+        const autoEqId = generateEquipmentId({
+          ...condParams,
+          cityIndex: runningNum,
           peaNumber: autoPea
         });
 
@@ -1293,6 +1312,99 @@ export default function AdminRegistrationSuite({
     URL.revokeObjectURL(url);
   };
 
+  // Requirement Step 3: Data synchronizing (0 - 100%) pop-up box after user acknowledges finish of uploading new assets
+  const handleAcknowledgeUploadAndStartSync = async (newlyCreatedAssets: CableAsset[], totalCount: number) => {
+    // 1. Close Pop-up Box #1
+    setProgressModal(prev => ({ ...prev, isOpen: false }));
+
+    // Small delay for smooth modal transition
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    // 2. Open Pop-up Box #2 (Data Synchronizing)
+    setProgressModal({
+      isOpen: true,
+      title: 'Data Synchronizing (0 - 100%)',
+      stepMessage: 'Connecting to Google Drive & Central Database...',
+      percent: 0,
+      isError: false,
+      isComplete: false,
+      totalItems: totalCount
+    });
+
+    try {
+      // Step 2.1: Cache update (20%)
+      setProgressModal({
+        isOpen: true,
+        title: 'Data Synchronizing (0 - 100%)',
+        stepMessage: 'Saving newly created asset records and Equipment IDs to central database cache...',
+        percent: 20,
+        isError: false,
+        isComplete: false,
+        totalItems: totalCount
+      });
+
+      try {
+        const updatedList = [...newlyCreatedAssets, ...(assets || [])];
+        localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
+        await saveCentralAssetsCache(updatedList).catch(e => {
+          console.warn("Background cache save warning during sync:", e);
+        });
+      } catch (e) {
+        console.warn("Error updating local assets cache during sync:", e);
+      }
+
+      // Step 2.2: Re-sync telemetry from Google Drive (60%)
+      setProgressModal({
+        isOpen: true,
+        title: 'Data Synchronizing (0 - 100%)',
+        stepMessage: 'Synchronizing updated asset records and Equipment IDs from Google Drive...',
+        percent: 60,
+        isError: false,
+        isComplete: false,
+        totalItems: totalCount
+      });
+
+      // Step 2.3: Reload database from all Google Sheet files
+      await onRefresh();
+
+      // Step 2.4: Sync & Update Complete (100%)
+      setProgressModal({
+        isOpen: true,
+        title: 'Data Synchronization Complete',
+        stepMessage: `Data synchronizing (100%) complete! ${newlyCreatedAssets.length} new asset record(s) and Equipment IDs successfully synchronized to Google Drive and database updated.`,
+        percent: 100,
+        isError: false,
+        isComplete: true,
+        actionButtonText: 'Auto-closing...',
+        onAction: () => {
+          setOption1ReviewList([]);
+          setCsvParsedRows([]);
+          setSelectedCsvOption(null);
+          setProgressModal(prev => ({ ...prev, isOpen: false }));
+        }
+      });
+
+      // Reset review list and selection state
+      setOption1ReviewList([]);
+      setCsvParsedRows([]);
+      setSelectedCsvOption(null);
+
+      // Auto close pop-up box after short delay (1 second) so user sees 100% success
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      setProgressModal(prev => ({ ...prev, isOpen: false }));
+    } catch (err: any) {
+      setProgressModal({
+        isOpen: true,
+        title: 'Data Synchronization Failed',
+        stepMessage: 'An error occurred during database synchronization with Google Drive.',
+        percent: 0,
+        isError: true,
+        errorMessage: err.message || 'Unknown synchronization error',
+        isComplete: false
+      });
+    }
+  };
+
   const commitOption1Assets = async (downloadMode: 'both' | 'csv' | 'txt' | 'none' | boolean = 'none') => {
     if (option1ReviewList.length === 0) return;
 
@@ -1371,6 +1483,7 @@ export default function AdminRegistrationSuite({
         const generalRowsBatch: any[][] = [];
         const engineeringRowsBatch: any[][] = [];
         const visualRowsBatch: any[][] = [];
+        const batchConditionCounters: Record<string, number> = {};
 
         for (let rIdx = 0; rIdx < groupRecords.length; rIdx++) {
           const rec = groupRecords[rIdx];
@@ -1378,15 +1491,25 @@ export default function AdminRegistrationSuite({
           const nextIdx = sheetLastNum;
           const timestamp = getBangkokTimestamp();
 
-          // Generate final standardized equipment ID (matching Google Sheets Column AG)
-          const finalEqId = generateEquipmentId({
+          const condParams = {
             area: rec.area,
             voltage: rec.voltageLevel,
             year: rec.yearOfRegistration || new Date().getFullYear(),
             locationType: rec.locationType,
             equipmentType: rec.equipmentType,
-            city: rec.city,
-            cityIndex: nextIdx,
+            city: rec.city
+          };
+          const prefix = getEquipmentConditionPrefix(condParams);
+          if (batchConditionCounters[prefix] === undefined) {
+            batchConditionCounters[prefix] = getLatestEquipmentRunningNumber(assets, condParams);
+          }
+          batchConditionCounters[prefix] += 1;
+          const runningNum = batchConditionCounters[prefix];
+
+          // Generate final standardized equipment ID (matching Google Sheets Column AG)
+          const finalEqId = generateEquipmentId({
+            ...condParams,
+            cityIndex: runningNum,
             peaNumber: rec.peaNumber
           });
           rec.equipmentId = finalEqId;
@@ -1525,29 +1648,6 @@ export default function AdminRegistrationSuite({
         }
       }
 
-      setProgressModal({
-        isOpen: true,
-        title: 'Registering New Assets',
-        stepMessage: 'Synchronizing central database cache...',
-        percent: 96,
-        isError: false,
-        isComplete: false,
-        totalItems: totalCount
-      });
-
-      // Always update Central Firestore Cache and Local Storage
-      try {
-        const updatedList = [...newlyCreatedAssets, ...(assets || [])];
-        localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
-        
-        // Save to central assets cache in background - DO NOT AWAIT to prevent UI hanging under offline/quota limits
-        saveCentralAssetsCache(updatedList).catch(e => {
-          console.warn("Background cache save failed in Option 1:", e);
-        });
-      } catch (e) {
-        console.warn("Error updating local assets cache in Option 1:", e);
-      }
-
       setCommitSuccess(`Option 1 Registration Succeeded! Registered ${totalRegisteredCount} new assets (PEA numbers assigned, ADS & AA left for Option 2 update).`);
 
       if (shouldDownloadCsv) {
@@ -1567,21 +1667,19 @@ export default function AdminRegistrationSuite({
         }, shouldDownloadCsv ? 350 : 0);
       }
 
-      setOption1ReviewList([]);
-      setCsvParsedRows([]);
-      setSelectedCsvOption(null);
-
+      // Step 2 Requirement: Pop-up box shows registration process (0 to 100%) where new asset data is stored to Google Sheets file & new Equipment ID created.
+      // User MUST acknowledge the finish of uploading new asset by clicking "Upload Complete" in the pop-up box.
       setProgressModal({
         isOpen: true,
-        title: 'Registration Complete',
-        stepMessage: `Successfully registered ${totalRegisteredCount} new asset record(s) to PEA database! (100%)`,
+        title: 'New Asset Registration Complete (100%)',
+        stepMessage: `Successfully stored ${totalRegisteredCount} new asset record(s) to Google Sheets with generated Equipment IDs! Please click "Upload Complete" below to acknowledge and start data synchronization.`,
         percent: 100,
         isError: false,
         isComplete: true,
-        totalItems: totalCount
+        totalItems: totalCount,
+        actionButtonText: 'Upload Complete',
+        onAction: () => handleAcknowledgeUploadAndStartSync(newlyCreatedAssets, totalCount)
       });
-
-      onRefresh();
     } catch (err: any) {
       setProgressModal({
         isOpen: true,
@@ -1636,6 +1734,7 @@ export default function AdminRegistrationSuite({
       alert(`File Integrity Check Passed!\n\nAll ${dataRows.length} uploaded records have valid PEA numbers or Equipment IDs. Ready for review before updating ADS & AA numbers.`);
 
       const parsedReview2: any[] = [];
+      const batchConditionCounters2: Record<string, number> = {};
       for (let i = 0; i < dataRows.length; i++) {
         const cols = dataRows[i];
         const rawVolt = (cols[0] || '115').trim();
@@ -1678,14 +1777,24 @@ export default function AdminRegistrationSuite({
         const area = derivedArea || rawArea || 'N1';
         const installationDate = normalizeInstallationDate(rawInstDate);
 
-        const autoEqId = generateEquipmentId({
+        const condParams = {
           area,
           voltage: volt,
           year: yearOfRegistration || new Date().getFullYear(),
           locationType,
           equipmentType: eqType,
-          city,
-          cityIndex: i + 1,
+          city
+        };
+        const prefix = getEquipmentConditionPrefix(condParams);
+        if (batchConditionCounters2[prefix] === undefined) {
+          batchConditionCounters2[prefix] = getLatestEquipmentRunningNumber(assets, condParams);
+        }
+        batchConditionCounters2[prefix] += 1;
+        const runningNum = batchConditionCounters2[prefix];
+
+        const autoEqId = generateEquipmentId({
+          ...condParams,
+          cityIndex: runningNum,
           peaNumber
         });
 
@@ -1765,20 +1874,43 @@ export default function AdminRegistrationSuite({
     setOption2CurrentPea('');
 
     try {
+      const batchConditionCounters3: Record<string, number> = {};
       const listToProcess = option2ReviewList.length > 0 ? option2ReviewList : csvParsedRows.slice(1).map((cols, i) => {
         const rawVolt = cols[0] || '';
         const rawArea = cols[1] || '';
+        const rawCity = cols[2] || rawArea;
+        const rawLoc = cols[4] || '';
         const adsNumber = cols[5] || '';
         const assetNumber = cols[6] || '';
         const rawEqType = cols[7] || '';
         const peaNumber = cols[9] || '';
+        const yearOfRegistration = cols[16] || String(new Date().getFullYear());
         const inputEqId = cols[30] || '';
+
+        const volt = normalizeVoltageLevel(rawVolt, rawEqType);
+        const eqType = normalizeEquipmentType(rawEqType, '', '', volt);
+        const locationType = normalizeLocationType(rawLoc, volt);
+        const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
+        const area = derivedArea || rawArea || 'N1';
+
+        const condParams = {
+          area,
+          voltage: volt,
+          year: yearOfRegistration || new Date().getFullYear(),
+          locationType,
+          equipmentType: eqType,
+          city
+        };
+        const prefix = getEquipmentConditionPrefix(condParams);
+        if (batchConditionCounters3[prefix] === undefined) {
+          batchConditionCounters3[prefix] = getLatestEquipmentRunningNumber(assets, condParams);
+        }
+        batchConditionCounters3[prefix] += 1;
+        const runningNum = batchConditionCounters3[prefix];
+
         const autoEqId = generateEquipmentId({
-          area: rawArea,
-          voltage: rawVolt,
-          year: new Date().getFullYear(),
-          equipmentType: rawEqType,
-          cityIndex: i + 1,
+          ...condParams,
+          cityIndex: runningNum,
           peaNumber
         });
         return {
@@ -3801,7 +3933,15 @@ export default function AdminRegistrationSuite({
         totalItems={progressModal.totalItems}
         currentItemIndex={progressModal.currentItemIndex}
         currentItemName={progressModal.currentItemName}
-        onClose={() => setProgressModal(prev => ({ ...prev, isOpen: false }))}
+        actionButtonText={progressModal.actionButtonText}
+        onAction={progressModal.onAction}
+        onClose={() => {
+          if (progressModal.onAction) {
+            progressModal.onAction();
+          } else {
+            setProgressModal(prev => ({ ...prev, isOpen: false }));
+          }
+        }}
       />
     </div>
   );

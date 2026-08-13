@@ -14,7 +14,8 @@ import {
   Zap,
   ShieldCheck,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  FileText
 } from 'lucide-react';
 import { CableAsset } from '../types';
 import jsQR from 'jsqr';
@@ -27,16 +28,19 @@ interface AssetQRCodeModalProps {
 
 export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQRCodeModalProps) {
   const [copied, setCopied] = useState(false);
+  const [qrMode, setQrMode] = useState<'asset' | 'document'>('asset');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Construct the deep-link URL pointing to this specific asset record in the web app
   const currentOrigin = window.location.origin;
   const currentPath = window.location.pathname;
   const assetDeepLink = `${currentOrigin}${currentPath}?equipmentId=${encodeURIComponent(asset.equipmentId)}`;
+  const documentLink = asset.qrDocument || '';
+  const activeLink = qrMode === 'asset' ? assetDeepLink : (documentLink || assetDeepLink);
 
   // Copy link to clipboard
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(assetDeepLink).then(() => {
+    navigator.clipboard.writeText(activeLink).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -273,13 +277,43 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
         </div>
 
         {/* Content Body */}
-        <div className="p-6 space-y-6 overflow-y-auto">
+        <div className="p-6 space-y-5 overflow-y-auto">
+          {/* Mode Tabs */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-gray-100 rounded-xl text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setQrMode('asset')}
+              className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                qrMode === 'asset' 
+                  ? 'bg-white text-purple-900 shadow-xs' 
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>Asset Tag QR</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setQrMode('document')}
+              className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                qrMode === 'document' 
+                  ? 'bg-amber-500 text-white shadow-xs' 
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>QR Document (Col AH)</span>
+            </button>
+          </div>
+
           {/* Main QR Display Canvas */}
-          <div className="flex flex-col items-center justify-center bg-purple-50/50 border-2 border-dashed border-purple-200 rounded-2xl p-6 text-center relative group">
-            <div className="bg-white p-4 rounded-2xl shadow-lg border border-purple-100">
+          <div className={`flex flex-col items-center justify-center rounded-2xl p-6 text-center relative group transition-colors ${
+            qrMode === 'document' ? 'bg-amber-50/60 border-2 border-dashed border-amber-300' : 'bg-purple-50/50 border-2 border-dashed border-purple-200'
+          }`}>
+            <div className="bg-white p-4 rounded-2xl shadow-lg border border-gray-100">
               <QRCodeCanvas 
                 ref={canvasRef}
-                value={assetDeepLink} 
+                value={activeLink} 
                 size={200} 
                 level="H" 
                 includeMargin={true} 
@@ -287,11 +321,15 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
             </div>
 
             <div className="mt-4 space-y-1">
-              <span className="text-[11px] font-black uppercase tracking-wider text-purple-900 bg-purple-100 px-3 py-1 rounded-full inline-block">
-                {asset.equipmentType || 'Underground Cable'}
+              <span className={`text-[11px] font-black uppercase tracking-wider px-3 py-1 rounded-full inline-block ${
+                qrMode === 'document' ? 'bg-amber-100 text-amber-900' : 'bg-purple-100 text-purple-900'
+              }`}>
+                {qrMode === 'document' ? 'Engineering Cloud Storage' : (asset.equipmentType || 'Underground Cable')}
               </span>
               <p className="text-xs font-mono font-bold text-gray-800 pt-1">
-                PEA No: {asset.peaNumber || 'Unassigned'}
+                {qrMode === 'document' 
+                  ? (documentLink ? 'As-Built Drawings & Catalog' : 'No Link Registered in Col AH') 
+                  : `PEA No: ${asset.peaNumber || 'Unassigned'}`}
               </p>
             </div>
           </div>
@@ -323,16 +361,28 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
             </div>
           </div>
 
-          {/* Deep Link URL Input & Copy */}
+          {/* Deep Link / Document URL Input & Copy */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider">
-              Asset Direct Link URL
+            <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider flex items-center justify-between">
+              <span>{qrMode === 'document' ? 'Engineering Document Link (Column AH)' : 'Asset Direct Link URL'}</span>
+              {qrMode === 'document' && documentLink && (
+                <a 
+                  href={documentLink} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-amber-700 hover:text-amber-900 font-bold flex items-center gap-0.5 lowercase text-[10px]"
+                >
+                  <span>open</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
             </label>
             <div className="flex gap-2">
               <input 
                 type="text" 
                 readOnly 
-                value={assetDeepLink} 
+                value={activeLink} 
+                placeholder={qrMode === 'document' ? 'No URL provided in Column AH' : ''}
                 className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-[11px] font-mono text-gray-600 focus:outline-none"
               />
               <button

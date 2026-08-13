@@ -15,6 +15,8 @@ import {
   MANUFACTURERS, 
   VOLTAGE_LEVELS,
   generateEquipmentId,
+  getEquipmentConditionPrefix,
+  getLatestEquipmentRunningNumber,
   getAvailableEquipmentTypes,
   getManufacturersForEquipmentType
 } from '../utils/peaData';
@@ -96,6 +98,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [model, setModel] = useState<string>('');
   const [workOrder, setWorkOrder] = useState<string>('');
   const [size, setSize] = useState<string>('400 sq.mm');
+  const [qrDocument, setQrDocument] = useState<string>('');
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   // Page 2: Engineering Info
@@ -200,16 +203,21 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   // Unique Equipment ID generator helper
   const computedEquipmentId = useMemo(() => {
-    return generateEquipmentId({
+    const params = {
       area: selectedArea,
       voltage: String(voltage),
       year: regYear,
       locationType,
       equipmentType: eqType,
       city,
+    };
+    const latestNum = getLatestEquipmentRunningNumber(assets || [], params);
+    return generateEquipmentId({
+      ...params,
+      cityIndex: latestNum + 1,
       peaNumber: (peaNumber || '').trim()
     });
-  }, [selectedArea, voltage, regYear, locationType, eqType, city, peaNumber]);
+  }, [selectedArea, voltage, regYear, locationType, eqType, city, peaNumber, assets]);
 
   // Image preview handlers
   const handleImageChange = (e: ChangeEvent<HTMLInputElement>, type: 'visual' | 'thermal') => {
@@ -365,8 +373,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         productionMonth || 'N/A', installationDate || 'N/A', wbs || 'N/A', businessType || 'N/A',
         costCenter || 'N/A', gistag || 'N/A', assetClass || 'N/A', contractNumber || 'N/A',
         feeder || 'N/A', substationId || 'N/A', operateId || 'N/A', serialNumber || 'N/A',
-        model || 'N/A', workOrder || 'N/A', size || 'N/A',
-        computedEquipmentId
+        model || 'N/A', workOrder || 'N/A', size || 'N/A', 'N/A',
+        computedEquipmentId, (qrDocument || '').trim()
       ];
 
       const engineeringRow = [
@@ -391,6 +399,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         productionMonth, installationDate, wbs, businessType, costCenter, gistag, class: assetClass,
         contractNumber, feeder, substationId, operateId, serialNumber, model, workOrder, size,
         equipmentId: computedEquipmentId,
+        qrDocument: (qrDocument || '').trim(),
         loadCurrent: parseFloat(loadCurrent) || 120, sheathCurrent: parseFloat(sheathCurrent) || 8,
         surfaceTemperature: parseFloat(surfaceTemp) || 35, externalDischarge: parseFloat(discharge) || 5,
         pdResult, onlinePdAmplitude: parseFloat(onlinePdAmplitude) || 0, insulationResistance: parseFloat(insulationRes) || 15.0,
@@ -866,6 +875,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                         value={size}
                         onChange={e => setSize(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5 sm:col-span-2">
+                      <label className="text-[9px] font-bold text-amber-700 uppercase flex items-center justify-between">
+                        <span>Engineering Cloud Storage QR Document Link (Col AH)</span>
+                      </label>
+                      <input
+                        type="url"
+                        placeholder="e.g. https://drive.google.com/... (As-built drawings, catalog)"
+                        value={qrDocument}
+                        onChange={e => setQrDocument(e.target.value)}
+                        className="bg-amber-50/50 border border-amber-200 rounded-lg py-1.5 px-2.5 text-xs font-mono text-gray-800 focus:outline-hidden focus:border-amber-500 focus:bg-white"
                       />
                     </div>
                   </div>

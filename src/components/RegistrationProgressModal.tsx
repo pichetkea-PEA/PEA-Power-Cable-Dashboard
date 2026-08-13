@@ -10,6 +10,8 @@ export interface RegistrationProgressModalProps {
   errorMessage?: string;
   isComplete?: boolean;
   onClose?: () => void;
+  actionButtonText?: string;
+  onAction?: () => void;
   totalItems?: number;
   currentItemIndex?: number;
   currentItemName?: string;
@@ -24,6 +26,8 @@ export function RegistrationProgressModal({
   errorMessage,
   isComplete = false,
   onClose,
+  actionButtonText,
+  onAction,
   totalItems,
   currentItemIndex,
   currentItemName
@@ -109,24 +113,30 @@ export function RegistrationProgressModal({
           )}
 
           {/* Completion / Error Action Button */}
-          {(isComplete || isError) && onClose && (
+          {(isComplete || isError) && (onClose || onAction) && (
             <button
-              onClick={onClose}
-              className={`w-full py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 ${
+              onClick={() => {
+                if (onAction) {
+                  onAction();
+                } else if (onClose) {
+                  onClose();
+                }
+              }}
+              className={`w-full py-3.5 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer flex items-center justify-center gap-2.5 hover:scale-[1.01] active:scale-[0.99] ${
                 isError
                   ? 'bg-slate-800 hover:bg-slate-900 text-white'
-                  : 'bg-purple-900 hover:bg-purple-950 text-white'
+                  : 'bg-gradient-to-r from-purple-900 via-indigo-900 to-purple-800 hover:from-purple-950 hover:to-indigo-950 text-white border border-purple-400/30'
               }`}
             >
               {isError ? (
                 <>
                   <X className="w-4 h-4" />
-                  <span>Close & Retry</span>
+                  <span>{actionButtonText || 'Close & Retry'}</span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Registration Complete (Close)</span>
+                  <span>{actionButtonText || 'Upload Complete'}</span>
                 </>
               )}
             </button>

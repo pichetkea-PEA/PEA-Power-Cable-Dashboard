@@ -338,6 +338,33 @@ export function exportAssetToPDF(asset: CableAsset) {
           </div>
         </div>
 
+        <!-- ENGINEERING DOCUMENT QR CODE BLOCK (COLUMN AH) -->
+        <div style="border: 1px solid #f59e0b; background-color: #fefce8; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+          <div style="flex: 1;">
+            <div style="font-size: 10px; font-weight: 800; color: #78350f; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px;">
+              📄 Engineering Document QR Code (Col AH - As-Built / Catalogue / Type Test)
+            </div>
+            <div style="font-size: 8.5px; color: #92400e; margin-bottom: 4px;">
+              Online storage cloud for engineering drawings, equipment catalog, type test & routine test reports
+            </div>
+            ${asset.qrDocument ? `
+              <div style="font-size: 8.5px; font-family: 'JetBrains Mono', monospace; color: #b45309; word-break: break-all;">
+                URL: <a href="${asset.qrDocument}" target="_blank" style="color: #b45309; text-decoration: underline;">${asset.qrDocument}</a>
+              </div>
+            ` : `
+              <div style="font-size: 8.5px; color: #a16207; font-style: italic;">
+                No external cloud engineering document link registered for this asset (Column AH).
+              </div>
+            `}
+          </div>
+          ${asset.qrDocument ? `
+            <div style="text-align: center; flex-shrink: 0;">
+              <img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(asset.qrDocument)}" style="width: 72px; height: 72px; border-radius: 6px; border: 1px solid #f59e0b; background: white; padding: 2px;" alt="QR Document Code" />
+              <div style="font-size: 7.5px; font-weight: 800; color: #78350f; margin-top: 2px;">SCAN DOCUMENT</div>
+            </div>
+          ` : ''}
+        </div>
+
         <div class="footer">
           <div>Original Creator: <strong>${asset.operatorName}</strong> on ${asset.timestamp}</div>
           ${asset.latestUpdatedBy ? `<div>Latest Integrity Edit: <strong>${asset.latestUpdatedBy}</strong> on ${asset.latestUpdatedAt}</div>` : ''}

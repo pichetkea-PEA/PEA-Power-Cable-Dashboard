@@ -88,8 +88,8 @@ export interface GeneralInformation {
   workOrder?: string;
   size?: string;
   assetValue?: string; // Col AF in Google Sheets, Col AD in uploaded CSV
-  // Shifted to AG
-  equipmentId: string;
+  equipmentId: string; // Col AG in Google Sheets
+  qrDocument?: string; // Col AH in Google Sheets - Link to online storage cloud for engineering documents
   customFields?: Record<string, string>;
 }
 
