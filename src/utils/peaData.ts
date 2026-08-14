@@ -1339,3 +1339,31 @@ export function getMockAssets(): CableAsset[] {
     } as CableAsset;
   });
 }
+
+/**
+ * Formats a long URL into a clean, shortened display representation for UI cards.
+ * Note: The underlying href and QR code MUST ALWAYS use the authentic full original link
+ * to prevent third-party shortener expiration, rate limits, or link death.
+ */
+export function formatShortUrl(url?: string, maxLength = 32): string {
+  if (!url) return '';
+  const clean = url.trim();
+  try {
+    const parsed = new URL(clean.startsWith('http') ? clean : `https://${clean}`);
+    const host = parsed.hostname.replace(/^www\./, '');
+    const pathname = parsed.pathname === '/' ? '' : parsed.pathname;
+    const search = parsed.search ? '?' + parsed.search.slice(1, 6) : '';
+    const fullDisplay = host + pathname + search;
+    if (fullDisplay.length <= maxLength) {
+      return fullDisplay;
+    }
+    const availPath = maxLength - host.length - 3;
+    if (availPath > 5) {
+      return `${host}${pathname.substring(0, availPath)}...`;
+    }
+    return `${host}/...`;
+  } catch {
+    if (clean.length <= maxLength) return clean;
+    return clean.substring(0, maxLength - 3) + '...';
+  }
+}

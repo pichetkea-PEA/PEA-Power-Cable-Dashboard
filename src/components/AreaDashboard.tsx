@@ -13,7 +13,8 @@ import {
   EQUIPMENT_TYPES, 
   COUNTRIES_OF_ORIGIN, 
   MANUFACTURERS, 
-  VOLTAGE_LEVELS 
+  VOLTAGE_LEVELS,
+  formatShortUrl
 } from '../utils/peaData';
 import MapChart from './MapChart';
 import RiskMatrix from './RiskMatrix';
@@ -33,7 +34,11 @@ import {
   FileText,
   ExternalLink,
   X,
-  QrCode
+  QrCode,
+  Copy,
+  Check,
+  ShieldCheck,
+  Flame
 } from 'lucide-react';
 import { exportAssetToPDF } from '../utils/pdfGenerator';
 
@@ -260,12 +265,13 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
 
       if (!res.ok) {
         let errMsg = `HTTP ${res.status}`;
+        const rawText = await res.text();
         try {
-          const errData = await res.json();
-          if (errData.error) errMsg = errData.error;
+          const errData = JSON.parse(rawText);
+          if (errData?.error) errMsg = errData.error;
+          else if (rawText) errMsg = rawText;
         } catch {
-          const text = await res.text();
-          if (text) errMsg = text;
+          if (rawText) errMsg = rawText;
         }
         throw new Error(errMsg);
       }
@@ -492,18 +498,31 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
         />
       </div>
 
-      {/* Leaflet map of scoped assets */}
+      {/* Leaflet map of scoped assets with Health Heatmap Density Overlay */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-5 flex flex-col gap-3">
-        <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
           <div className="flex items-center gap-2">
-            <MapPin className="w-5 h-5 text-purple-700" />
-            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Regional Assets Location Map</h3>
+            <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-purple-700">
+              <MapPin className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Regional Equipment Location Map</h3>
+                <span className="bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+                  <Flame className="w-3 h-3 text-amber-500" />
+                  Health Heatmap Active
+                </span>
+              </div>
+              <p className="text-[11px] text-gray-500">
+                Interactive health-risk density overlays, hotspot clusters, and GPS telemetry pins.
+              </p>
+            </div>
           </div>
-          <span className="text-[10px] text-purple-700 font-bold uppercase block">
+          <span className="text-[10px] text-purple-700 font-bold uppercase block bg-purple-50 px-2.5 py-1 rounded-md self-start sm:self-auto">
             Plotting {filteredAssets.length} scoped assets in {userArea}
           </span>
         </div>
-        <div className="h-[400px]">
+        <div className="h-[580px]">
           <MapChart assets={filteredAssets} onSelectAsset={setSelectedAsset} />
         </div>
       </div>
@@ -843,7 +862,7 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
                         </div>
                         <div>
                           <h5 className="text-[10px] font-black text-amber-950 uppercase tracking-wider">
-                            QR Document (Col AH)
+                            QR Document Link
                           </h5>
                           <p className="text-[9px] text-amber-800 font-medium">
                             As-built drawings, catalog & type test cloud link
@@ -865,21 +884,32 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
 
                     {selectedAsset.qrDocument ? (
                       <div className="flex items-center gap-2.5 bg-white/90 p-2 rounded-lg border border-amber-100">
-                        <div className="p-1 bg-white rounded-md border border-amber-200 shadow-2xs shrink-0">
+                        {/* QR Code generated strictly from authentic original link to prevent expiration */}
+                        <div className="p-1 bg-white rounded-md border border-amber-200 shadow-2xs shrink-0" title="Permanent direct QR code (Generated from original full URL)">
                           <QRCodeSVG value={selectedAsset.qrDocument} size={65} level="M" />
                         </div>
-                        <div className="flex-1 min-w-0 space-y-0.5">
-                          <div className="text-[10px] font-bold text-gray-800 font-mono truncate">
-                            {selectedAsset.qrDocument}
-                          </div>
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <a
+                            href={selectedAsset.qrDocument}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] font-bold text-amber-900 hover:text-amber-700 font-mono truncate block hover:underline"
+                            title={`Original Direct Link: ${selectedAsset.qrDocument}`}
+                          >
+                            {formatShortUrl(selectedAsset.qrDocument, 28)}
+                          </a>
                           <p className="text-[9px] text-gray-500 leading-tight">
                             Scan with camera to view equipment catalogue and drawings.
                           </p>
+                          <div className="text-[8.5px] text-emerald-700 font-medium flex items-center gap-0.5">
+                            <ShieldCheck className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>Original Link QR (No expiration)</span>
+                          </div>
                         </div>
                       </div>
                     ) : (
                       <div className="text-[10px] text-amber-800 italic bg-white/60 p-1.5 rounded-lg border border-amber-100 text-center">
-                        No cloud engineering document URL in Column AH.
+                        No cloud engineering document URL registered for this asset.
                       </div>
                     )}
                   </div>

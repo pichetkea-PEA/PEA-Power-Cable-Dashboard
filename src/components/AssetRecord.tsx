@@ -36,7 +36,8 @@ import {
   calculateHealth,
   generateEquipmentId,
   getAvailableEquipmentTypes,
-  getManufacturersForEquipmentType
+  getManufacturersForEquipmentType,
+  formatShortUrl
 } from '../utils/peaData';
 import { 
   fetchSheetsData, 
@@ -74,7 +75,9 @@ import {
   ChevronDown,
   ChevronUp,
   QrCode,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Copy,
+  ShieldCheck
 } from 'lucide-react';
 import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
 
@@ -134,6 +137,7 @@ export default function AssetRecord({
   // --- Selected Asset & Edit Forms ---
   const [selectedAsset, setSelectedAsset] = useState<CableAsset | null>(null);
   const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [copiedDoc, setCopiedDoc] = useState<boolean>(false);
 
   // --- QR Code Modals State ---
   const [showQRModal, setShowQRModal] = useState<boolean>(false);
@@ -1441,22 +1445,22 @@ export default function AssetRecord({
       </div>
 
       {/* 2. Filter & Search Panel */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm space-y-4" id="asset-search-filters">
-        <div className="flex items-center gap-1.5 border-b border-gray-100 pb-3">
+      <div className="bg-white rounded-2xl border border-gray-100 p-3.5 sm:p-4 shadow-sm space-y-3" id="asset-search-filters">
+        <div className="flex items-center gap-1.5 border-b border-gray-100 pb-2">
           <Search className="w-4 h-4 text-purple-700" />
-          <h3 className="text-xs font-black text-gray-900 uppercase tracking-wider">Search Database Query</h3>
+          <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">Search Database Query</h3>
         </div>
 
         {/* Filters Matrix */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5">
           {/* Area Selector */}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Area Coverage</label>
             <select
               value={filterArea}
               onChange={e => setFilterArea(e.target.value)}
               disabled={user.role !== 'Admin' && user.role !== 'Manager'}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden disabled:bg-gray-100 disabled:text-gray-400"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden disabled:bg-gray-100 disabled:text-gray-400"
             >
               {(user.role === 'Admin' || user.role === 'Manager') && <option value="All">All Regions (Executive Mode)</option>}
               {PEA_AREAS.map(area => (
@@ -1466,12 +1470,12 @@ export default function AssetRecord({
           </div>
 
           {/* City Selector */}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase">City / Province</label>
             <select
               value={filterCity}
               onChange={e => setFilterCity(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden"
             >
               <option value="All">All Cities</option>
               {availableCities.map(c => (
@@ -1481,12 +1485,12 @@ export default function AssetRecord({
           </div>
 
           {/* Voltage Level */}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase">Voltage Level (kV)</label>
             <select
               value={filterVoltage}
               onChange={e => setFilterVoltage(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden"
             >
               <option value="All">All Voltages</option>
               {VOLTAGE_LEVELS.map(v => (
@@ -1496,12 +1500,12 @@ export default function AssetRecord({
           </div>
 
           {/* Equipment Type */}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Type</label>
             <select
               value={filterEqType}
               onChange={e => setFilterEqType(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden"
             >
               <option value="All">All Types</option>
               {EQUIPMENT_TYPES.map(t => (
@@ -1511,12 +1515,12 @@ export default function AssetRecord({
           </div>
 
           {/* Year of Register */}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase">Year of Register</label>
             <select
               value={filterYear}
               onChange={e => setFilterYear(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden"
             >
               <option value="All">All Years</option>
               {Array.from({ length: 25 }, (_, i) => {
@@ -1560,15 +1564,6 @@ export default function AssetRecord({
                 onKeyDown={e => { if (e.key === 'Enter') handleSearch(); }}
                 className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white grow"
               />
-              <button
-                type="button"
-                onClick={() => setShowScannerModal(true)}
-                className="bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
-                title="Scan or upload asset QR code"
-              >
-                <QrCode className="w-4 h-4" />
-                <span>Scan QR</span>
-              </button>
               <button
                 type="button"
                 onClick={handleSearch}
@@ -2240,7 +2235,7 @@ export default function AssetRecord({
                             </div>
                             <div>
                               <h4 className="text-[11px] font-black text-amber-950 uppercase tracking-wider">
-                                QR Document Link (Column AH)
+                                QR Document Link
                               </h4>
                               <p className="text-[9px] text-amber-800 font-medium">
                                 As-built drawings, catalogue, type test & routine test storage
@@ -2262,7 +2257,7 @@ export default function AssetRecord({
 
                         {isEditing ? (
                           <div className="space-y-1 pt-1">
-                            <label className="text-[9px] font-bold text-amber-900 uppercase block">Cloud Storage Link URL (Column AH)</label>
+                            <label className="text-[9px] font-bold text-amber-900 uppercase block">Cloud Storage Link URL</label>
                             <input
                               type="url"
                               value={editQrDocument}
@@ -2273,21 +2268,48 @@ export default function AssetRecord({
                           </div>
                         ) : selectedAsset.qrDocument ? (
                           <div className="flex items-center gap-3 bg-white/90 p-2.5 rounded-lg border border-amber-100">
-                            <div className="p-1 bg-white rounded-lg border border-amber-200 shadow-2xs shrink-0">
+                            {/* QR Code generated strictly from authentic original link to prevent expiration */}
+                            <div className="p-1 bg-white rounded-lg border border-amber-200 shadow-2xs shrink-0" title="Permanent direct QR code (Generated from original full URL)">
                               <QRCodeSVG value={selectedAsset.qrDocument} size={80} level="M" />
                             </div>
-                            <div className="flex-1 min-w-0 space-y-1">
-                              <div className="text-[11px] font-bold text-gray-800 font-mono truncate">
-                                {selectedAsset.qrDocument}
+                            <div className="flex-1 min-w-0 space-y-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <a
+                                  href={selectedAsset.qrDocument}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[11px] font-bold text-amber-900 hover:text-amber-700 font-mono truncate block hover:underline"
+                                  title={`Original Direct Link: ${selectedAsset.qrDocument}`}
+                                >
+                                  {formatShortUrl(selectedAsset.qrDocument, 32)}
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (selectedAsset.qrDocument) {
+                                      navigator.clipboard.writeText(selectedAsset.qrDocument);
+                                      setCopiedDoc(true);
+                                      setTimeout(() => setCopiedDoc(false), 2000);
+                                    }
+                                  }}
+                                  className="text-[10px] text-gray-400 hover:text-amber-800 p-1 rounded hover:bg-amber-100/60 transition-all cursor-pointer shrink-0"
+                                  title="Copy full original URL to clipboard"
+                                >
+                                  {copiedDoc ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                                </button>
                               </div>
-                              <p className="text-[10px] text-gray-500">
+                              <p className="text-[10px] text-gray-500 leading-tight">
                                 Scan QR code with phone or tablet to open online engineering documents.
                               </p>
+                              <div className="text-[9px] text-emerald-700 font-medium flex items-center gap-1">
+                                <ShieldCheck className="w-3 h-3 text-emerald-600 shrink-0" />
+                                <span>Permanent original link QR (No expiration)</span>
+                              </div>
                             </div>
                           </div>
                         ) : (
                           <div className="text-[10px] text-amber-800 italic bg-white/60 p-2 rounded-lg border border-amber-100 text-center">
-                            No cloud engineering document link registered in Column AH for this asset.
+                            No cloud engineering document link registered for this asset.
                           </div>
                         )}
                       </div>

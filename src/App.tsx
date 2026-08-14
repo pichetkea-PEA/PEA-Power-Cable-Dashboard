@@ -3,7 +3,8 @@ import { PEAUser, CableAsset, UserRole } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
-import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds } from './utils/googleSheets';
+import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts } from './utils/googleSheets';
+import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { getBangkokTimestamp } from './utils/dateUtils';
 import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
@@ -31,6 +32,7 @@ import {
   X,
   User,
   ShieldAlert,
+  AlertTriangle,
   ChevronRight,
   Clock
 } from 'lucide-react';
@@ -64,6 +66,16 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSyncingCentralDb, setIsSyncingCentralDb] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; statusText: string }>({ current: 0, total: 0, statusText: '' });
+
+  // Asset Loading Pop-Up Modal states (Requirement 2 & 3)
+  const [showLoadingModal, setShowLoadingModal] = useState<boolean>(false);
+  const [isScanningSheets, setIsScanningSheets] = useState<boolean>(false);
+  const [loadProgressPercent, setLoadProgressPercent] = useState<number>(0);
+  const [currentStepText, setCurrentStepText] = useState<string>('');
+  const [regionalSheetStatuses, setRegionalSheetStatuses] = useState<RegionalSheetStatus[]>([]);
+  const [totalScannedAssets, setTotalScannedAssets] = useState<number>(0);
+  const [totalLoadedAssets, setTotalLoadedAssets] = useState<number>(0);
+
   const [syncSuccessMessage, setSyncSuccessMessage] = useState<string | null>(null);
   const [isCreatingSheet, setIsCreatingSheet] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -475,7 +487,25 @@ export default function App() {
     setIsLoading(true);
     setErrorMessage('');
     setSyncSuccessMessage(null);
-    setSyncProgress({ current: 0, total: uniqueIds.length, statusText: 'Connecting to Admin Central Google Sheets...' });
+    setShowLoadingModal(true);
+    setIsScanningSheets(true);
+    setLoadProgressPercent(5);
+    setCurrentStepText('Performing initial pre-scan check across all 12 regional Google Sheets...');
+
+    // Pre-populate regional sheet statuses
+    const initialAreas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+    const initialStatuses: RegionalSheetStatus[] = uniqueIds.map((id, idx) => {
+      const area = initialAreas[idx] || `AREA_${idx + 1}`;
+      return {
+        spreadsheetId: id,
+        area,
+        areaName: PEA_AREA_NAMES[area] || area,
+        scannedCount: 0,
+        loadedCount: 0,
+        status: 'scanning'
+      };
+    });
+    setRegionalSheetStatuses(initialStatuses);
 
     // Pre-load Firestore central assets cache immediately into an asset map unless force refresh requested
     const assetMap = new Map<string, CableAsset>();
@@ -483,16 +513,45 @@ export default function App() {
       try {
         const cached = await getCentralAssetsCache();
         if (cached && cached.length > 0) {
-          cached.forEach(a => {
-            const key = a.equipmentId ? a.equipmentId.trim() : `ROW_${a.number}`;
+          cached.forEach((a, idx) => {
+            const key = a.equipmentId ? `${a.spreadsheetId || ''}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || ''}_${a.number || idx}`;
             assetMap.set(key, a);
           });
           setAssets(Array.from(assetMap.values()));
+          setTotalLoadedAssets(assetMap.size);
         }
       } catch (e) {
         console.warn('Error preloading central cache:', e);
       }
     }
+
+    // STAGE 1: Scanning check of all 12 regional sheets upfront (Requirement 3)
+    let scannedTotal = 0;
+    try {
+      const scannedList = await scanRegionalSheetsAssetCounts(token, uniqueIds);
+      if (currentSession !== fetchSessionCounterRef.current) return;
+
+      const scannedStatuses: RegionalSheetStatus[] = scannedList.map(item => {
+        scannedTotal += item.rowCount;
+        return {
+          spreadsheetId: item.spreadsheetId,
+          area: item.area,
+          areaName: item.areaName,
+          scannedCount: item.rowCount,
+          loadedCount: 0,
+          status: 'scanned'
+        };
+      });
+
+      setRegionalSheetStatuses(scannedStatuses);
+      setTotalScannedAssets(scannedTotal);
+      setLoadProgressPercent(18);
+      setCurrentStepText(`Pre-scan completed: Identified ${scannedTotal.toLocaleString()} total assets across ${uniqueIds.length} sheets.`);
+    } catch (scanErr) {
+      console.warn("Pre-scan failed, continuing directly to full load:", scanErr);
+    }
+
+    setIsScanningSheets(false);
 
     let successfulSectors = 0;
     let failedSectors = 0;
@@ -504,6 +563,14 @@ export default function App() {
           return;
         }
         const id = uniqueIds[i];
+
+        // Mark current sheet as loading
+        setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? { ...s, status: 'loading' } : s));
+
+        const progressVal = Math.min(98, Math.round(18 + ((i + 1) / uniqueIds.length) * 80));
+        setLoadProgressPercent(progressVal);
+        setCurrentStepText(`Synchronizing Google Sheet ${i + 1} of ${uniqueIds.length}... (${assetMap.size.toLocaleString()} active assets loaded)`);
+
         setSyncProgress({
           current: i + 1,
           total: uniqueIds.length,
@@ -568,15 +635,24 @@ export default function App() {
           }
 
           // Insert fresh live rows from Google Sheets
-          sectorData.forEach(a => {
-            const key = a.equipmentId ? a.equipmentId.trim() : `ROW_${a.number}`;
+          sectorData.forEach((a, idx) => {
+            const key = a.equipmentId ? `${a.spreadsheetId || id}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || id}_${a.number || idx}`;
             assetMap.set(key, a);
           });
 
           // Progressive update so dashboard updates live
           setAssets(Array.from(assetMap.values()));
+          setTotalLoadedAssets(assetMap.size);
+
+          setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? {
+            ...s,
+            status: 'loaded',
+            loadedCount: sectorData.length,
+            scannedCount: sectorData.length
+          } : s));
         } else {
           failedSectors++;
+          setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? { ...s, status: 'error' } : s));
           console.warn(`Sector sheet ${id} returned 0 records or failed after ${maxAttempts} attempts. Retaining cached assets for this sector.`);
         }
       }
@@ -584,6 +660,9 @@ export default function App() {
       if (currentSession !== fetchSessionCounterRef.current) return;
 
       const finalAssets = Array.from(assetMap.values());
+      setLoadProgressPercent(100);
+      setTotalLoadedAssets(finalAssets.length);
+      setCurrentStepText(`100% Assets Loaded! ${finalAssets.length.toLocaleString()} / ${scannedTotal || finalAssets.length} Assets Verified Across 12 Regional Sheets.`);
 
       if (finalAssets.length > 0) {
         setAssets(finalAssets);
@@ -647,6 +726,84 @@ export default function App() {
     } finally {
       setIsLoading(false);
       setIsSyncingCentralDb(false);
+      // If all sectors were loaded successfully with zero errors, auto close the modal
+      if (failedSectors === 0) {
+        setTimeout(() => {
+          setShowLoadingModal(false);
+        }, 1200);
+      }
+    }
+  };
+
+  // Reload an individual offline regional Google Sheet without re-fetching all 12 sheets
+  const handleReloadSingleSheet = async (sheetId: string, area: string) => {
+    if (!googleToken) {
+      setErrorMessage('Google OAuth token expired or unavailable. Please sign in again.');
+      return;
+    }
+
+    setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === sheetId ? { ...s, status: 'loading', errorMessage: undefined } : s));
+
+    try {
+      const sectorData = await fetchSheetsData(googleToken, sheetId);
+      if (sectorData && sectorData.length > 0) {
+        // Merge reloaded assets into the central asset state
+        setAssets(prevAssets => {
+          const assetMap = new Map<string, CableAsset>();
+          prevAssets.forEach((a, idx) => {
+            const key = a.equipmentId ? `${a.spreadsheetId || ''}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || ''}_${a.number || idx}`;
+            assetMap.set(key, a);
+          });
+
+          // Delete previous entries for this spreadsheet or sector
+          for (const [key, existingAsset] of Array.from(assetMap.entries())) {
+            if (existingAsset.spreadsheetId === sheetId || (existingAsset as any).peaArea === area) {
+              assetMap.delete(key);
+            }
+          }
+
+          // Insert fresh rows
+          sectorData.forEach((a, idx) => {
+            const key = a.equipmentId ? `${a.spreadsheetId || sheetId}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || sheetId}_${a.number || idx}`;
+            assetMap.set(key, a);
+          });
+
+          const updated = Array.from(assetMap.values());
+          saveCentralAssetsCache(updated, true).catch(() => {});
+          setTotalLoadedAssets(updated.length);
+          return updated;
+        });
+
+        setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === sheetId ? {
+          ...s,
+          status: 'loaded',
+          loadedCount: sectorData.length,
+          scannedCount: sectorData.length,
+          errorMessage: undefined
+        } : s));
+
+        setSyncSuccessMessage(`Successfully reloaded ${area} (${PEA_AREA_NAMES[area] || area}) with ${sectorData.length} assets.`);
+      } else {
+        setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === sheetId ? {
+          ...s,
+          status: 'error',
+          errorMessage: 'Sheet returned 0 rows or is inaccessible.'
+        } : s));
+        setErrorMessage(`Reload failed for ${area}: Sheet returned 0 rows or is inaccessible.`);
+      }
+    } catch (err: any) {
+      const errDetail = err.message?.includes('403')
+        ? 'Access forbidden (403). Please share Google Sheet with Viewer access.'
+        : err.message?.includes('404')
+        ? 'Spreadsheet not found (404). Check Sheet ID in Admin Settings.'
+        : (err.message || 'Sheet unavailable');
+
+      setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === sheetId ? {
+        ...s,
+        status: 'error',
+        errorMessage: errDetail
+      } : s));
+      setErrorMessage(`Reload failed for ${area}: ${errDetail}`);
     }
   };
 
@@ -1542,6 +1699,47 @@ export default function App() {
               </div>
             )}
 
+            {/* Regional Sheets Offline Alert Banner */}
+            {regionalSheetStatuses.some(s => s.status === 'error') && (
+              <div className="bg-amber-50 border-b border-amber-200 py-3 px-6 animate-fadeIn">
+                <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-amber-950">
+                        {regionalSheetStatuses.filter(s => s.status === 'error').length} Regional Google Sheet(s) Offline:
+                      </span>{' '}
+                      <span className="text-amber-800">
+                        Other areas loaded successfully. Ensure Google Sheet sharing is enabled, then click Reload.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {regionalSheetStatuses.filter(s => s.status === 'error').map(sheet => (
+                      <button
+                        key={sheet.area}
+                        type="button"
+                        onClick={() => handleReloadSingleSheet(sheet.spreadsheetId, sheet.area)}
+                        className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-bold px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer text-[11px] hover:scale-105 active:scale-95"
+                        title={`Reload ${sheet.area} (${sheet.areaName})`}
+                      >
+                        <RefreshCw className="w-3 h-3 text-amber-700" />
+                        <span>Reload {sheet.area}</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowLoadingModal(true)}
+                      className="bg-purple-900 hover:bg-purple-950 text-white font-bold px-2.5 py-1 rounded-lg transition-all text-[11px] cursor-pointer"
+                    >
+                      View 12-Sheet Status
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Error Callout */}
             {errorMessage && (
               <div className="bg-red-50 border-b border-red-100 py-2.5 px-6">
@@ -1763,6 +1961,19 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Pop-up box loading screen with pre-scan check across 12 sheets */}
+      <AssetLoadingModal
+        isOpen={showLoadingModal}
+        isScanning={isScanningSheets}
+        progressPercent={loadProgressPercent}
+        currentStepText={currentStepText}
+        regionalSheets={regionalSheetStatuses}
+        totalScannedAssets={totalScannedAssets}
+        totalLoadedAssets={totalLoadedAssets}
+        onClose={() => setShowLoadingModal(false)}
+        onRetrySheet={handleReloadSingleSheet}
+      />
 
     </div>
   );

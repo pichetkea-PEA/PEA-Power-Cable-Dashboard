@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS } from './peaData';
+import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -592,8 +592,12 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
 
   const cleanStr = (val: any) => (val === undefined || val === null) ? '' : String(val).trim();
 
+  // Filter to valid non-blank rows
+  const isValidRow = (r: any[]) => r && r.length > 0 && r.some((cell: any) => cell !== undefined && cell !== null && String(cell).trim() !== '');
+  const validGenDataRows = genDataRows.filter(isValidRow);
+
   // Parse Page 1: General Information (Dynamic & Header-driven)
-  const generals: GeneralInformation[] = genDataRows.map((row: any[], index: number) => {
+  const generals: GeneralInformation[] = validGenDataRows.map((row: any[], index: number) => {
     const getVal = (headerName: string) => {
       const idx = genHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
       return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
@@ -861,45 +865,38 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
     } as CableAsset;
   });
 
-  // Deduplicate and group results by equipmentId so multiple audit/maintenance rows for 1 asset count as 1 asset
-  const assetMap = new Map<string, CableAsset>();
-  results.forEach(asset => {
-    const key = asset.equipmentId ? asset.equipmentId.trim() : `ROW_${asset.number}`;
-    if (!assetMap.has(key)) {
-      assetMap.set(key, { ...asset, history: [asset] });
-    } else {
-      const existing = assetMap.get(key)!;
-      const history = [...(existing.history || []), asset];
-      const existingTime = existing.timestamp ? new Date(existing.timestamp.replace(/-/g, '/')).getTime() : 0;
-      const currTime = asset.timestamp ? new Date(asset.timestamp.replace(/-/g, '/')).getTime() : 0;
-      if (currTime >= existingTime) {
-        assetMap.set(key, { ...asset, history });
-      } else {
-        assetMap.set(key, { ...existing, history });
+  // Ensure each asset entry in General Information is preserved and assigned regional sector metadata
+  const mappedResults: CableAsset[] = results.map((asset, idx) => {
+    let assetArea = '';
+    if (asset.equipmentId) {
+      const parts = asset.equipmentId.split('-');
+      if (parts.length > 0) {
+        const candidate = parts[0].trim().toUpperCase();
+        if (['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'].includes(candidate)) {
+          assetArea = candidate;
+        }
       }
     }
+    if (!assetArea && asset.peaNumber) {
+      const parts = asset.peaNumber.split('-');
+      if (parts.length > 1) {
+        const candidate = parts[1].trim().toUpperCase();
+        if (['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'].includes(candidate)) {
+          assetArea = candidate;
+        }
+      }
+    }
+
+    const finalArea = assetArea || allowedArea || asset.city || 'C1';
+
+    return {
+      ...asset,
+      peaArea: finalArea,
+      history: [asset]
+    } as CableAsset;
   });
 
-  let deduplicatedResults = Array.from(assetMap.values());
-
-  if (allowedArea) {
-    deduplicatedResults = deduplicatedResults.filter(asset => {
-      let assetArea = '';
-      if (asset.equipmentId) {
-        const parts = asset.equipmentId.split('-');
-        if (parts.length > 0) assetArea = parts[0].trim().toUpperCase();
-      }
-      if (!assetArea && asset.peaNumber) {
-        const parts = asset.peaNumber.split('-');
-        if (parts.length > 1) assetArea = parts[1].trim().toUpperCase();
-      }
-      // If we cannot find any area code on the asset itself, default it to allowedArea
-      // since it literally exists in that spreadsheet! Otherwise, verify they match.
-      return !assetArea || assetArea === allowedArea;
-    });
-  }
-
-  return deduplicatedResults;
+  return mappedResults;
 }
 
 // Helper function for fetching with exponential backoff on HTTP 429 / Rate Limit
@@ -1699,5 +1696,98 @@ export async function migrateAll12GoogleSheetsEquipmentIds(accessToken: string):
     totalUpdates,
     areaBreakdown
   };
+}
+
+export interface RegionalSheetScanInfo {
+  spreadsheetId: string;
+  area: string;
+  areaName: string;
+  title: string;
+  rowCount: number;
+  status: 'scanned' | 'error';
+  errorMessage?: string;
+}
+
+export async function scanRegionalSheetsAssetCounts(
+  accessToken: string,
+  spreadsheetIds: string[]
+): Promise<RegionalSheetScanInfo[]> {
+  const uniqueIds = Array.from(new Set(spreadsheetIds)).filter(id => id && id.trim().length > 0);
+  
+  const areaOrder = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+
+  const scanPromises = uniqueIds.map(async (sheetId, idx) => {
+    const fallbackArea = areaOrder[idx] || `AREA_${idx + 1}`;
+    try {
+      let title = '';
+      let area = fallbackArea;
+      try {
+        const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties.title`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (metaRes.ok) {
+          const meta = await metaRes.json();
+          title = meta.properties?.title || '';
+          const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
+                        title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+          if (match) {
+            area = match[1].trim().toUpperCase();
+          }
+        }
+      } catch (e) {}
+
+      const range = encodeURIComponent("'General Information'!A2:A");
+      const valRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+
+      let rowCount = 0;
+      let isError = !valRes.ok;
+      let errorMsg: string | undefined;
+
+      if (valRes.ok) {
+        const valData = await valRes.json();
+        const rows = (valData.values || []).filter((r: any[]) => r && r.length > 0 && r.some((c: any) => c !== undefined && c !== null && String(c).trim() !== ''));
+        rowCount = rows.length;
+      } else {
+        errorMsg = valRes.status === 403 ? 'Access forbidden. Please share sheet with view/edit access.' : valRes.status === 404 ? 'Spreadsheet ID not found.' : 'Sheet unavailable';
+      }
+
+      const areaName = PEA_AREA_NAMES[area] || area;
+
+      return {
+        spreadsheetId: sheetId,
+        area,
+        areaName,
+        title: title || `PEA Cable Asset Database - ${area}`,
+        rowCount,
+        status: isError ? ('error' as const) : ('scanned' as const),
+        errorMessage: errorMsg
+      };
+    } catch (err: any) {
+      console.warn(`Scan error for sheet ${sheetId}:`, err);
+      return {
+        spreadsheetId: sheetId,
+        area: fallbackArea,
+        areaName: PEA_AREA_NAMES[fallbackArea] || fallbackArea,
+        title: `PEA Cable Asset Database - ${fallbackArea}`,
+        rowCount: 0,
+        status: 'error' as const,
+        errorMessage: err.message || 'Sheet unavailable or permission denied'
+      };
+    }
+  });
+
+  const results = await Promise.all(scanPromises);
+  results.sort((a, b) => {
+    const idxA = areaOrder.indexOf(a.area);
+    const idxB = areaOrder.indexOf(b.area);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.area.localeCompare(b.area);
+  });
+
+  return results;
 }
 

@@ -17,7 +17,8 @@ import {
   EQUIPMENT_TYPES, 
   COUNTRIES_OF_ORIGIN, 
   MANUFACTURERS, 
-  VOLTAGE_LEVELS 
+  VOLTAGE_LEVELS,
+  formatShortUrl
 } from '../utils/peaData';
 import MapChart from './MapChart';
 import WorldMapChart from './WorldMapChart';
@@ -32,14 +33,15 @@ import {
   MapPin, 
   Filter, 
   Search, 
-  RefreshCw,
-  TrendingUp,
-  Sliders,
-  Calendar,
-  ExternalLink,
-  X,
-  FileSpreadsheet,
-  QrCode
+  RefreshCw, 
+  TrendingUp, 
+  Sliders, 
+  Calendar, 
+  ExternalLink, 
+  X, 
+  FileSpreadsheet, 
+  QrCode,
+  ShieldCheck
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -300,12 +302,13 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
 
       if (!res.ok) {
         let errMsg = `HTTP ${res.status}`;
+        const rawText = await res.text();
         try {
-          const errData = await res.json();
-          if (errData.error) errMsg = errData.error;
+          const errData = JSON.parse(rawText);
+          if (errData?.error) errMsg = errData.error;
+          else if (rawText) errMsg = rawText;
         } catch {
-          const text = await res.text();
-          if (text) errMsg = text;
+          if (rawText) errMsg = rawText;
         }
         throw new Error(errMsg);
       }
@@ -463,42 +466,42 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
       )}
 
       {/* Filters Card */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-5" id="admin-filters-card">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-gray-100 pb-3 mb-4 gap-2">
-          <div className="flex items-center gap-2">
-            <Sliders className="w-5 h-5 text-purple-700" />
-            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Multi-Level System Filter</h3>
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-3.5 sm:p-4" id="admin-filters-card">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-gray-100 pb-2 mb-2.5 gap-2">
+          <div className="flex items-center gap-1.5">
+            <Sliders className="w-4 h-4 text-purple-700" />
+            <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">Multi-Level System Filter</h3>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {onMigrateEquipmentIds && (
               <button
                 onClick={onMigrateEquipmentIds}
                 disabled={isMigratingIds}
-                className="flex items-center gap-1.5 text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 px-3 py-1.5 rounded-lg font-semibold cursor-pointer disabled:opacity-50 transition-all"
+                className="flex items-center gap-1 text-[11px] bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 px-2.5 py-1 rounded-lg font-semibold cursor-pointer disabled:opacity-50 transition-all"
                 title="Scan and revise Column AG Equipment IDs in all 12 Google Sheets according to the latest PEA rules"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-purple-600" />
-                {isMigratingIds ? 'Updating 12 Sheets Column AG...' : 'Update Column AG (Equipment ID) in All 12 Sheets'}
+                <FileSpreadsheet className="w-3 h-3 text-purple-600" />
+                {isMigratingIds ? 'Updating 12 Sheets...' : 'Update Column AG (Equipment ID) All 12 Sheets'}
               </button>
             )}
             <button 
               onClick={handleResetFilters}
-              className="flex items-center gap-1.5 text-xs text-purple-700 hover:text-purple-900 font-semibold cursor-pointer"
+              className="flex items-center gap-1 text-[11px] text-purple-700 hover:text-purple-900 font-semibold cursor-pointer"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Reset Filters
+              <RefreshCw className="w-3 h-3" />
+              Reset
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
           {/* Area Filter */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">PEA Area (12 Region)</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Area</label>
             <select
               value={filters.area}
               onChange={e => setFilters(prev => ({ ...prev, area: e.target.value, city: 'All' }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All 12 Areas</option>
               {PEA_AREAS.map(area => (
@@ -508,12 +511,12 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* City Filter */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">PEA City / Province</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">City / Province</label>
             <select
               value={filters.city}
               onChange={e => setFilters(prev => ({ ...prev, city: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Cities</option>
               {cityOptions.map(city => (
@@ -523,12 +526,12 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Voltage Level */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Voltage Level</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Voltage Level</label>
             <select
               value={filters.voltageLevel}
               onChange={e => setFilters(prev => ({ ...prev, voltageLevel: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Voltages</option>
               {VOLTAGE_LEVELS.map(v => (
@@ -538,12 +541,12 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Equipment Type */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Equipment Type</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Type</label>
             <select
               value={filters.equipmentType}
               onChange={e => setFilters(prev => ({ ...prev, equipmentType: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Types</option>
               {EQUIPMENT_TYPES.map(t => (
@@ -553,12 +556,12 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Year of Register */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Year of Register</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Year of Register</label>
             <select
               value={filters.yearOfRegistration || 'All'}
               onChange={e => setFilters(prev => ({ ...prev, yearOfRegistration: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Years</option>
               {Array.from({ length: 25 }, (_, i) => {
@@ -574,28 +577,28 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Age Distribution */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Equipment Age Range</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Age Range</label>
             <select
               value={filters.ageRange}
               onChange={e => setFilters(prev => ({ ...prev, ageRange: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Ages</option>
-              <option value="0-5">0 - 5 Years (New)</option>
-              <option value="5-15">5 - 15 Years (Mid-life)</option>
-              <option value="15-25">15 - 25 Years (Aged)</option>
-              <option value="25+">25+ Years (End of Life)</option>
+              <option value="0-5">0 - 5 Yrs (New)</option>
+              <option value="5-15">5 - 15 Yrs (Mid)</option>
+              <option value="15-25">15 - 25 Yrs (Aged)</option>
+              <option value="25+">25+ Yrs (EOL)</option>
             </select>
           </div>
 
           {/* Country of Origin */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Country of Origin</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Country</label>
             <select
               value={filters.countryOfOrigin}
               onChange={e => setFilters(prev => ({ ...prev, countryOfOrigin: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Countries</option>
               {COUNTRIES_OF_ORIGIN.map(c => (
@@ -605,12 +608,12 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Product Manufacturer */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Product Manufacturer</label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Manufacturer</label>
             <select
               value={filters.manufacturer}
               onChange={e => setFilters(prev => ({ ...prev, manufacturer: e.target.value }))}
-              className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
             >
               <option value="All">All Manufacturers</option>
               {MANUFACTURERS.map(m => (
@@ -620,16 +623,16 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
           </div>
 
           {/* Asset/PEA Number Search */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold text-gray-400 uppercase">Asset # / PEA # / ID</label>
+          <div className="flex flex-col gap-1 col-span-2 sm:col-span-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase">Asset # / PEA # / ID</label>
             <div className="relative">
-              <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-gray-400" />
+              <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search values..."
+                placeholder="Search..."
                 value={filters.assetOrPeaNumber}
                 onChange={e => setFilters(prev => ({ ...prev, assetOrPeaNumber: e.target.value }))}
-                className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 pl-8 pr-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 pl-8 pr-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
               />
             </div>
           </div>
@@ -705,13 +708,13 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
               Free OpenStreetMap Leaflet layer
             </span>
           </div>
-          <div className="bg-white p-2 rounded-b-2xl border border-gray-100 h-[450px]">
+          <div className="bg-white p-2 rounded-b-2xl border border-gray-100 h-[580px]">
             <MapChart assets={filteredAssets} onSelectAsset={setSelectedAsset} />
           </div>
         </div>
 
         {/* Critical Asset Panel */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-5 flex flex-col h-[502px]">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-5 flex flex-col h-[632px]">
           <div className="border-b border-gray-100 pb-3 mb-3">
             <div className="flex items-center gap-2 mb-1">
               <ShieldAlert className="w-5 h-5 text-red-600" />
@@ -1199,7 +1202,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
                         </div>
                         <div>
                           <h5 className="text-[10px] font-black text-amber-950 uppercase tracking-wider">
-                            QR Document (Col AH)
+                            QR Document Link
                           </h5>
                           <p className="text-[9px] text-amber-800 font-medium">
                             As-built drawings, catalog & type test cloud link
@@ -1221,21 +1224,32 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
 
                     {selectedAsset.qrDocument ? (
                       <div className="flex items-center gap-2.5 bg-white/90 p-2 rounded-lg border border-amber-100">
-                        <div className="p-1 bg-white rounded-md border border-amber-200 shadow-2xs shrink-0">
+                        {/* QR Code generated strictly from authentic original link to prevent expiration */}
+                        <div className="p-1 bg-white rounded-md border border-amber-200 shadow-2xs shrink-0" title="Permanent direct QR code (Generated from original full URL)">
                           <QRCodeSVG value={selectedAsset.qrDocument} size={65} level="M" />
                         </div>
-                        <div className="flex-1 min-w-0 space-y-0.5">
-                          <div className="text-[10px] font-bold text-gray-800 font-mono truncate">
-                            {selectedAsset.qrDocument}
-                          </div>
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <a
+                            href={selectedAsset.qrDocument}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] font-bold text-amber-900 hover:text-amber-700 font-mono truncate block hover:underline"
+                            title={`Original Direct Link: ${selectedAsset.qrDocument}`}
+                          >
+                            {formatShortUrl(selectedAsset.qrDocument, 28)}
+                          </a>
                           <p className="text-[9px] text-gray-500 leading-tight">
                             Scan with camera to view equipment catalogue and drawings.
                           </p>
+                          <div className="text-[8.5px] text-emerald-700 font-medium flex items-center gap-0.5">
+                            <ShieldCheck className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>Original Link QR (No expiration)</span>
+                          </div>
                         </div>
                       </div>
                     ) : (
                       <div className="text-[10px] text-amber-800 italic bg-white/60 p-1.5 rounded-lg border border-amber-100 text-center">
-                        No cloud engineering document URL in Column AH.
+                        No cloud engineering document URL registered for this asset.
                       </div>
                     )}
                   </div>

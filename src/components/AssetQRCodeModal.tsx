@@ -302,7 +302,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>QR Document (Col AH)</span>
+              <span>QR Document</span>
             </button>
           </div>
 
@@ -328,7 +328,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
               </span>
               <p className="text-xs font-mono font-bold text-gray-800 pt-1">
                 {qrMode === 'document' 
-                  ? (documentLink ? 'As-Built Drawings & Catalog' : 'No Link Registered in Col AH') 
+                  ? (documentLink ? 'As-Built Drawings & Catalog' : 'No Document Link Registered') 
                   : `PEA No: ${asset.peaNumber || 'Unassigned'}`}
               </p>
             </div>
@@ -364,7 +364,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
           {/* Deep Link / Document URL Input & Copy */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider flex items-center justify-between">
-              <span>{qrMode === 'document' ? 'Engineering Document Link (Column AH)' : 'Asset Direct Link URL'}</span>
+              <span>{qrMode === 'document' ? 'Engineering Document Link' : 'Asset Direct Link URL'}</span>
               {qrMode === 'document' && documentLink && (
                 <a 
                   href={documentLink} 
@@ -382,7 +382,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
                 type="text" 
                 readOnly 
                 value={activeLink} 
-                placeholder={qrMode === 'document' ? 'No URL provided in Column AH' : ''}
+                placeholder={qrMode === 'document' ? 'No engineering document link provided' : ''}
                 className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-[11px] font-mono text-gray-600 focus:outline-none"
               />
               <button
