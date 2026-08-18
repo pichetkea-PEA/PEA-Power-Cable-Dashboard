@@ -178,7 +178,8 @@ export default function AssetMonitorPanel({
 
     const todayCount = dayCounts[todayKey] || 0;
     const yesterdayCount = dayCounts[yesterdayKey] || 0;
-    const dodDiff = todayCount - yesterdayCount;
+    // If there is no activity in the present day, it must show 0 for day-over-day comparison
+    const dodDiff = todayCount === 0 ? 0 : todayCount - yesterdayCount;
 
     return { entries, maxCount, todayCount, yesterdayCount, dodDiff };
   }, [currentLogs, timeRange]);
@@ -418,8 +419,8 @@ export default function AssetMonitorPanel({
 
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div className="space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              Day-over-Day Comparison
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+              {activeTab === 'registrations' ? 'DoD: Part 1 New Registrations' : 'DoD: Part 2 Asset Edits'}
             </span>
             <div className="text-2xl font-black text-slate-900 font-mono flex items-center gap-1">
               <span>{dayByDayComparison.dodDiff >= 0 ? `+${dayByDayComparison.dodDiff}` : dayByDayComparison.dodDiff}</span>
