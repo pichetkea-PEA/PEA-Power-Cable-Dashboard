@@ -1,13 +1,16 @@
 import { useState, useEffect, useMemo, ChangeEvent, FormEvent } from 'react';
+import { logAssetActivity } from '../utils/auditLogger';
 import { 
   EquipmentType, 
   LocationType, 
   PDResultType, 
   TanDeltaResult, 
-  PEAUser 
+  PEAUser,
+  CableAsset,
+  PDDiagnosticInformation
 } from '../types';
 import { 
-  PEA_AREAS,
+  PEA_AREAS, 
   PEA_AREA_NAMES, 
   PEA_AREA_CITIES, 
   EQUIPMENT_TYPES, 
@@ -22,16 +25,29 @@ import {
 } from '../utils/peaData';
 import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
-  uploadImageToDrive, 
+  uploadImageToDrive,
+  uploadFileToDrive,
   appendGeneralRow, 
   appendEngineeringRow, 
   appendVisualRow,
+  appendPdDiagnosticRow,
   fetchSheetsData,
   fetchLastSheetNumber,
   getMasterSpreadsheetsMap
 } from '../utils/googleSheets';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
-import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, getCentralAdminDatabaseConfig } from '../utils/firestore';
+import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
+import { 
+  analyzePrpdImage, 
+  analyzeOfflinePdPdf, 
+  generateDiagnosticSummary,
+  AnalyzedPrpdResult,
+  AnalyzedOfflinePdResult 
+} from '../utils/pdAnalyzer';
+import { 
+  downloadPrpdCsvTemplate, 
+  downloadPrpdJsonTemplate 
+} from '../utils/prpdTemplates';
 import { 
   Check, 
   ArrowRight, 
@@ -42,10 +58,21 @@ import {
   Loader2, 
   ShieldCheck, 
   Sparkles,
-  User
+  User,
+  Activity,
+  FileText,
+  FileSpreadsheet,
+  FileCode,
+  Download,
+  Upload,
+  Radio,
+  Layers,
+  CheckCircle2,
+  HelpCircle,
+  TrendingUp,
+  Flame,
+  ShieldAlert
 } from 'lucide-react';
-
-import { CableAsset } from '../types';
 
 interface InputFormProps {
   user: PEAUser;
@@ -112,12 +139,33 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [tanDelta, setTanDelta] = useState<TanDeltaResult>('No Action Required');
   const [tanDeltaAmplitude, setTanDeltaAmplitude] = useState<string>('');
 
-  // Page 3: Images (File format & uploaded link)
+  // Page 3: Visual & Thermogram Images
   const [visualFile, setVisualFile] = useState<File | null>(null);
   const [thermalFile, setThermalFile] = useState<File | null>(null);
-  
   const [visualPreview, setVisualPreview] = useState<string>('');
   const [thermalPreview, setThermalPreview] = useState<string>('');
+
+  // Page 4: Advanced Partial Discharge (PD) Diagnostic Suite
+  const [onlinePrpdFile, setOnlinePrpdFile] = useState<File | null>(null);
+  const [onlinePrpdPreview, setOnlinePrpdPreview] = useState<string>('');
+  const [analyzedPrpd, setAnalyzedPrpd] = useState<AnalyzedPrpdResult | null>(null);
+  const [isAnalyzingPrpd, setIsAnalyzingPrpd] = useState<boolean>(false);
+  const [prpdChannel, setPrpdChannel] = useState<string>('Channel 1');
+  const [prpdPhase, setPrpdPhase] = useState<'Phase A' | 'Phase B' | 'Phase C' | '3-Phase'>('Phase A');
+  const [prpdPeakCharge, setPrpdPeakCharge] = useState<string>('812.8');
+  const [prpdPulseRate, setPrpdPulseRate] = useState<string>('263.7');
+  const [prpdAvgAmplitude, setPrpdAvgAmplitude] = useState<string>('35.8');
+  const [prpdDefectType, setPrpdDefectType] = useState<string>('Surface Tracking / Bad Contacts');
+
+  // Offline PD PDF Report
+  const [offlinePdfFile, setOfflinePdfFile] = useState<File | null>(null);
+  const [analyzedOffline, setAnalyzedOffline] = useState<AnalyzedOfflinePdResult | null>(null);
+  const [isAnalyzingPdf, setIsAnalyzingPdf] = useState<boolean>(false);
+  const [offlineTestVoltage, setOfflineTestVoltage] = useState<string>('12.8 kV (2.0 U0)');
+  const [offlineMaxCharge, setOfflineMaxCharge] = useState<string>('3.6');
+  const [offlineDefectLocation, setOfflineDefectLocation] = useState<string>('80.0 m (Far Termination)');
+  const [offlineIeeeVerdict, setOfflineIeeeVerdict] = useState<string>('Action Required');
+  const [offlineRiskLevel, setOfflineRiskLevel] = useState<'Low' | 'Medium' | 'High' | 'Critical'>('High');
 
   // Registration Progress Modal State
   const [progressModal, setProgressModal] = useState<{
@@ -150,11 +198,11 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   // System Constraint: 33 kV is Southern Area 2-3 (S2, S3) only
   useEffect(() => {
     if (selectedArea !== 'S2' && selectedArea !== 'S3' && voltage === '33') {
-      setVoltage('115'); // Reset to default 115 kV
+      setVoltage('115');
     }
   }, [selectedArea, voltage]);
 
-  // Voltage Level Constraint: 115 kV excludes 1.6, 1.10, 1.11, 1.13, 1.14
+  // Voltage Level Constraint
   useEffect(() => {
     const availableTypes = getAvailableEquipmentTypes(voltage);
     if (!availableTypes.includes(eqType)) {
@@ -162,7 +210,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     }
   }, [voltage, eqType]);
 
-  // Brand constraint: Automatically sync manufacturer options when equipment type changes
+  // Brand constraint
   useEffect(() => {
     const availableBrands = getManufacturersForEquipmentType(eqType);
     if (!brand || !availableBrands.includes(brand)) {
@@ -219,7 +267,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     });
   }, [selectedArea, voltage, regYear, locationType, eqType, city, peaNumber, assets]);
 
-  // Image preview handlers
+  // Image preview handlers for Step 3
   const handleImageChange = (e: ChangeEvent<HTMLInputElement>, type: 'visual' | 'thermal') => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -235,6 +283,54 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  // Handle Online PRPD Image Upload & Smart Analysis
+  const handlePrpdImageChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setOnlinePrpdFile(file);
+    setIsAnalyzingPrpd(true);
+
+    try {
+      const result = await analyzePrpdImage(file, prpdPhase);
+      setAnalyzedPrpd(result);
+      setOnlinePrpdPreview(result.imageUrl);
+      if (result.channel) setPrpdChannel(result.channel);
+      if (result.phase) setPrpdPhase(result.phase as any);
+      setPrpdPeakCharge(String(result.amplitude));
+      if (result.avgAmplitude !== undefined) setPrpdAvgAmplitude(String(result.avgAmplitude));
+      setPrpdPulseRate(String(result.repetitionRate));
+      setPrpdDefectType(result.defectType);
+    } catch (err) {
+      console.warn("Failed to analyze PRPD image:", err);
+    } finally {
+      setIsAnalyzingPrpd(false);
+    }
+  };
+
+  // Handle Offline PD PDF Report Upload & Smart Analysis
+  const handleOfflinePdfChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setOfflinePdfFile(file);
+    setIsAnalyzingPdf(true);
+
+    try {
+      const result = await analyzeOfflinePdPdf(file);
+      setAnalyzedOffline(result);
+      setOfflineTestVoltage(result.testVoltage);
+      setOfflineMaxCharge(String(result.maxDischarge));
+      setOfflineDefectLocation(result.defectLocation);
+      setOfflineIeeeVerdict(result.ieeeVerdict);
+      setOfflineRiskLevel(result.riskLevel);
+    } catch (err) {
+      console.warn("Failed to parse Offline PD PDF:", err);
+    } finally {
+      setIsAnalyzingPdf(false);
+    }
   };
 
   // Immediate Engineering warning calculation flags
@@ -255,17 +351,23 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     };
   }, [surfaceTemp, discharge, insulationRes, loadCurrent, sheathCurrent]);
 
-  // Submit combined multi-page rows
+  // Executive Combined Diagnostic Summary
+  const liveDiagnosticSummary = useMemo(() => {
+    return generateDiagnosticSummary(analyzedPrpd, analyzedOffline, computedEquipmentId);
+  }, [analyzedPrpd, analyzedOffline, computedEquipmentId]);
+
+  // Submit combined multi-page rows across 4 Google Sheets tabs
   const handleSubmitForm = async (e: FormEvent) => {
     e.preventDefault();
     
-    if (step < 3) {
+    if (step < 4) {
       setStep(prev => prev + 1);
       return;
     }
 
     if (!visualFile || !thermalFile) {
       setStatusMessage('Please upload both visual and thermal images before submitting.');
+      setStep(3);
       return;
     }
 
@@ -273,7 +375,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     setStatusMessage('Preparing database for selected area...');
     setProgressModal({
       isOpen: true,
-      title: 'Registering New Asset',
+      title: 'Registering New Asset with Diagnostic Logs',
       stepMessage: 'Preparing database connection & uploading attachments...',
       percent: 10,
       isError: false,
@@ -299,17 +401,19 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         }
       }
 
-      setStatusMessage('Uploading inspection photos...');
+      setStatusMessage('Uploading inspection photos & diagnostic files...');
       setProgressModal(prev => ({
         ...prev,
-        percent: 25,
-        stepMessage: 'Uploading visual & thermal inspection photos...'
+        percent: 20,
+        stepMessage: 'Uploading visual photo, thermogram scan, PRPD picture & offline PDF report...'
       }));
       
-      let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'; // Fallback mockup
-      let thermalUrl = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'; // Fallback mockup
+      let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
+      let thermalUrl = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
+      let prpdUrl = onlinePrpdPreview || '';
+      let offlinePdfUrl = '';
 
-      // Upload files to user's Google Drive folder if logged in
+      // Upload files to user's Google Drive folder if connected
       if (googleToken && currentFolderId) {
         if (visualFile) {
           visualUrl = await uploadImageToDrive(googleToken, currentFolderId, visualFile);
@@ -317,22 +421,26 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         if (thermalFile) {
           thermalUrl = await uploadImageToDrive(googleToken, currentFolderId, thermalFile);
         }
+        if (onlinePrpdFile) {
+          prpdUrl = await uploadFileToDrive(googleToken, currentFolderId, onlinePrpdFile);
+        }
+        if (offlinePdfFile) {
+          offlinePdfUrl = await uploadFileToDrive(googleToken, currentFolderId, offlinePdfFile);
+        }
       }
 
-      setStatusMessage('Saving inspection data to Google Sheets...');
+      setStatusMessage('Calculating sequential running index...');
       setProgressModal(prev => ({
         ...prev,
-        percent: 40,
+        percent: 35,
         stepMessage: 'Calculating sequential index & validating PEA registration fields...'
       }));
 
       const timestamp = getBangkokTimestamp();
       
-      // Calculate next sequential running number
       let rowNum = 1;
       if (googleToken && currentSpreadsheetId) {
         try {
-          setStatusMessage('Retrieving spreadsheet records to calculate next sequential number...');
           const lastSheetNum = await fetchLastSheetNumber(googleToken, currentSpreadsheetId);
           if (lastSheetNum > 0) {
             rowNum = lastSheetNum + 1;
@@ -348,16 +456,12 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
           if (assets && assets.length > 0) {
             const validNumbers = assets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
             rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : assets.length + 1;
-          } else {
-            rowNum = 1;
           }
         }
       } else {
         if (assets && assets.length > 0) {
           const validNumbers = assets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
           rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : assets.length + 1;
-        } else {
-          rowNum = 1;
         }
       }
 
@@ -365,6 +469,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
       const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
 
+      // Tab 1: General Information
       const generalRow = [
         rowNum, timestamp, user.name, voltage, city, eqType, 
         brand || 'Prysmian Group', country || 'Thailand', locationType, substation || 'Main Station', 
@@ -377,20 +482,77 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         computedEquipmentId, (qrDocument || '').trim()
       ];
 
+      // Tab 2: Engineering Information
       const engineeringRow = [
         rowNum, timestamp, user.name, computedEquipmentId, 
         parseFloat(loadCurrent) || 120, parseFloat(sheathCurrent) || 8, parseFloat(surfaceTemp) || 35, 
         parseFloat(discharge) || 5, pdResult,
-        parseFloat(onlinePdAmplitude) || 0,
+        parseFloat(onlinePdAmplitude) || (parseFloat(prpdPeakCharge) || 0),
         parseFloat(insulationRes) || 15.0, tanDelta,
         parseFloat(tanDeltaAmplitude) || 0
       ];
 
+      // Tab 3: Visual & Thermal Images
       const visualRow = [
         rowNum, timestamp, user.name, computedEquipmentId, visualUrl, thermalUrl
       ];
 
-      const combinedAsset = {
+      // Tab 4: PD & Diagnostic Data (Aligned with 27-column schema)
+      const pdDiagnosticRow = [
+        rowNum,
+        timestamp,
+        user.name,
+        computedEquipmentId,
+        finalPeaNumber,
+        voltage,
+        city,
+        eqType,
+        locationType,
+        substation || 'Main Station',
+        prpdUrl,
+        prpdPhase,
+        parseFloat(prpdPeakCharge) || 0,
+        parseFloat(prpdPulseRate) || 0,
+        analyzedPrpd?.phaseRange || '85°-145° & 265°-325°',
+        prpdDefectType,
+        analyzedPrpd?.severity || 'Critical',
+        offlinePdfUrl,
+        offlinePdfFile?.name || (analyzedOffline ? 'VLF_PD_Report.pdf' : 'N/A'),
+        offlineTestVoltage,
+        parseFloat(offlineMaxCharge) || 0,
+        offlineDefectLocation,
+        analyzedOffline?.inceptionVoltage || 6.4,
+        analyzedOffline?.defectClassification || 'Surface Discharges',
+        offlineIeeeVerdict,
+        offlineRiskLevel,
+        liveDiagnosticSummary
+      ];
+
+      const pdDiagInfo: PDDiagnosticInformation = {
+        onlinePrpdImageUrl: prpdUrl,
+        onlinePrpdChannel: prpdChannel,
+        onlinePrpdPhase: prpdPhase,
+        onlinePrpdPeakCharge: parseFloat(prpdPeakCharge) || 0,
+        onlinePrpdAmplitude: parseFloat(prpdPeakCharge) || 0,
+        onlinePrpdAvgAmplitude: parseFloat(prpdAvgAmplitude) || 35.8,
+        onlinePrpdPulseRate: parseFloat(prpdPulseRate) || 0,
+        onlinePrpdRepetitionRate: parseFloat(prpdPulseRate) || 0,
+        onlinePrpdPhaseRange: analyzedPrpd?.phaseRange || '85°-145° & 265°-325°',
+        onlinePrpdDefectType: prpdDefectType,
+        onlinePrpdSeverity: analyzedPrpd?.severity || 'Critical',
+        offlinePdfUrl: offlinePdfUrl,
+        offlinePdfReportName: offlinePdfFile?.name || 'Offline_PD_Report.pdf',
+        offlineTestVoltage: offlineTestVoltage,
+        offlineMaxApparentCharge: parseFloat(offlineMaxCharge) || 0,
+        offlineDefectLocation: offlineDefectLocation,
+        offlineInceptionVoltage: analyzedOffline?.inceptionVoltage || 6.4,
+        offlineDefectClassification: analyzedOffline?.defectClassification || 'Surface Discharges',
+        offlineIeeeVerdict: offlineIeeeVerdict,
+        offlineRiskLevel: offlineRiskLevel,
+        summaryAnalysis: liveDiagnosticSummary
+      };
+
+      const combinedAsset: CableAsset = {
         number: rowNum, timestamp, operatorName: user.name, voltageLevel: voltage, city, 
         equipmentType: eqType, manufacturer: brand || 'Prysmian Group', country: country || 'Thailand',
         locationType, substationName: substation || 'Main Station', landmark: landmark || 'No landmarks',
@@ -402,39 +564,61 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         qrDocument: (qrDocument || '').trim(),
         loadCurrent: parseFloat(loadCurrent) || 120, sheathCurrent: parseFloat(sheathCurrent) || 8,
         surfaceTemperature: parseFloat(surfaceTemp) || 35, externalDischarge: parseFloat(discharge) || 5,
-        pdResult, onlinePdAmplitude: parseFloat(onlinePdAmplitude) || 0, insulationResistance: parseFloat(insulationRes) || 15.0,
+        pdResult, onlinePdAmplitude: parseFloat(onlinePdAmplitude) || (parseFloat(prpdPeakCharge) || 0),
+        insulationResistance: parseFloat(insulationRes) || 15.0,
         tanDelta, tanDeltaAmplitude: parseFloat(tanDeltaAmplitude) || 0,
-        visualPictureUrl: visualPreview || visualUrl, thermalImageUrl: thermalPreview || thermalUrl
+        visualPictureUrl: visualPreview || visualUrl, thermalImageUrl: thermalPreview || thermalUrl,
+        pdDiagnostics: pdDiagInfo,
+        pdDiagnosticSummary: liveDiagnosticSummary
       };
 
       if (googleToken && currentSpreadsheetId) {
-        setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: `Writing General Information for ${computedEquipmentId}...` }));
+        setProgressModal(prev => ({ ...prev, percent: 50, stepMessage: `Writing General Information for ${computedEquipmentId}...` }));
         await appendGeneralRow(googleToken, currentSpreadsheetId, generalRow);
 
-        setProgressModal(prev => ({ ...prev, percent: 75, stepMessage: 'Writing Engineering Parameters row...' }));
+        setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing Engineering Parameters row...' }));
         await appendEngineeringRow(googleToken, currentSpreadsheetId, engineeringRow);
 
-        setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing Visual & Thermal image references...' }));
+        setProgressModal(prev => ({ ...prev, percent: 78, stepMessage: 'Writing Visual & Thermal image references...' }));
         await appendVisualRow(googleToken, currentSpreadsheetId, visualRow);
+
+        setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing PD & Diagnostic Data sheet (Tab 4)...' }));
+        await appendPdDiagnosticRow(googleToken, currentSpreadsheetId, pdDiagnosticRow);
       }
 
       setProgressModal(prev => ({ ...prev, percent: 95, stepMessage: 'Synchronizing central database cache & local storage...' }));
 
-      // Always sync to Firestore central cache and local storage so Dashboard updates immediately across all roles
       try {
         const currentList = assets || [];
         const updatedList = [combinedAsset, ...currentList];
         await saveCentralAssetsCache(updatedList);
         localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
+
+        // Log registration event for Admin Audit Monitor
+        await logAssetActivity({
+          type: 'registration',
+          equipmentId: computedEquipmentId,
+          equipmentType: combinedAsset.equipmentType,
+          voltageLevel: combinedAsset.voltageLevel ? `${combinedAsset.voltageLevel} kV` : '115 kV',
+          area: selectedArea,
+          operatorName: combinedAsset.operatorName || user.name || 'Local Operator',
+          userEmail: user.email,
+          timestamp: getBangkokTimestamp(),
+          details: `Registered ${combinedAsset.equipmentType} in ${combinedAsset.substationName || 'Substation'} (${selectedArea})`,
+          gps: combinedAsset.gps,
+          substationName: combinedAsset.substationName,
+          landmark: combinedAsset.landmark,
+          city: combinedAsset.city
+        });
       } catch (e) {
         console.warn("Failed updating central assets cache:", e);
       }
 
-      setStatusMessage('Asset successfully logged!');
+      setStatusMessage('Asset successfully logged with full diagnostic data!');
       setProgressModal({
         isOpen: true,
         title: 'Asset Registered Successfully',
-        stepMessage: `Asset Equipment ${computedEquipmentId} (PEA: ${finalPeaNumber || 'Assigned'}) registered successfully! (100%)`,
+        stepMessage: `Asset Equipment ${computedEquipmentId} (PEA: ${finalPeaNumber || 'Assigned'}) registered across all 4 database sheets! (100%)`,
         percent: 100,
         isError: false,
         isComplete: true
@@ -460,21 +644,66 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-2xl mx-auto" id="input-form-card">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-3xl mx-auto" id="input-form-card">
       {/* Wizard Header Progress */}
-      <div className="bg-purple-900 text-white p-6 relative">
-        <span className="text-[10px] font-black tracking-widest uppercase bg-purple-800 text-purple-200 px-2 py-0.5 rounded-md">
-          Asset Registration Wizard
-        </span>
-        <h3 className="text-base font-bold mt-1 uppercase">Log Cable System Equipment</h3>
+      <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-purple-950 text-white p-6 relative">
+        <div className="flex justify-between items-center">
+          <span className="text-[10px] font-black tracking-widest uppercase bg-purple-800/80 text-purple-200 px-2.5 py-0.5 rounded-md border border-purple-700/50">
+            Asset Registration & Diagnostic Wizard
+          </span>
+          <span className="text-xs font-mono font-bold text-purple-200">
+            Step {step} of 4
+          </span>
+        </div>
+        <h3 className="text-base font-bold mt-1 uppercase">Log Cable System Equipment & Diagnostics</h3>
         <p className="text-xs text-purple-200 mt-0.5">PEA Area: {selectedArea} - {PEA_AREA_NAMES[selectedArea]}</p>
 
         {/* Dynamic Progress Bar */}
         <div className="absolute bottom-0 left-0 w-full h-1.5 bg-purple-950 flex">
-          <div className={`h-full bg-emerald-500 transition-all duration-300 ${
-            step === 1 ? 'w-1/3' : step === 2 ? 'w-2/3' : 'w-full'
+          <div className={`h-full bg-emerald-400 transition-all duration-300 ${
+            step === 1 ? 'w-1/4' : step === 2 ? 'w-2/4' : step === 3 ? 'w-3/4' : 'w-full'
           }`} />
         </div>
+      </div>
+
+      {/* Step Indicators Bar */}
+      <div className="grid grid-cols-4 bg-gray-50 border-b border-gray-100 text-center text-[10px] font-bold text-gray-500">
+        <button
+          type="button"
+          onClick={() => setStep(1)}
+          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+            step === 1 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
+          }`}
+        >
+          1. General Registry
+        </button>
+        <button
+          type="button"
+          onClick={() => setStep(2)}
+          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+            step === 2 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
+          }`}
+        >
+          2. Engineering Logs
+        </button>
+        <button
+          type="button"
+          onClick={() => setStep(3)}
+          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+            step === 3 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
+          }`}
+        >
+          3. Visual & Thermal
+        </button>
+        <button
+          type="button"
+          onClick={() => setStep(4)}
+          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+            step === 4 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
+          }`}
+        >
+          4. Advanced PD Suite
+        </button>
       </div>
 
       <div className="p-6">
@@ -488,7 +717,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         <form onSubmit={handleSubmitForm} className="space-y-6">
           {/* STEP 1: GENERAL INFORMATION */}
           {step === 1 && (
-            <div className="space-y-4">
+            <div className="space-y-4 animate-fadeIn">
               <div className="border-b border-gray-100 pb-2 mb-3">
                 <h4 className="text-xs font-bold text-gray-900 uppercase">Step 1: General Information Registry</h4>
                 <p className="text-[10px] text-gray-400">Configure key identifying indicators of the cable or termination unit</p>
@@ -751,7 +980,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       <label className="text-[9px] font-bold text-gray-400 uppercase">WBS Code</label>
                       <input
                         type="text"
-                        placeholder="e.g. WBS-N1-9023"
+                        placeholder="e.g. WBS-N1-998"
                         value={wbs}
                         onChange={e => setWbs(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
@@ -761,7 +990,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       <label className="text-[9px] font-bold text-gray-400 uppercase">Business Type</label>
                       <input
                         type="text"
-                        placeholder="e.g. Transmission"
+                        placeholder="e.g. Government / Utility"
                         value={businessType}
                         onChange={e => setBusinessType(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
@@ -771,27 +1000,27 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       <label className="text-[9px] font-bold text-gray-400 uppercase">Cost Center</label>
                       <input
                         type="text"
-                        placeholder="e.g. CC-1234"
+                        placeholder="e.g. CC-7041"
                         value={costCenter}
                         onChange={e => setCostCenter(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">GISTAG</label>
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">GIS Tag</label>
                       <input
                         type="text"
-                        placeholder="e.g. GIS-TAG-882"
+                        placeholder="e.g. GIS-CM2-881"
                         value={gistag}
                         onChange={e => setGistag(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Class</label>
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Asset Class</label>
                       <input
                         type="text"
-                        placeholder="e.g. Class A"
+                        placeholder="e.g. Class 1 High Voltage"
                         value={assetClass}
                         onChange={e => setAssetClass(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
@@ -906,9 +1135,9 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
           {/* STEP 2: ENGINEERING PARAMETERS */}
           {step === 2 && (
-            <div className="space-y-4">
+            <div className="space-y-4 animate-fadeIn">
               <div className="border-b border-gray-100 pb-2 mb-3">
-                <h4 className="text-xs font-bold text-gray-900 uppercase">Step 2: Engineering Information & Diagnostic Logs</h4>
+                <h4 className="text-xs font-bold text-gray-900 uppercase">Step 2: Engineering Information & Field Measurements</h4>
                 <p className="text-[10px] text-gray-400">Provide real field test results to compute the Health Index accurately</p>
               </div>
 
@@ -922,7 +1151,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     placeholder="e.g. 180"
                     value={loadCurrent}
                     onChange={e => setLoadCurrent(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                   />
                 </div>
 
@@ -941,8 +1170,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     placeholder="e.g. 12"
                     value={sheathCurrent}
                     onChange={e => setSheathCurrent(e.target.value)}
-                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
-                      alerts.highSheathRatio ? 'border-orange-300 focus:border-orange-600' : 'border-gray-200'
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:bg-white ${
+                      alerts.highSheathRatio ? 'border-orange-300 focus:border-orange-600' : 'border-gray-200 focus:border-purple-600'
                     }`}
                   />
                 </div>
@@ -962,8 +1191,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     placeholder="e.g. 45"
                     value={surfaceTemp}
                     onChange={e => setSurfaceTemp(e.target.value)}
-                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
-                      alerts.highTemp ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:bg-white ${
+                      alerts.highTemp ? 'border-red-300 focus:border-red-600' : 'border-gray-200 focus:border-purple-600'
                     }`}
                   />
                 </div>
@@ -983,8 +1212,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     placeholder="e.g. 8"
                     value={discharge}
                     onChange={e => setDischarge(e.target.value)}
-                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
-                      alerts.highDischarge ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:bg-white ${
+                      alerts.highDischarge ? 'border-red-300 focus:border-red-600' : 'border-gray-200 focus:border-purple-600'
                     }`}
                   />
                 </div>
@@ -1006,7 +1235,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Online PD amplitude (pC)</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">Online PD amplitude (pC / mV)</label>
                   <input
                     type="number"
                     step="any"
@@ -1034,8 +1263,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     placeholder="e.g. 12.5"
                     value={insulationRes}
                     onChange={e => setInsulationRes(e.target.value)}
-                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden ${
-                      alerts.lowInsulation ? 'border-red-300 focus:border-red-600' : 'border-gray-200'
+                    className={`bg-gray-50 border rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:bg-white ${
+                      alerts.lowInsulation ? 'border-red-300 focus:border-red-600' : 'border-gray-200 focus:border-purple-600'
                     }`}
                   />
                 </div>
@@ -1053,7 +1282,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                   </select>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5 col-span-2">
                   <label className="text-[10px] font-bold text-gray-400 uppercase">Tan delta amplitude</label>
                   <input
                     type="number"
@@ -1085,9 +1314,9 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             </div>
           )}
 
-          {/* STEP 3: IMAGES & FINALIZE */}
+          {/* STEP 3: IMAGES */}
           {step === 3 && (
-            <div className="space-y-4">
+            <div className="space-y-4 animate-fadeIn">
               <div className="border-b border-gray-100 pb-2 mb-3">
                 <h4 className="text-xs font-bold text-gray-900 uppercase">Step 3: Field Inspection Imaging</h4>
                 <p className="text-[10px] text-gray-400">Take or upload visual photos and thermal thermograms linked to your Google Drive</p>
@@ -1097,19 +1326,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 {/* Visual */}
                 <div className="flex flex-col gap-2">
                   <label className="text-[10px] font-bold text-gray-400 uppercase block">Visual Asset Picture</label>
-                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden">
+                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden bg-gray-50/50">
                     {visualPreview ? (
                       <>
                         <img src={visualPreview} alt="Visual Preview" className="absolute inset-0 w-full h-full object-cover" />
                         <div className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 cursor-pointer" onClick={() => { setVisualFile(null); setVisualPreview(''); }}>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ display: 'none' }} />
                           <span className="text-[9px] font-black uppercase px-1">Clear</span>
                         </div>
                       </>
                     ) : (
                       <>
                         <Camera className="w-8 h-8 text-gray-300 mb-2" />
-                        <span className="text-[11px] text-gray-500 font-bold block">Upload Field Photo</span>
+                        <span className="text-[11px] text-gray-700 font-bold block">Upload Field Photo</span>
                         <span className="text-[9px] text-gray-400 block mt-0.5">Drag & drop or Click</span>
                       </>
                     )}
@@ -1125,7 +1353,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 {/* Thermal */}
                 <div className="flex flex-col gap-2">
                   <label className="text-[10px] font-bold text-gray-400 uppercase block">Thermal Thermogram Scan</label>
-                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden">
+                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-300 relative min-h-[160px] overflow-hidden bg-gray-50/50">
                     {thermalPreview ? (
                       <>
                         <img src={thermalPreview} alt="Thermal Preview" className="absolute inset-0 w-full h-full object-cover" />
@@ -1136,7 +1364,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     ) : (
                       <>
                         <Camera className="w-8 h-8 text-gray-300 mb-2" />
-                        <span className="text-[11px] text-gray-500 font-bold block">Upload Thermogram Scan</span>
+                        <span className="text-[11px] text-gray-700 font-bold block">Upload Thermogram Scan</span>
                         <span className="text-[9px] text-gray-400 block mt-0.5">Drag & drop or Click</span>
                       </>
                     )}
@@ -1163,9 +1391,217 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
               ) : (
                 <div className="bg-orange-50 text-orange-700 border border-orange-100 rounded-lg p-3 text-[11px] mt-4 leading-relaxed">
-                  ⚠️ Google Account is currently disconnected. Uploaded files will be stored inside local browser memory, and fallback URLs will be saved in the sheet database. For real storage, connect Google Sheets on the main toolbar.
+                  ⚠️ Google Account is currently disconnected. Uploaded files will be stored inside local browser memory, and fallback URLs will be saved in the sheet database.
                 </div>
               )}
+            </div>
+          )}
+
+          {/* STEP 4: ADVANCED ONLINE PARTIAL DISCHARGE (PRPD) DIAGNOSTICS */}
+          {step === 4 && (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="border-b border-gray-100 pb-2 mb-1">
+                <div className="flex items-center gap-2">
+                  <span className="bg-purple-100 text-purple-800 text-[10px] font-black uppercase px-2 py-0.5 rounded-sm">
+                    Step 4 : Online PRPD Diagnostic
+                  </span>
+                  <h4 className="text-xs font-bold text-gray-900 uppercase">
+                    High-Voltage Online HFCT PRPD Diagnostic Input
+                  </h4>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Upload HFCT PRPD pattern image to trigger real-time AI/heuristic analysis and populate the asset's health record.
+                </p>
+              </div>
+
+              {/* SECTION A: ONLINE HFCT PRPD PATTERN DIAGNOSTICS */}
+              <div className="bg-purple-50/40 border border-purple-100 rounded-2xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-purple-100/80 pb-3">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-purple-900 font-bold text-xs uppercase tracking-wide">
+                      <Radio className="w-4 h-4 text-purple-700 animate-pulse" />
+                      <span>Online HFCT PRPD Pattern Input</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500">
+                      Phase Resolved Partial Discharge image from HFCT online sensor
+                    </p>
+                  </div>
+
+                  {/* Template Download Links */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={downloadPrpdCsvTemplate}
+                      className="bg-white border border-purple-200 text-purple-800 hover:bg-purple-50 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                      title="Download standard CSV PRPD data input template"
+                    >
+                      <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                      <span>CSV Template</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadPrpdJsonTemplate}
+                      className="bg-white border border-purple-200 text-purple-800 hover:bg-purple-50 px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                      title="Download standard JSON sensor schema template"
+                    >
+                      <FileCode className="w-3 h-3 text-amber-600" />
+                      <span>JSON Template</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* PRPD Image Upload Box */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-gray-600 uppercase block">
+                      PRPD Pattern Image (.png, .jpg)
+                    </label>
+                    <div className="border-2 border-dashed border-purple-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-400 relative min-h-[160px] overflow-hidden bg-white group">
+                      {onlinePrpdPreview ? (
+                        <>
+                          <img src={onlinePrpdPreview} alt="PRPD Pattern" className="absolute inset-0 w-full h-full object-contain p-2 bg-slate-900" />
+                          <div className="absolute top-2 right-2 bg-black/70 text-white rounded-md p-1 px-2 text-[9px] font-bold cursor-pointer" onClick={(e) => { e.stopPropagation(); setOnlinePrpdFile(null); setOnlinePrpdPreview(''); setAnalyzedPrpd(null); }}>
+                            Clear
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <Activity className="w-8 h-8 text-purple-400 mb-2 group-hover:scale-110 transition-transform" />
+                          <span className="text-xs text-purple-900 font-bold block">Upload PRPD Capture</span>
+                          <span className="text-[9px] text-gray-400 block mt-0.5">Drag & drop or Click to choose PRPD image</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePrpdImageChange}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      />
+                    </div>
+                  </div>
+
+                  {/* PRPD Parameters & Analysis */}
+                  <div className="space-y-3 bg-white p-3.5 rounded-xl border border-purple-100">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-black text-purple-900 uppercase">Analysis Parameters</span>
+                      {isAnalyzingPrpd ? (
+                        <span className="text-[9px] text-purple-600 flex items-center gap-1 font-bold">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Analyzing Image...
+                        </span>
+                      ) : analyzedPrpd ? (
+                        <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${
+                          analyzedPrpd.severity === 'Critical' ? 'bg-red-100 text-red-800' :
+                          analyzedPrpd.severity === 'Warning' ? 'bg-orange-100 text-orange-800' :
+                          analyzedPrpd.severity === 'Advisory' ? 'bg-amber-100 text-amber-800' :
+                          'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {analyzedPrpd.severity} ({analyzedPrpd.confidence}% Match)
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Phase Channel</label>
+                        <select
+                          value={prpdChannel}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setPrpdChannel(val);
+                            if (val === 'Channel 1' || val === 'Channel 4') setPrpdPhase('Phase A');
+                            else if (val === 'Channel 2' || val === 'Channel 5') setPrpdPhase('Phase B');
+                            else if (val === 'Channel 3' || val === 'Channel 6') setPrpdPhase('Phase C');
+                            else setPrpdPhase('3-Phase');
+                          }}
+                          className="bg-gray-50 border border-purple-200 rounded-lg py-1.5 px-2 text-xs font-semibold text-purple-950"
+                        >
+                          <option value="Channel 1">Channel 1 (Phase A)</option>
+                          <option value="Channel 2">Channel 2 (Phase B)</option>
+                          <option value="Channel 3">Channel 3 (Phase C)</option>
+                          <option value="Channel 4">Channel 4 (Phase A)</option>
+                          <option value="Channel 5">Channel 5 (Phase B)</option>
+                          <option value="Channel 6">Channel 6 (Phase C)</option>
+                          <option value="3-Phase">3-Phase (All Channels)</option>
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Peak Amplitude (mV / pC)</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={prpdPeakCharge}
+                          onChange={e => setPrpdPeakCharge(e.target.value)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
+                          placeholder="e.g. 812.8"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Pulses / Sec (pps)</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={prpdPulseRate}
+                          onChange={e => setPrpdPulseRate(e.target.value)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
+                          placeholder="e.g. 263.73"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Average Amplitude (mV / pC)</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={prpdAvgAmplitude}
+                          onChange={e => setPrpdAvgAmplitude(e.target.value)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
+                          placeholder="e.g. 35.8"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1 sm:col-span-2">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Identified Defect Type</label>
+                        <select
+                          value={prpdDefectType}
+                          onChange={e => setPrpdDefectType(e.target.value)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
+                        >
+                          <option value="Surface Tracking / Bad Contacts">Surface Tracking / Bad Contacts</option>
+                          <option value="Internal Void / Cavity">Internal Void / Cavity</option>
+                          <option value="Corona / External Glow">Corona / External Glow</option>
+                          <option value="Treeing Breakdown">Treeing Breakdown</option>
+                          <option value="Background Noise / No Active Defect">Background Noise</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {analyzedPrpd && analyzedPrpd.findings.length > 0 && (
+                      <div className="text-[10px] text-purple-900 bg-purple-50/70 p-2 rounded-lg space-y-0.5">
+                        <span className="font-bold block">Smart Vision Diagnosis:</span>
+                        {analyzedPrpd.findings.map((f, idx) => (
+                          <div key={idx} className="flex items-start gap-1">
+                            <span className="text-purple-600">•</span>
+                            <span>{f}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION C: AUTO-GENERATED EXECUTIVE DIAGNOSTIC SUMMARY */}
+              <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-4 space-y-2 text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-emerald-950 uppercase tracking-wide">
+                  <Sparkles className="w-4 h-4 text-emerald-700" />
+                  <span>Auto-Generated Diagnostic Executive Summary (Saved into Asset Record)</span>
+                </div>
+                <p className="text-gray-700 leading-relaxed font-mono text-[11px] bg-white p-3 rounded-lg border border-emerald-100">
+                  {liveDiagnosticSummary}
+                </p>
+              </div>
             </div>
           )}
 
@@ -1184,11 +1620,11 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               <div />
             )}
 
-            {step < 3 ? (
+            {step < 4 ? (
               <button
                 type="button"
                 onClick={() => setStep(prev => prev + 1)}
-                className="bg-purple-700 hover:bg-purple-900 text-white rounded-lg py-2 px-5 text-xs font-bold uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer"
+                className="bg-purple-900 hover:bg-purple-950 text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
               >
                 Next Step
                 <ArrowRight className="w-4 h-4" />
@@ -1197,17 +1633,17 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               <button
                 type="submit"
                 disabled={loading || !visualFile || !thermalFile}
-                className={`text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${(loading || !visualFile || !thermalFile) ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'}`}
+                className={`text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${(loading || !visualFile || !thermalFile) ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer shadow-md'}`}
               >
                 {loading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Submitting...
+                    Submitting & Uploading...
                   </>
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    Submit Inspection Record
+                    Submit Inspection & Diagnostic Record
                   </>
                 )}
               </button>

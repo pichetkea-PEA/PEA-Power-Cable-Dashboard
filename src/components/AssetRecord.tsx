@@ -46,7 +46,8 @@ import {
   appendEngineeringRow, 
   appendVisualRow,
   fetchSheetsRowIndices,
-  uploadImageToDrive
+  uploadImageToDrive,
+  getMasterSpreadsheetsMap
 } from '../utils/googleSheets';
 import { getSectorSpreadsheet, saveSectorSpreadsheet } from '../utils/firestore';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
@@ -80,6 +81,9 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
+import OnlinePrpdDiagnostics from './diagnostics/OnlinePrpdDiagnostics';
+import OfflinePdDiagnostics from './diagnostics/OfflinePdDiagnostics';
+import DiagnosticEditModal from './DiagnosticEditModal';
 
 interface AssetRecordProps {
   user: PEAUser;
@@ -296,6 +300,7 @@ export default function AssetRecord({
   }, [selectedAssetHistory]);
 
   // --- Admin Diagnostics & PDF State ---
+  const [adminSuitePage, setAdminSuitePage] = useState<'trends' | 'online_prpd' | 'offline_pd'>('trends');
   const [activeAdminTab, setActiveAdminTab] = useState<'load' | 'sheath' | 'pd' | 'insulation' | 'tanDelta'>('load');
   const [generatingPDF, setGeneratingPDF] = useState<boolean>(false);
 
@@ -635,6 +640,8 @@ export default function AssetRecord({
   // --- Popup Modals State ---
   const [showNoEquipmentPopup, setShowNoEquipmentPopup] = useState<boolean>(false);
   const [showSaveChoiceModal, setShowSaveChoiceModal] = useState<boolean>(false);
+  const [showDiagnosticEditModal, setShowDiagnosticEditModal] = useState<boolean>(false);
+  const [diagnosticEditSection, setDiagnosticEditSection] = useState<'online_prpd' | 'offline_pd' | 'all'>('all');
 
   // Auto-restrict area for standard single-area users
   useEffect(() => {
@@ -1025,13 +1032,7 @@ export default function AssetRecord({
 
   // Helper to resolve the correct spreadsheetId and folderId based on an asset's area
   const resolveAssetSpreadsheet = async (asset: CableAsset): Promise<{ spreadsheetId: string | null; folderId: string | null }> => {
-    // CRITICAL: If the asset was loaded from a specific Google Sheet, we MUST preserve it
-    // so any edits or save-as-new-record operations are stored in that same Google Sheet.
-    if (asset.spreadsheetId) {
-      return { spreadsheetId: asset.spreadsheetId, folderId: folderId };
-    }
-
-    let targetSpreadsheetId = spreadsheetId;
+    let targetSpreadsheetId = asset.spreadsheetId || spreadsheetId;
     let targetFolderId = folderId;
 
     if (googleToken) {
@@ -1059,14 +1060,22 @@ export default function AssetRecord({
         // Fetch sector-specific spreadsheet from Firestore
         const sectorData = await getSectorSpreadsheet(assetArea);
         if (sectorData) {
-          targetSpreadsheetId = sectorData.spreadsheetId;
-          targetFolderId = sectorData.folderId;
-        } else {
-          throw new Error(`Google Spreadsheet for Area ${assetArea} was not found or mapped in your Drive. Please make sure you have an existing spreadsheet named "PEA Cable Asset Database - ${assetArea}" in your Google Drive.`);
+          if (!targetSpreadsheetId) targetSpreadsheetId = sectorData.spreadsheetId;
+          if (sectorData.folderId) targetFolderId = sectorData.folderId;
         }
       } catch (err: any) {
         console.error(`Failed to resolve spreadsheet for area ${assetArea}:`, err);
-        throw err;
+      }
+
+      if (!targetFolderId) {
+        try {
+          const map = await getMasterSpreadsheetsMap(googleToken);
+          if (map.folders && map.folders[assetArea]) {
+            targetFolderId = map.folders[assetArea];
+          }
+        } catch (e) {
+          console.warn("Could not retrieve master folders map:", e);
+        }
       }
     }
 
@@ -1089,16 +1098,37 @@ export default function AssetRecord({
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
 
-      // 1. Photo uploads to Google Drive folder if logged in and chosen
-      if (googleToken && targetFolderId) {
-        if (visualFile) {
+      // 1. Photo uploads to Google Drive folder or fallback
+      if (visualFile) {
+        if (googleToken) {
           setSyncStatus('Uploading new general photos...');
-          finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId, visualFile);
+          try {
+            finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId || '', visualFile);
+          } catch (uploadErr) {
+            console.warn("Drive visual photo upload fallback:", uploadErr);
+            finalVisualUrl = visualPreview || editVisualUrl;
+          }
+        } else {
+          finalVisualUrl = visualPreview || editVisualUrl;
         }
-        if (thermalFile) {
+      } else if (visualPreview) {
+        finalVisualUrl = visualPreview;
+      }
+
+      if (thermalFile) {
+        if (googleToken) {
           setSyncStatus('Uploading new thermographic snaps...');
-          finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId, thermalFile);
+          try {
+            finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId || '', thermalFile);
+          } catch (uploadErr) {
+            console.warn("Drive thermal photo upload fallback:", uploadErr);
+            finalThermalUrl = thermalPreview || editThermalUrl;
+          }
+        } else {
+          finalThermalUrl = thermalPreview || editThermalUrl;
         }
+      } else if (thermalPreview) {
+        finalThermalUrl = thermalPreview;
       }
 
       // 2. Fetch row indexes from sheets
@@ -1291,18 +1321,39 @@ export default function AssetRecord({
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
 
-      // 1. Photo uploads to Google Drive folder if logged in and chosen
-      if (googleToken && targetFolderId) {
-        if (visualFile) {
+      // 1. Photo uploads to Google Drive folder or fallback
+      if (visualFile) {
+        if (googleToken) {
           setSyncStatus('Uploading new general photos...');
           setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos to Google Drive...' }));
-          finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId, visualFile);
+          try {
+            finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId || '', visualFile);
+          } catch (uploadErr) {
+            console.warn("Drive visual photo upload fallback:", uploadErr);
+            finalVisualUrl = visualPreview || editVisualUrl;
+          }
+        } else {
+          finalVisualUrl = visualPreview || editVisualUrl;
         }
-        if (thermalFile) {
+      } else if (visualPreview) {
+        finalVisualUrl = visualPreview;
+      }
+
+      if (thermalFile) {
+        if (googleToken) {
           setSyncStatus('Uploading new thermographic snaps...');
           setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images to Google Drive...' }));
-          finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId, thermalFile);
+          try {
+            finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId || '', thermalFile);
+          } catch (uploadErr) {
+            console.warn("Drive thermal photo upload fallback:", uploadErr);
+            finalThermalUrl = thermalPreview || editThermalUrl;
+          }
+        } else {
+          finalThermalUrl = thermalPreview || editThermalUrl;
         }
+      } else if (thermalPreview) {
+        finalThermalUrl = thermalPreview;
       }
 
       const finalPeaNumber = (editPeaNumber || '').trim();
@@ -2655,168 +2706,285 @@ export default function AssetRecord({
           {/* ADMIN & MANAGER ENGINEERING DIAGNOSTICS */}
           {(user.role === 'Admin' || user.role === 'Manager') && (
             <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm space-y-6 mt-6 animate-fadeIn" id="admin-diagnostics-card">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-100 pb-4 gap-4">
+              
+              {/* Suite Top Navigation Header & Page Switcher Tabs */}
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center border-b border-gray-100 pb-5 gap-4">
                 <div>
-                  <span className="text-[10px] font-black text-purple-700 tracking-wider uppercase block">
-                    Admin Advanced Diagnostic Suite
-                  </span>
-                  <h3 className="text-md font-black text-gray-900 uppercase tracking-tight mt-0.5">
-                    Individual Parametric Diagnostic Trend Charts
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-purple-700 tracking-wider uppercase block bg-purple-100/70 px-2 py-0.5 rounded-sm">
+                      Admin Advanced Diagnostic Suite
+                    </span>
+                    <span className="text-[10px] font-bold text-gray-500">
+                      Multi-Module High Voltage Engineering
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-black text-gray-900 uppercase tracking-tight mt-1">
+                    {adminSuitePage === 'trends' ? 'Page 1: Individual Parametric Diagnostic Trend Charts' :
+                     adminSuitePage === 'online_prpd' ? 'Page 2: Online HFCT PRPD Pattern Diagnostics & Analysis' :
+                     'Page 3: Offline Cable PD Diagnostics, TDR Localization & 3x3 Risk Matrix'}
                   </h3>
                   <p className="text-[11px] text-gray-500 mt-0.5">
-                    Select a key parameter below to view its specific historical performance logs, along with targeted AI determination recommendations.
+                    {adminSuitePage === 'trends' && 'Select a key parameter below to view historical logs, trend projections, and AI determination recommendations.'}
+                    {adminSuitePage === 'online_prpd' && 'HFCT high-frequency online sensor Phase Resolved Partial Discharge patterns with interactive crosshairs and downloadable templates.'}
+                    {adminSuitePage === 'offline_pd' && 'Very Low Frequency (VLF) Time Domain Reflectometry charge-distance localization and IEEE 400.2 / CIGRE failure risk mapping.'}
                   </p>
                 </div>
 
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Executive PDF Download button */}
+                  <button
+                    type="button"
+                    onClick={handleDownloadExecutivePDF}
+                    disabled={generatingPDF}
+                    className="bg-purple-900 text-white hover:bg-purple-950 disabled:bg-purple-800/50 px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    {generatingPDF ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FilePenLine className="w-3.5 h-3.5" />}
+                    <span>Executive Summary PDF</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Suite Top 3-Page Selector */}
+              <div className="flex flex-wrap gap-2 p-1.5 bg-gray-100/80 rounded-2xl border border-gray-200">
                 <button
                   type="button"
-                  onClick={handleDownloadExecutivePDF}
-                  disabled={generatingPDF}
-                  className="bg-purple-900 text-white hover:bg-purple-950 disabled:bg-purple-800/50 px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+                  onClick={() => setAdminSuitePage('trends')}
+                  className={`flex-1 min-w-[200px] py-2.5 px-4 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                    adminSuitePage === 'trends'
+                      ? 'bg-white text-purple-900 shadow-sm border border-gray-200'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                  }`}
                 >
-                  {generatingPDF ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FilePenLine className="w-3.5 h-3.5" />}
-                  Download Executive PDF Summary
+                  <TrendingUp className="w-4 h-4 text-purple-600" />
+                  <span>Page 1: Parametric Diagnostic Trends</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAdminSuitePage('online_prpd')}
+                  className={`flex-1 min-w-[200px] py-2.5 px-4 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                    adminSuitePage === 'online_prpd'
+                      ? 'bg-white text-purple-900 shadow-sm border border-gray-200'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                  }`}
+                >
+                  <Activity className="w-4 h-4 text-indigo-600" />
+                  <span>Page 2: Online HFCT PRPD Pattern</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAdminSuitePage('offline_pd')}
+                  className={`flex-1 min-w-[200px] py-2.5 px-4 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                    adminSuitePage === 'offline_pd'
+                      ? 'bg-white text-purple-900 shadow-sm border border-gray-200'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-red-600" />
+                  <span>Page 3: Offline PD & 3x3 Risk Matrix</span>
                 </button>
               </div>
 
-              {/* Individual Parameters Pills */}
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { id: 'load', label: 'Load Current (Amps)' },
-                  { id: 'sheath', label: 'Sheath Current (Amps)' },
-                  { id: 'pd', label: 'PD Trend (pC)' },
-                  { id: 'insulation', label: 'Insulation Resistance (GΩ)' },
-                  { id: 'tanDelta', label: 'Tan Delta Loss Status' }
-                ].map((pill) => (
+              {/* PAGE 1 CONTENT: PARAMETRIC TREND CHARTS */}
+              {adminSuitePage === 'trends' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* Individual Parameters Pills */}
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: 'load', label: 'Load Current (Amps)' },
+                      { id: 'sheath', label: 'Sheath Current (Amps)' },
+                      { id: 'pd', label: 'PD Trend (pC)' },
+                      { id: 'insulation', label: 'Insulation Resistance (GΩ)' },
+                      { id: 'tanDelta', label: 'Tan Delta Loss Status' }
+                    ].map((pill) => (
+                      <button
+                        key={pill.id}
+                        type="button"
+                        onClick={() => setActiveAdminTab(pill.id as any)}
+                        className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all border cursor-pointer ${
+                          activeAdminTab === pill.id
+                            ? 'bg-purple-50 text-purple-700 border-purple-200 shadow-xs'
+                            : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'
+                        }`}
+                      >
+                        {pill.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Chart Stage */}
+                  <div className="bg-gray-50/50 border border-gray-150 rounded-xl p-4 min-h-[300px] flex flex-col justify-between">
+                    <div className="h-[250px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        {activeAdminTab === 'load' ? (
+                          <AreaChart data={parametricTrendData}>
+                            <defs>
+                              <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'Amps', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
+                            <Tooltip />
+                            <Area type="monotone" dataKey="loadCurrent" stroke="#8b5cf6" strokeWidth={2.5} fillOpacity={1} fill="url(#colorLoad)" name="Load Current" />
+                          </AreaChart>
+                        ) : activeAdminTab === 'sheath' ? (
+                          <LineChart data={parametricTrendData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'Amps', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
+                            <Tooltip />
+                            <Legend wrapperStyle={{ fontSize: 10 }} />
+                            <Line type="monotone" dataKey="loadCurrent" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="5 5" name="Load Current" />
+                            <Line type="monotone" dataKey="sheathCurrent" stroke="#ec4899" strokeWidth={2.5} name="Sheath Current" />
+                          </LineChart>
+                        ) : activeAdminTab === 'pd' ? (
+                          <AreaChart data={parametricTrendData}>
+                            <defs>
+                              <linearGradient id="colorPd" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#ec4899" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#ec4899" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'pC', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
+                            <Tooltip />
+                            <Area type="monotone" dataKey="externalDischarge" stroke="#ec4899" strokeWidth={2.5} fillOpacity={1} fill="url(#colorPd)" name="PD Activity" />
+                          </AreaChart>
+                        ) : activeAdminTab === 'insulation' ? (
+                          <LineChart data={parametricTrendData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'GΩ', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
+                            <Tooltip />
+                            <Line type="monotone" dataKey="insulationResistance" stroke="#059669" strokeWidth={2.5} name="Insulation Resistance" />
+                          </LineChart>
+                        ) : (
+                          <BarChart data={parametricTrendData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" fontSize={10} domain={[0, 3]} ticks={[0, 1, 2, 3]} tickFormatter={(v) => v === 3 ? 'Action' : v === 2 ? 'Study' : v === 1 ? 'Safe' : 'No Rec'} />
+                            <Tooltip formatter={(value) => value === 3 ? 'Action Required' : value === 2 ? 'Further Study Advised' : value === 1 ? 'No Action Required' : 'No Record'} />
+                            <Bar dataKey="tanDelta" fill="#d946ef" radius={[4, 4, 0, 0]} name="Tan Delta Severity" maxBarSize={40} />
+                          </BarChart>
+                        )}
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* AI recommendation box below the chart */}
+                    <div className="bg-purple-50/70 border border-purple-100 rounded-lg p-4 mt-4 space-y-2 text-xs">
+                      <div className="flex items-center gap-1.5 text-purple-900 font-bold uppercase tracking-wide">
+                        <Sparkles className="w-4 h-4 text-purple-700 animate-pulse" />
+                        <span>AI Determination Advisory ({
+                          activeAdminTab === 'load' ? 'Load Management' :
+                          activeAdminTab === 'sheath' ? 'Ground-Shield Shielding' :
+                          activeAdminTab === 'pd' ? 'PD Discharge Propagation' :
+                          activeAdminTab === 'insulation' ? 'Polymer Dielectric Preservation' :
+                          'Tan Delta Loss Factor'
+                        })</span>
+                      </div>
+                      
+                      <div className="text-gray-700 leading-relaxed font-medium">
+                        {activeAdminTab === 'load' && (
+                          <p>
+                            <strong>Keep Asset Alive Directive:</strong> Standardize load monitoring and ensure operational loads remain below <strong>80% capacity (limit: 250A)</strong> to avoid thermal overload and expansion strain.
+                            <br />
+                            <strong className="text-purple-900">Situation Handle:</strong> If peak loading triggers hot-spots, dispatch a crew to perform infrared thermal inspection of connector points at cable bays and transition frames immediately.
+                          </p>
+                        )}
+                        {activeAdminTab === 'sheath' && (
+                          <p>
+                            <strong>Keep Asset Alive Directive:</strong> The sheath-to-load current ratio should strictly remain <strong>below 20%</strong>. Highly elevated sheath current points directly to grounding loop decay, causing copper-screen overheating.
+                            <br />
+                            <strong className="text-purple-900">Situation Handle:</strong> If anomalous sheath currents are recorded, schedule a grounding resistance sweep of the local termination cabinets. Check all bonding links and solidify connections.
+                          </p>
+                        )}
+                        {activeAdminTab === 'pd' && (
+                          <p>
+                            <strong>Keep Asset Alive Directive:</strong> Progressive partial discharge activity signals localized void ionization within cable joints. Keep levels strictly <strong>below 100 pC</strong> to preserve core integrity.
+                            <br />
+                            <strong className="text-purple-900">Situation Handle:</strong> For assets showing severe PD trend peaks, execute online acoustic-UHF localization scans immediately to isolate joints and replace them prior to a disruptive line fault.
+                          </p>
+                        )}
+                        {activeAdminTab === 'insulation' && (
+                          <p>
+                            <strong>Keep Asset Alive Directive:</strong> Dielectric resistance should remain well <strong>above 1.0 GΩ</strong>. Moisture ingress and mechanical stress promote dielectric degradation and polymer micro-treeing.
+                            <br />
+                            <strong className="text-purple-900">Situation Handle:</strong> In case of critically low insulation values (below 1.0 GΩ), isolate the line section and carry out a Very Low Frequency (VLF) AC withstand diagnostic series.
+                          </p>
+                        )}
+                        {activeAdminTab === 'tanDelta' && (
+                          <p>
+                            <strong>Keep Asset Alive Directive:</strong> Maintain proper moisture barrier seals at all junction boxes to prevent polar moisture contamination which accelerates dielectric tangent loss.
+                            <br />
+                            <strong className="text-purple-900">Situation Handle:</strong> If Tan Delta loss results are marked as 'Action Required', perform vacuum-drying nitrogen injection inside the termination chamber or plan section accessory replacement.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* PAGE 2 CONTENT: ONLINE HFCT PRPD PATTERN DIAGNOSTICS */}
+              {adminSuitePage === 'online_prpd' && (
+                <OnlinePrpdDiagnostics 
+                  asset={selectedAsset} 
+                  onEditDiagnostics={() => {
+                    setDiagnosticEditSection('online_prpd');
+                    setShowDiagnosticEditModal(true);
+                  }}
+                  googleToken={googleToken || undefined}
+                  spreadsheetId={spreadsheetId || undefined}
+                  driveFolderId={folderId || undefined}
+                  onSaveSuccess={(updatedAsset) => {
+                    setSelectedAsset(updatedAsset);
+                    setAllAssets(prev => prev.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a));
+                    if (onRefresh) {
+                      onRefresh();
+                    }
+                  }}
+                />
+              )}
+
+              {/* PAGE 3 CONTENT: OFFLINE CABLE PD & 3X3 RISK MATRIX */}
+              {adminSuitePage === 'offline_pd' && (
+                <OfflinePdDiagnostics 
+                  asset={selectedAsset} 
+                />
+              )}
+
+              {/* Bottom Action Bar for Admin Advanced Diagnostic Suite (Page 3 Offline PD) */}
+              {adminSuitePage !== 'online_prpd' && (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-purple-100 bg-purple-50/40 -mx-6 -mb-6 p-4 rounded-b-2xl">
+                  <div className="flex items-center gap-2 text-xs text-purple-900">
+                    <Activity className="w-4 h-4 text-purple-700" />
+                    <span className="font-semibold">
+                      Google Sheet Tab 4 Telemetry: <strong className="font-mono">{selectedAsset.equipmentId}</strong>
+                    </span>
+                    <span className="text-purple-600/80 text-[11px] hidden sm:inline">
+                      ({selectedAsset.pdDiagnostics?.offlinePdfUrl || selectedAsset.pdDiagnostics?.offlineMaxDischarge !== undefined ? 'Data Recorded' : 'Empty Database State'})
+                    </span>
+                  </div>
+
                   <button
-                    key={pill.id}
                     type="button"
-                    onClick={() => setActiveAdminTab(pill.id as any)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all border cursor-pointer ${
-                      activeAdminTab === pill.id
-                        ? 'bg-purple-50 text-purple-700 border-purple-200 shadow-xs'
-                        : 'bg-gray-50 text-gray-600 border-gray-100 hover:bg-gray-100'
-                    }`}
+                    onClick={() => {
+                      setDiagnosticEditSection('offline_pd');
+                      setShowDiagnosticEditModal(true);
+                    }}
+                    className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all"
                   >
-                    {pill.label}
+                    <FilePenLine className="w-3.5 h-3.5" />
+                    <span>Edit Offline PD & 3x3 Risk Matrix Data (Tab 4)</span>
                   </button>
-                ))}
-              </div>
-
-              {/* Chart Stage */}
-              <div className="bg-gray-50/50 border border-gray-150 rounded-xl p-4 min-h-[300px] flex flex-col justify-between">
-                <div className="h-[250px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    {activeAdminTab === 'load' ? (
-                      <AreaChart data={parametricTrendData}>
-                        <defs>
-                          <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.2}/>
-                            <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
-                        <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'Amps', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
-                        <Tooltip />
-                        <Area type="monotone" dataKey="loadCurrent" stroke="#8b5cf6" strokeWidth={2.5} fillOpacity={1} fill="url(#colorLoad)" name="Load Current" />
-                      </AreaChart>
-                    ) : activeAdminTab === 'sheath' ? (
-                      <LineChart data={parametricTrendData}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
-                        <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'Amps', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
-                        <Tooltip />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="loadCurrent" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="5 5" name="Load Current" />
-                        <Line type="monotone" dataKey="sheathCurrent" stroke="#ec4899" strokeWidth={2.5} name="Sheath Current" />
-                      </LineChart>
-                    ) : activeAdminTab === 'pd' ? (
-                      <AreaChart data={parametricTrendData}>
-                        <defs>
-                          <linearGradient id="colorPd" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#ec4899" stopOpacity={0.2}/>
-                            <stop offset="95%" stopColor="#ec4899" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
-                        <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'pC', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
-                        <Tooltip />
-                        <Area type="monotone" dataKey="externalDischarge" stroke="#ec4899" strokeWidth={2.5} fillOpacity={1} fill="url(#colorPd)" name="PD Activity" />
-                      </AreaChart>
-                    ) : activeAdminTab === 'insulation' ? (
-                      <LineChart data={parametricTrendData}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
-                        <YAxis stroke="#94a3b8" fontSize={10} label={{ value: 'GΩ', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="insulationResistance" stroke="#059669" strokeWidth={2.5} name="Insulation Resistance" />
-                      </LineChart>
-                    ) : (
-                      <BarChart data={parametricTrendData}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="date" fontSize={10} stroke="#94a3b8" />
-                        <YAxis stroke="#94a3b8" fontSize={10} domain={[0, 3]} ticks={[0, 1, 2, 3]} tickFormatter={(v) => v === 3 ? 'Action' : v === 2 ? 'Study' : v === 1 ? 'Safe' : 'No Rec'} />
-                        <Tooltip formatter={(value) => value === 3 ? 'Action Required' : value === 2 ? 'Further Study Advised' : value === 1 ? 'No Action Required' : 'No Record'} />
-                        <Bar dataKey="tanDelta" fill="#d946ef" radius={[4, 4, 0, 0]} name="Tan Delta Severity" maxBarSize={40} />
-                      </BarChart>
-                    )}
-                  </ResponsiveContainer>
                 </div>
+              )}
 
-                {/* AI recommendation box below the chart */}
-                <div className="bg-purple-50/70 border border-purple-100 rounded-lg p-4 mt-4 space-y-2 text-xs">
-                  <div className="flex items-center gap-1.5 text-purple-900 font-bold uppercase tracking-wide">
-                    <Sparkles className="w-4 h-4 text-purple-700 animate-pulse" />
-                    <span>AI Determination Advisory ({
-                      activeAdminTab === 'load' ? 'Load Management' :
-                      activeAdminTab === 'sheath' ? 'Ground-Shield Shielding' :
-                      activeAdminTab === 'pd' ? 'PD Discharge Propagation' :
-                      activeAdminTab === 'insulation' ? 'Polymer Dielectric Preservation' :
-                      'Tan Delta Loss Factor'
-                    })</span>
-                  </div>
-                  
-                  <div className="text-gray-700 leading-relaxed font-medium">
-                    {activeAdminTab === 'load' && (
-                      <p>
-                        <strong>Keep Asset Alive Directive:</strong> Standardize load monitoring and ensure operational loads remain below <strong>80% capacity (limit: 250A)</strong> to avoid thermal overload and expansion strain.
-                        <br />
-                        <strong className="text-purple-900">Situation Handle:</strong> If peak loading triggers hot-spots, dispatch a crew to perform infrared thermal inspection of connector points at cable bays and transition frames immediately.
-                      </p>
-                    )}
-                    {activeAdminTab === 'sheath' && (
-                      <p>
-                        <strong>Keep Asset Alive Directive:</strong> The sheath-to-load current ratio should strictly remain <strong>below 20%</strong>. Highly elevated sheath current points directly to grounding loop decay, causing copper-screen overheating.
-                        <br />
-                        <strong className="text-purple-900">Situation Handle:</strong> If anomalous sheath currents are recorded, schedule a grounding resistance sweep of the local termination cabinets. Check all bonding links and solidify connections.
-                      </p>
-                    )}
-                    {activeAdminTab === 'pd' && (
-                      <p>
-                        <strong>Keep Asset Alive Directive:</strong> Progressive partial discharge activity signals localized void ionization within cable joints. Keep levels strictly <strong>below 100 pC</strong> to preserve core integrity.
-                        <br />
-                        <strong className="text-purple-900">Situation Handle:</strong> For assets showing severe PD trend peaks, execute online acoustic-UHF localization scans immediately to isolate joints and replace them prior to a disruptive line fault.
-                      </p>
-                    )}
-                    {activeAdminTab === 'insulation' && (
-                      <p>
-                        <strong>Keep Asset Alive Directive:</strong> Dielectric resistance should remain well <strong>above 1.0 GΩ</strong>. Moisture ingress and mechanical stress promote dielectric degradation and polymer micro-treeing.
-                        <br />
-                        <strong className="text-purple-900">Situation Handle:</strong> In case of critically low insulation values (below 1.0 GΩ), isolate the line section and carry out a Very Low Frequency (VLF) AC withstand diagnostic series.
-                      </p>
-                    )}
-                    {activeAdminTab === 'tanDelta' && (
-                      <p>
-                        <strong>Keep Asset Alive Directive:</strong> Maintain proper moisture barrier seals at all junction boxes to prevent polar moisture contamination which accelerates dielectric tangent loss.
-                        <br />
-                        <strong className="text-purple-900">Situation Handle:</strong> If Tan Delta loss results are marked as 'Action Required', perform vacuum-drying nitrogen injection inside the termination chamber or plan section accessory replacement.
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
             </div>
           )}
 
@@ -2870,6 +3038,26 @@ export default function AssetRecord({
               handleSearch();
             }
           }}
+        />
+      )}
+
+      {/* --- MODAL 5: DIAGNOSTIC & PD DATA EDIT MODAL --- */}
+      {selectedAsset && (
+        <DiagnosticEditModal
+          asset={selectedAsset}
+          isOpen={showDiagnosticEditModal}
+          activeSection={diagnosticEditSection}
+          onClose={() => setShowDiagnosticEditModal(false)}
+          onSaveSuccess={(updatedAsset) => {
+            setSelectedAsset(updatedAsset);
+            setAllAssets(prev => prev.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a));
+            if (onRefresh) {
+              onRefresh();
+            }
+          }}
+          googleToken={googleToken || undefined}
+          spreadsheetId={spreadsheetId || undefined}
+          driveFolderId={folderId || undefined}
         />
       )}
 

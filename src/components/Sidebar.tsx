@@ -14,12 +14,13 @@ import {
   FolderPlus, 
   RefreshCw, 
   User,
-  ShieldAlert
+  ShieldAlert,
+  Activity
 } from 'lucide-react';
 
 interface SidebarProps {
-  activeTab: 'admin' | 'area' | 'input' | 'records' | 'registration';
-  setActiveTab: (tab: 'admin' | 'area' | 'input' | 'records' | 'registration') => void;
+  activeTab: 'admin' | 'area' | 'input' | 'records' | 'registration' | 'monitor';
+  setActiveTab: (tab: 'admin' | 'area' | 'input' | 'records' | 'registration' | 'monitor') => void;
   user: PEAUser;
   onLogout: () => void;
   googleToken: string | null;
@@ -49,6 +50,7 @@ export default function Sidebar({
   const [isHovered, setIsHovered] = useState(false);
 
   const canAccessAdminSuite = user.role === 'Admin' || user.role === 'Manager';
+  const isSystemAdmin = user.role === 'Admin';
   const canAccessSubmitLog = user.role === 'Admin' || user.role === 'Local Operator' || user.role === 'User';
   const canDisconnectDb = user.role === 'Admin';
 
@@ -65,6 +67,13 @@ export default function Sidebar({
       subtitle: 'Register & Integrity Checks',
       icon: FolderPlus,
       badge: user.role
+    }] : []),
+    ...(isSystemAdmin ? [{
+      id: 'monitor' as const,
+      label: 'Asset Monitor',
+      subtitle: 'Change & Registration Audit',
+      icon: Activity,
+      badge: 'Admin'
     }] : []),
     {
       id: 'area' as const,

@@ -119,6 +119,46 @@ export interface VisualInformation {
   thermalImageUrl: string;
 }
 
+export interface PDDiagnosticInformation {
+  number?: number;
+  timestamp?: string;
+  operatorName?: string;
+  equipmentId?: string;
+  peaNumber?: string;
+  voltageLevel?: string;
+  city?: string;
+  equipmentType?: string;
+  locationType?: string;
+  substation?: string;
+  // Online HFCT PRPD Telemetry
+  onlinePrpdImageUrl?: string;
+  onlinePrpdChannel?: string; // Channel 1, 2, 3, 4, 5, 6
+  onlinePrpdPhase?: string; // Phase A, B, C, 3-Phase
+  onlinePrpdAmplitude?: number; // mV or pC (Peak Amplitude)
+  onlinePrpdPeakCharge?: number; // alias for amplitude
+  onlinePrpdAvgAmplitude?: number; // mV or pC (Average Amplitude)
+  onlinePrpdRepetitionRate?: number; // pps
+  onlinePrpdPulseRate?: number; // alias for repetition rate
+  onlinePrpdPhaseRange?: string; // e.g. "85°-145° / 265°-325°"
+  onlinePrpdDefectType?: string; // Internal Void, Surface, Corona, Bad Contacts, None
+  onlinePrpdSeverity?: string; // Safe, Advisory, Critical
+  // Offline PD Test & Software Report
+  offlinePdfUrl?: string; // Google Drive PDF link
+  offlinePdfReportUrl?: string; // Google Drive PDF link
+  offlinePdfReportName?: string;
+  offlineTestVoltage?: string; // e.g. "6.4 kV (U0) / 12.8 kV (2.0xU0)"
+  offlineMaxDischarge?: number; // nC (or pC)
+  offlineMaxApparentCharge?: number; // alias
+  offlineDefectLocation?: string; // e.g. "80.0m (Far Termination), 20.32m (Bad Contacts)"
+  offlineInceptionVoltage?: number; // kV
+  offlineDefectClassification?: string; // Surface Discharges, Bad Contacts, Internal Void
+  offlineIeeeVerdict?: string; // Pass, Planned Action Advised, Immediate Action Required
+  offlineRiskLevel?: 'Low' | 'Medium' | 'High' | 'Critical' | string; // Low, Medium, High, Critical
+  diagnosticSummary?: string; // AI & Engineering analysis summary
+  summaryAnalysis?: string; // alias
+  customFields?: Record<string, string>;
+}
+
 export interface CableAsset extends GeneralInformation {
   // Joined engineering details (last entry matching equipmentId)
   loadCurrent?: number;
@@ -135,9 +175,34 @@ export interface CableAsset extends GeneralInformation {
   visualPictureUrl?: string;
   thermalImageUrl?: string;
 
+  // Joined PD & Diagnostic Data (Online PRPD & Offline PDF Report)
+  onlinePrpdImageUrl?: string;
+  onlinePrpdPhase?: string;
+  onlinePrpdAmplitude?: number;
+  onlinePrpdPeakCharge?: number;
+  onlinePrpdRepetitionRate?: number;
+  onlinePrpdPulseRate?: number;
+  onlinePrpdPhaseRange?: string;
+  onlinePrpdDefectType?: string;
+  onlinePrpdSeverity?: string;
+  offlinePdfUrl?: string;
+  offlinePdfReportUrl?: string;
+  offlinePdfReportName?: string;
+  offlineTestVoltage?: string;
+  offlineMaxDischarge?: number;
+  offlineMaxApparentCharge?: number;
+  offlineDefectLocation?: string;
+  offlineInceptionVoltage?: number;
+  offlineDefectClassification?: string;
+  offlineIeeeVerdict?: string;
+  offlineRiskLevel?: 'Low' | 'Medium' | 'High' | 'Critical' | string;
+  diagnosticSummary?: string;
+  pdDiagnosticSummary?: string;
+  pdDiagnostics?: PDDiagnosticInformation;
+
   // Computed metrics
-  healthScore: number; // 0 to 100
-  healthStatus: HealthStatus;
+  healthScore?: number; // 0 to 100
+  healthStatus?: HealthStatus;
 
   // Latest update tracker
   latestUpdatedBy?: string;

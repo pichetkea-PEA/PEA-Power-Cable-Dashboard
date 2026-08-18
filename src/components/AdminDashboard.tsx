@@ -472,7 +472,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
             <Sliders className="w-4 h-4 text-purple-700" />
             <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">Multi-Level System Filter</h3>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {onMigrateEquipmentIds && (
               <button
                 onClick={onMigrateEquipmentIds}

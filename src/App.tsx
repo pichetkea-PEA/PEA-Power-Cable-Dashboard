@@ -3,8 +3,9 @@ import { PEAUser, CableAsset, UserRole } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
-import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts } from './utils/googleSheets';
+import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1 } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
+import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
 import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
@@ -12,6 +13,7 @@ import AreaDashboard from './components/AreaDashboard';
 import InputForm from './components/InputForm';
 import AssetRecord from './components/AssetRecord';
 import AdminRegistrationSuite from './components/AdminRegistrationSuite';
+import AssetMonitorPanel from './components/AssetMonitorPanel';
 import PeaLogo from './components/PeaLogo';
 import GameLoadingScreen from './components/GameLoadingScreen';
 import Sidebar from './components/Sidebar';
@@ -47,7 +49,7 @@ export default function App() {
   const [needsAuth, setNeedsAuth] = useState<boolean>(true);
   
   // App UI states
-  const [activeTab, setActiveTab] = useState<'admin' | 'area' | 'input' | 'records' | 'registration'>('area');
+  const [activeTab, setActiveTab] = useState<'admin' | 'area' | 'input' | 'records' | 'registration' | 'monitor'>('area');
   const [urlEquipmentId] = useState<string | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -122,6 +124,7 @@ export default function App() {
   const [showGameLoading, setShowGameLoading] = useState<boolean>(false);
   const [isPageSwitching, setIsPageSwitching] = useState<boolean>(false);
   const [isMigratingIds, setIsMigratingIds] = useState<boolean>(false);
+  const [isSyncingTab4All, setIsSyncingTab4All] = useState<boolean>(false);
 
   // Login & Sign-Up form states
   const [loginMode, setLoginMode] = useState<'signin' | 'signup'>('signin');
@@ -219,6 +222,19 @@ export default function App() {
 
       // Perform full live auto-load directly from Google Sheets API when token is present
       if (token) {
+        // Clear out any obsolete mock/example rows from Tab 4 across sheets in background if not already cleared
+        const tab4ClearedKey = 'pea_tab4_example_cleared_v2';
+        if (!localStorage.getItem(tab4ClearedKey)) {
+          clearAll12SheetsPdDiagnosticData(token)
+            .then(res => {
+              if (res.totalCleared > 0) {
+                console.log(`[Google Sheets] Cleared example PD diagnostic data from ${res.totalCleared} sheets.`);
+              }
+              localStorage.setItem(tab4ClearedKey, 'true');
+            })
+            .catch(err => console.warn('Could not clear Tab 4 example rows:', err));
+        }
+
         const idsToLoad = (role === 'Local Operator' && area !== 'ALL' && targetSheetId) 
           ? [targetSheetId] 
           : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
@@ -673,6 +689,13 @@ export default function App() {
         } catch (e) {}
         updateLastFetchedTimestamp();
 
+        // Background auto-sync for Tab 4 (PD & Diagnostic Data) Columns A-J across all 12 regional Google Sheets
+        if (token) {
+          syncAll12SheetsTab4FromTab1(token).catch(err => {
+            console.warn("Background Tab 4 auto-sync notice:", err);
+          });
+        }
+
         if (failedSectors === 0) {
           setSyncSuccessMessage(`Central Database Synchronized! 100% Verified with Google Sheets. Fully loaded ${finalAssets.length.toLocaleString()} cable assets across ${uniqueIds.length} sectors.`);
         } else {
@@ -834,6 +857,38 @@ export default function App() {
       alert(`Equipment ID Migration Error: ${err.message || 'Failed to update sheets'}`);
     } finally {
       setIsMigratingIds(false);
+    }
+  };
+
+  // Synchronize Tab 4 (PD & Diagnostic Data) Columns A-J from Tab 1 (General Information) across all 12 regional Google Sheets
+  const handleSyncAllTab4Sheets = async () => {
+    if (!googleToken) {
+      alert("Please sign in with a Google Account to synchronize Tab 4 across all 12 regional Google Sheets.");
+      return;
+    }
+    setIsSyncingTab4All(true);
+    setSyncSuccessMessage("Synchronizing Tab 4 ('PD & Diagnostic Data') Columns A-J from Tab 1 ('General Information') across all 12 regional Google Sheets...");
+    try {
+      const res = await syncAll12SheetsTab4FromTab1(googleToken);
+      if (res.totalSyncedSheets > 0) {
+        const msg = `Tab 4 Synchronization Complete! Linked Columns A-J from Tab 1 across ${res.totalSyncedSheets}/12 regional Google Sheets (${res.totalRowsSynced.toLocaleString()} total rows updated).`;
+        setSyncSuccessMessage(msg);
+        alert(msg);
+      } else {
+        const msg = "Tab 4 sync check finished across all 12 regional Google Sheets.";
+        setSyncSuccessMessage(msg);
+        alert(msg);
+      }
+
+      if (spreadsheetIds.length > 0 || spreadsheetId) {
+        const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : [spreadsheetId!];
+        await handleLoadSpreadsheet(googleToken, idsToFetch, true);
+      }
+    } catch (err: any) {
+      console.error("Tab 4 Sync Error:", err);
+      alert(`Tab 4 Sync Notice: ${err.message || 'Completed with warnings'}`);
+    } finally {
+      setIsSyncingTab4All(false);
     }
   };
 
@@ -1612,7 +1667,7 @@ export default function App() {
                     <h1 className="text-sm font-black text-purple-950 uppercase tracking-tight flex items-center gap-2">
                       PEA-PSMD Cable Management
                       <span className="text-[9px] font-extrabold bg-purple-50 text-purple-700 border border-purple-200/60 rounded-full px-2 py-0.5 normal-case">
-                        {activeTab === 'admin' ? 'Board Portfolio' : activeTab === 'area' ? 'Area Telemetry' : activeTab === 'input' ? 'Submit Log' : activeTab === 'registration' ? 'Asset Registration' : 'Asset Catalog'}
+                        {activeTab === 'admin' ? 'Board Portfolio' : activeTab === 'area' ? 'Area Telemetry' : activeTab === 'input' ? 'Submit Log' : activeTab === 'registration' ? 'Asset Registration' : activeTab === 'monitor' ? 'Asset Change Monitor' : 'Asset Catalog'}
                       </span>
                     </h1>
                     <p className="text-[10px] text-gray-500 font-medium">
@@ -1635,9 +1690,11 @@ export default function App() {
 
                   {googleToken ? (
                     (spreadsheetId || spreadsheetIds.length > 0) ? (
-                      <div className="flex items-center gap-1.5 text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold">
-                        <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Google Sheets Connected</span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold">
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>Google Sheets Connected</span>
+                        </div>
                       </div>
                     ) : isLoading ? (
                       <div className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-50 border border-yellow-200 rounded-xl text-[11px] text-yellow-800 font-bold animate-pulse">
@@ -1815,6 +1872,18 @@ export default function App() {
                   spreadsheetIds={spreadsheetIds}
                   onRefresh={handleManualRefresh}
                   user={user}
+                />
+              )}
+
+              {/* VIEW 6: ADMIN ASSET CHANGE & REGISTRATION AUDIT MONITOR (Admin Reserved Only) */}
+              {activeTab === 'monitor' && user.role === 'Admin' && (
+                <AssetMonitorPanel
+                  user={user}
+                  assets={assets}
+                  onSelectAsset={(selected) => {
+                    setActiveTab('records');
+                  }}
+                  onRefresh={handleManualRefresh}
                 />
               )}
 

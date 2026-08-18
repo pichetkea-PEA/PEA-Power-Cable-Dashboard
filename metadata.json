@@ -1,6 +1,6 @@
 {
   "name": "PEA-PSMD Cable Management",
-  "description": "Interactive multi-page dashboard for monitoring and tracking PEA cable asset health, powered by Google Sheets, Google Drive, and Gemini API reporting.",
+  "description": "Interactive multi-page engineering dashboard for monitoring and tracking PEA cable asset health, online HFCT PRPD diagnostics, offline VLF TDR localization, and 3x3 failure risk matrix.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
