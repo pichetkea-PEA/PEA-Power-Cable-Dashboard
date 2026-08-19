@@ -37,8 +37,8 @@ export const PRESEEDED_USERS: Record<string, PEAUser> = {
   },
   'n1powercableunderground@gmail.com': {
     email: 'n1powercableunderground@gmail.com',
-    name: 'Theerapong Kamyai',
-    employeeId: 'PEA-N1-001',
+    name: 'Teerapong Kamyai',
+    employeeId: '500885',
     status: 'active',
     role: 'Local Operator',
     interestArea: 'N1'
@@ -46,7 +46,10 @@ export const PRESEEDED_USERS: Record<string, PEAUser> = {
 };
 
 export function verifyUsernamePassword(username: string, password: string): PEAUser | null {
-  if (username.trim() === '497377' && password.trim() === '5465') {
+  const trimmedUser = username.trim();
+  const trimmedPass = password.trim();
+
+  if (trimmedUser === '497377' && trimmedPass === '5465') {
     return {
       email: 'natthakorn@rockchatn.com',
       name: 'Natthakorn Sukra',
@@ -56,6 +59,18 @@ export function verifyUsernamePassword(username: string, password: string): PEAU
       interestArea: 'ALL'
     };
   }
+
+  if (trimmedUser === '500885' && trimmedPass === '1110621') {
+    return {
+      email: 'n1powercableunderground@gmail.com',
+      name: 'Teerapong Kamyai',
+      employeeId: '500885',
+      status: 'active',
+      role: 'Local Operator',
+      interestArea: 'N1'
+    };
+  }
+
   return null;
 }
 
