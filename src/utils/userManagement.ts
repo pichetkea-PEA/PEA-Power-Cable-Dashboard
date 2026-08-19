@@ -34,6 +34,14 @@ export const PRESEEDED_USERS: Record<string, PEAUser> = {
     status: 'active',
     role: 'Admin',
     interestArea: 'ALL'
+  },
+  'n1powercableunderground@gmail.com': {
+    email: 'n1powercableunderground@gmail.com',
+    name: 'Theerapong Kamyai',
+    employeeId: 'PEA-N1-001',
+    status: 'active',
+    role: 'Local Operator',
+    interestArea: 'N1'
   }
 };
 
