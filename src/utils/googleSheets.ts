@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, PDDiagnosticInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES } from './peaData';
+import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, getCityGpsCenter } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -636,6 +636,72 @@ export async function fetchWithRetry(url: string, options: RequestInit, retries 
   return fetch(url, options);
 }
 
+// RFC-4180 Compliant CSV parser that handles quotes and embedded commas correctly
+export function parseCSVRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++;
+      }
+      currentRow.push(currentCell.trim());
+      if (currentRow.some(c => c !== '')) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentCell = '';
+    } else {
+      currentCell += char;
+    }
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some(c => c !== '')) {
+      rows.push(currentRow);
+    }
+  }
+
+  return rows;
+}
+
+// Fetch single sheet tab as CSV directly from Google Sheets (Client-side)
+export async function fetchSheetCsvTabClient(spreadsheetId: string, tabNames: string[]): Promise<string[][]> {
+  for (const tab of tabNames) {
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const text = await resp.text();
+        if (text && !text.includes('<!DOCTYPE html>') && text.length > 5) {
+          const parsed = parseCSVRows(text);
+          if (parsed.length > 0) return parsed;
+        }
+      }
+    } catch (e) {
+      // try next candidate
+    }
+  }
+  return [];
+}
+
 // Fetch all sheets from the spreadsheet, join columns and output parsed CableAsset array
 export async function fetchSheetsData(accessToken: string | null, spreadsheetId: string, runMaintenance = false): Promise<CableAsset[]> {
   // Determine if this spreadsheet is targeted to a specific PEA area via its title and inspect its sheet tabs
@@ -734,19 +800,19 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     }
   }
 
-  // Fallback to direct client-side GViz CSV fetch if backend proxy was unavailable
+  // Fallback to direct client-side GViz CSV fetch across all 4 tabs if backend proxy was unavailable (e.g. on Vercel)
   if (genRows.length === 0) {
     try {
-      const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=General%20Information`;
-      const gvizRes = await fetch(gvizUrl);
-      if (gvizRes.ok) {
-        const gvizText = await gvizRes.text();
-        if (gvizText && !gvizText.includes('<!DOCTYPE html>')) {
-          // Simple client-side parse
-          const lines = gvizText.split(/\r?\n/).filter(Boolean);
-          genRows = lines.map(line => line.split(',').map(cell => cell.replace(/^"|"$/g, '').trim()));
-        }
-      }
+      const [csvGen, csvEng, csvVis, csvPd] = await Promise.all([
+        fetchSheetCsvTabClient(spreadsheetId, ['General Information', 'General', 'Sheet1']),
+        fetchSheetCsvTabClient(spreadsheetId, ['Engineering Information', 'Engineering', 'Sheet2']),
+        fetchSheetCsvTabClient(spreadsheetId, ['Visual & Thermal Images', 'Visual & Thermal', 'Visual Images', 'Sheet3']),
+        fetchSheetCsvTabClient(spreadsheetId, ['PD & Diagnostic Data', 'PD & Diagnostic', 'PD Data', 'Sheet4'])
+      ]);
+      genRows = csvGen;
+      engRows = csvEng;
+      visRows = csvVis;
+      pdRows = csvPd;
     } catch (gvizErr) {
       console.warn("Direct GViz CSV fetch failed:", gvizErr);
     }
@@ -797,32 +863,44 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
     };
 
+    const city = getVal('city') || getVal('province');
+    const defaultArea = getAreaFromCity(city) || 'C1';
+
     // Column L (12th column, index 11) is GPS (Latitude, Longitude) in the standard Google Sheet template
     let gpsString = '';
-    if (row.length > 11 && row[11] && cleanStr(row[11]).includes(',')) {
-      gpsString = cleanStr(row[11]);
+    if (row.length > 11 && row[11] && cleanStr(row[11])) {
+      const rawColL = cleanStr(row[11]);
+      if (/[\d.]+[,\s]+[\d.]+/.test(rawColL)) {
+        gpsString = rawColL;
+      }
     }
     if (!gpsString) {
       const gpsHeaderIdx = genHeaders.findIndex((h: string) => {
         const n = normalizeHeader(h);
-        return n.includes('gps') || n.includes('coordinate') || n.includes('lat') || n === 'location';
+        return n === 'gps' || n === 'coordinates' || n.includes('gps') || n.includes('coordinate') || n.includes('latlng');
       });
       if (gpsHeaderIdx !== -1 && gpsHeaderIdx < row.length) {
         gpsString = cleanStr(row[gpsHeaderIdx]);
       }
     }
     if (!gpsString) {
-      gpsString = getVal('gps') || getVal('coordinates') || '13.7563, 100.5018';
+      gpsString = getVal('gps') || getVal('coordinates') || '';
     }
 
-    let lat = 13.7563;
-    let lng = 100.5018;
-    if (gpsString && gpsString.includes(',')) {
-      const parts = gpsString.split(',').map((c: string) => parseFloat(c.trim()));
-      if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1]) && (parts[0] !== 0 || parts[1] !== 0)) {
+    let lat = 0;
+    let lng = 0;
+    if (gpsString) {
+      const parts = gpsString.split(/[,\s]+/).map((c: string) => parseFloat(c.trim())).filter((n: number) => !isNaN(n));
+      if (parts.length >= 2 && (parts[0] !== 0 || parts[1] !== 0)) {
         lat = parts[0];
         lng = parts[1];
       }
+    }
+
+    if (lat === 0 && lng === 0) {
+      const center = getCityGpsCenter(city, defaultArea);
+      lat = center.lat;
+      lng = center.lng;
     }
 
     const number = parseInt(getVal('number') || getVal('no')) || (index + 1);
@@ -830,7 +908,6 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     const timestamp = rawTs ? getBangkokTimestamp(rawTs) : getBangkokTimestamp();
     const operatorName = getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator');
     const voltageLevel = getVal('voltagelevelkv') || getVal('voltagelevel') || getVal('voltage');
-    const city = getVal('city') || getVal('province');
     const equipmentType = getVal('equipmenttype') as EquipmentType;
     const manufacturer = getVal('productmanufacturer') || getVal('manufacturer') || getVal('brand');
     const country = getVal('countryoforigin') || getVal('country');
@@ -2600,15 +2677,23 @@ export async function scanRegionalSheetsAssetCounts(
           errorMsg = valRes.status === 403 ? 'Access forbidden. Please share sheet with view/edit access.' : valRes.status === 404 ? 'Spreadsheet ID not found.' : 'Sheet unavailable';
         }
       } else {
-        // Fallback row count via proxy
+        // Fallback row count via proxy or client-side CSV
         try {
           const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${encodeURIComponent(sheetId)}`);
           if (proxyRes.ok) {
             const pData = await proxyRes.json();
             const genRows = pData.valueRanges?.[0]?.values || [];
             rowCount = Math.max(0, genRows.length - 1);
+          } else {
+            const csvGen = await fetchSheetCsvTabClient(sheetId, ['General Information', 'General', 'Sheet1']);
+            rowCount = Math.max(0, csvGen.length - 1);
           }
-        } catch (pe) {}
+        } catch (pe) {
+          try {
+            const csvGen = await fetchSheetCsvTabClient(sheetId, ['General Information', 'General', 'Sheet1']);
+            rowCount = Math.max(0, csvGen.length - 1);
+          } catch (e) {}
+        }
       }
 
       const areaName = PEA_AREA_NAMES[area] || area;
