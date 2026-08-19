@@ -18,7 +18,8 @@ import {
   normalizeEquipmentType,
   normalizeLocationType,
   normalizeCity,
-  normalizeInstallationDate
+  normalizeInstallationDate,
+  getAssetArea
 } from '../utils/peaData';
 import { 
   ShieldAlert, 
@@ -1473,7 +1474,7 @@ export default function AdminRegistrationSuite({
         }
         if (sheetLastNum === 0) {
           const areaAssets = assets ? assets.filter(a => {
-            const aArea = a.equipmentId?.split('-')[0]?.toUpperCase() || a.city?.toUpperCase();
+            const aArea = getAssetArea(a);
             return !aArea || aArea === group.area;
           }) : [];
           const areaNums = areaAssets.map(a => Number(a.number) || 0).filter(n => !isNaN(n) && n > 0 && n < 50000);

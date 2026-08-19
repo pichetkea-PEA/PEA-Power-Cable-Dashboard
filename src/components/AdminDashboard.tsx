@@ -18,7 +18,8 @@ import {
   COUNTRIES_OF_ORIGIN, 
   MANUFACTURERS, 
   VOLTAGE_LEVELS,
-  formatShortUrl
+  formatShortUrl,
+  getAssetArea
 } from '../utils/peaData';
 import MapChart from './MapChart';
 import WorldMapChart from './WorldMapChart';
@@ -123,7 +124,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
     return uniqueAssets.filter(asset => {
       // Area Filter
       if (filters.area !== 'All') {
-        const areaCode = asset.equipmentId.split('-')[0];
+        const areaCode = getAssetArea(asset);
         if (areaCode !== filters.area) return false;
       }
       // City Filter
@@ -233,7 +234,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
   const areaCityRanking = useMemo(() => {
     const mapping: Record<string, Record<string, number>> = {};
     filteredAssets.forEach(a => {
-      const areaCode = a.equipmentId.split('-')[0] || 'Unknown';
+      const areaCode = getAssetArea(a);
       if (!mapping[areaCode]) mapping[areaCode] = {};
       if (!mapping[areaCode][a.city]) mapping[areaCode][a.city] = 0;
       mapping[areaCode][a.city]++;
@@ -1152,7 +1153,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
                   <div>
                     <span className="text-gray-400 font-medium block">PEA Area District</span>
                     <span className="font-bold text-gray-800">
-                      {selectedAsset.equipmentId ? selectedAsset.equipmentId.split('-')[0] : 'N/A'} - {PEA_AREA_NAMES[selectedAsset.equipmentId?.split('-')?.[0] || ''] || 'PEA Region'}
+                      {selectedAsset ? getAssetArea(selectedAsset) : 'N/A'} - {PEA_AREA_NAMES[getAssetArea(selectedAsset)] || 'PEA Region'}
                     </span>
                   </div>
                   <div>

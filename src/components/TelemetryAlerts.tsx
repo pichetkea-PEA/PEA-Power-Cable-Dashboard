@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { CableAsset } from '../types';
+import { getAssetArea } from '../utils/peaData';
 import { 
   BellRing, 
   ShieldAlert, 
@@ -42,7 +43,7 @@ export default function TelemetryAlerts({ assets, onSelectAsset }: TelemetryAler
     const list: AlertItem[] = [];
 
     assets.forEach(asset => {
-      const area = asset.equipmentId.split('-')[0];
+      const area = getAssetArea(asset);
       const name = asset.equipmentType;
 
       // 1. Surface Temperature Breach

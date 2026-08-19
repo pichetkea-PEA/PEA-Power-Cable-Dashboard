@@ -725,6 +725,136 @@ Return STRICT JSON only matching this format:
   }
 });
 
+// Helper CSV parser for Google Sheets export
+function parseCSVRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++;
+      }
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+      if (currentRow.length > 0 && currentRow.some(c => c !== '')) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+    } else {
+      currentCell += char;
+    }
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some(c => c !== '')) {
+      rows.push(currentRow);
+    }
+  }
+
+  return rows;
+}
+
+// Fetch single sheet tab as CSV from Google Sheets
+async function fetchSheetCsvTab(spreadsheetId: string, tabNames: string[]): Promise<string[][]> {
+  for (const tab of tabNames) {
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`;
+      const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 PEA-Asset-Monitor' } });
+      if (resp.ok) {
+        const text = await resp.text();
+        if (text && !text.includes('<!DOCTYPE html>') && text.length > 5) {
+          const parsed = parseCSVRows(text);
+          if (parsed.length > 0) return parsed;
+        }
+      }
+    } catch (e) {
+      // try next candidate
+    }
+  }
+  return [];
+}
+
+// Google Sheets Data Proxy endpoint (for credential login & unauthenticated fetch)
+app.get('/api/sheets/data', async (req, res) => {
+  const spreadsheetId = req.query.spreadsheetId as string;
+  if (!spreadsheetId) {
+    res.status(400).json({ error: 'spreadsheetId query param is required.' });
+    return;
+  }
+
+  try {
+    const [genRows, engRows, visRows, pdRows] = await Promise.all([
+      fetchSheetCsvTab(spreadsheetId, ['General Information', 'General', 'Sheet1']),
+      fetchSheetCsvTab(spreadsheetId, ['Engineering Information', 'Engineering', 'Sheet2']),
+      fetchSheetCsvTab(spreadsheetId, ['Visual & Thermal Images', 'Visual & Thermal', 'Visual Images', 'Sheet3']),
+      fetchSheetCsvTab(spreadsheetId, ['PD & Diagnostic Data', 'PD & Diagnostic', 'PD Data', 'Sheet4'])
+    ]);
+
+    res.json({
+      success: true,
+      spreadsheetId,
+      valueRanges: [
+        { values: genRows },
+        { values: engRows },
+        { values: visRows },
+        { values: pdRows }
+      ]
+    });
+  } catch (err: any) {
+    console.error(`[Sheets Proxy Error] ${spreadsheetId}:`, err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Google Sheets Multi-Sheet Scanner endpoint
+app.post('/api/sheets/scan', async (req, res) => {
+  const { spreadsheetIds } = req.body;
+  if (!Array.isArray(spreadsheetIds)) {
+    res.status(400).json({ error: 'spreadsheetIds array is required.' });
+    return;
+  }
+
+  const results = await Promise.all(
+    spreadsheetIds.map(async (sheetId: string) => {
+      try {
+        const genRows = await fetchSheetCsvTab(sheetId, ['General Information', 'General', 'Sheet1']);
+        const count = Math.max(0, genRows.length - 1);
+        return {
+          spreadsheetId: sheetId,
+          rowCount: count,
+          status: 'scanned'
+        };
+      } catch (e: any) {
+        return {
+          spreadsheetId: sheetId,
+          rowCount: 0,
+          status: 'error',
+          errorMessage: e.message
+        };
+      }
+    })
+  );
+
+  res.json({ success: true, scans: results });
+});
+
 // Single asset custom AI recommendation (Free fallback / Gemini 2.5 Flash)
 app.post('/api/ai-recommendation', async (req, res) => {
   const { asset } = req.body;

@@ -18,6 +18,7 @@ import {
   FileText
 } from 'lucide-react';
 import { CableAsset } from '../types';
+import { getAssetArea } from '../utils/peaData';
 import jsQR from 'jsqr';
 
 interface AssetQRCodeModalProps {
@@ -91,7 +92,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
     const footerY = headerHeight + qrCanvas.height + 35;
     ctx.fillStyle = '#4B5563';
     ctx.font = '12px sans-serif';
-    ctx.fillText(`PEA No: ${asset.peaNumber || 'N/A'} | Area: ${asset.equipmentId.split('-')[0] || 'N/A'}`, totalWidth / 2, footerY);
+    ctx.fillText(`PEA No: ${asset.peaNumber || 'N/A'} | Area: ${getAssetArea(asset) || 'N/A'}`, totalWidth / 2, footerY);
     ctx.fillText(`Voltage: ${asset.voltageLevel || '115'} kV | ${asset.city || 'PEA Grid'}`, totalWidth / 2, footerY + 18);
 
     ctx.fillStyle = '#059669';
@@ -338,7 +339,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
           <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 text-xs space-y-2">
             <div className="flex justify-between items-center border-b border-gray-200 pb-2">
               <span className="font-medium text-gray-500">PEA Area Zone:</span>
-              <span className="font-bold text-gray-800">{asset.equipmentId.split('-')[0]} Area</span>
+              <span className="font-bold text-gray-800">{getAssetArea(asset)} Area</span>
             </div>
             <div className="flex justify-between items-center border-b border-gray-200 pb-2">
               <span className="font-medium text-gray-500">Voltage Level:</span>

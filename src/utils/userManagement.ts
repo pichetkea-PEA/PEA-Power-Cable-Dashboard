@@ -3,6 +3,14 @@ import { db } from './firebaseAuth';
 import { doc, setDoc } from 'firebase/firestore';
 
 export const PRESEEDED_USERS: Record<string, PEAUser> = {
+  'natthakorn@rockchatn.com': {
+    email: 'natthakorn@rockchatn.com',
+    name: 'Natthakorn Sukra',
+    employeeId: 'PEA-497377',
+    status: 'active',
+    role: 'Manager',
+    interestArea: 'ALL'
+  },
   'moskmitl50@gmail.com': {
     email: 'moskmitl50@gmail.com',
     name: 'Mos KMITL (Manager)',
@@ -28,6 +36,20 @@ export const PRESEEDED_USERS: Record<string, PEAUser> = {
     interestArea: 'ALL'
   }
 };
+
+export function verifyUsernamePassword(username: string, password: string): PEAUser | null {
+  if (username.trim() === '497377' && password.trim() === '5465') {
+    return {
+      email: 'natthakorn@rockchatn.com',
+      name: 'Natthakorn Sukra',
+      employeeId: 'PEA-497377',
+      status: 'active',
+      role: 'Manager',
+      interestArea: 'ALL'
+    };
+  }
+  return null;
+}
 
 const REGISTERED_USERS_KEY = 'pea_registered_users_list_v1';
 

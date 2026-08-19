@@ -37,7 +37,8 @@ import {
   generateEquipmentId,
   getAvailableEquipmentTypes,
   getManufacturersForEquipmentType,
-  formatShortUrl
+  formatShortUrl,
+  getAssetArea
 } from '../utils/peaData';
 import { 
   fetchSheetsData, 
@@ -591,13 +592,13 @@ export default function AssetRecord({
 
   const currentAssetArea = useMemo(() => {
     if (!selectedAsset) return 'N1';
-    return selectedAsset.equipmentId.split('-')[0];
+    return getAssetArea(selectedAsset);
   }, [selectedAsset]);
 
   // System Constraint: 33 kV is Southern Area 2-3 (S2, S3) only
   useEffect(() => {
     if (selectedAsset) {
-      const area = selectedAsset.equipmentId.split('-')[0];
+      const area = getAssetArea(selectedAsset);
       if (area !== 'S2' && area !== 'S3' && editVoltage === '33') {
         setEditVoltage('115');
       }
@@ -607,7 +608,7 @@ export default function AssetRecord({
   // System Constraint: Submarine Cable is only in [C2], [S2], [S3]
   useEffect(() => {
     if (selectedAsset) {
-      const area = selectedAsset.equipmentId.split('-')[0];
+      const area = getAssetArea(selectedAsset);
       if (!['C2', 'S2', 'S3'].includes(area) && editEqType === 'Submarine Cable') {
         setEditEqType('Underground Cable');
       }
@@ -796,10 +797,7 @@ export default function AssetRecord({
       // We only enforce the user interest area check for regular non-Admin/non-Manager single-area users.
       if (user.role !== 'Admin' && user.role !== 'Manager' && user.interestArea !== 'ALL' && user.interestArea !== 'All') {
         const userArea = user.interestArea;
-        list = list.filter(a => {
-          const part = a.equipmentId?.split('-')[0]?.trim();
-          return part === userArea;
-        });
+        list = list.filter(a => getAssetArea(a) === userArea);
       }
 
       // 2. Filter list based on matching the precise search criteria
@@ -841,15 +839,9 @@ export default function AssetRecord({
       // 3. General Browsing Mode: Apply all hierarchical structural and dropdown filters when search input is empty.
       if (user.role !== 'Admin' && user.role !== 'Manager' && user.interestArea !== 'ALL' && user.interestArea !== 'All') {
         const userArea = user.interestArea;
-        list = list.filter(a => {
-          const part = a.equipmentId?.split('-')[0]?.trim();
-          return part === userArea;
-        });
+        list = list.filter(a => getAssetArea(a) === userArea);
       } else if (filterArea !== 'All' && filterArea !== 'ALL') {
-        list = list.filter(a => {
-          const part = a.equipmentId?.split('-')[0]?.trim();
-          return part === filterArea;
-        });
+        list = list.filter(a => getAssetArea(a) === filterArea);
       }
 
       if (filterCity !== 'All') {
@@ -1036,22 +1028,7 @@ export default function AssetRecord({
     let targetFolderId = folderId;
 
     if (googleToken) {
-      let assetArea = '';
-      if (asset.equipmentId && asset.equipmentId.includes('-')) {
-        assetArea = asset.equipmentId.split('-')[0].trim().toUpperCase();
-      }
-      // If extracted area is not a valid PEA area, map via city
-      if (!assetArea || !PEA_AREAS.includes(assetArea as any)) {
-        const city = editCity || asset.city;
-        if (city) {
-          for (const [area, cities] of Object.entries(PEA_AREA_CITIES)) {
-            if (area !== 'ALL' && cities.includes(city)) {
-              assetArea = area;
-              break;
-            }
-          }
-        }
-      }
+      let assetArea = getAssetArea(asset);
       if (!assetArea || !PEA_AREAS.includes(assetArea as any)) {
         assetArea = 'N1'; // Default fallback
       }

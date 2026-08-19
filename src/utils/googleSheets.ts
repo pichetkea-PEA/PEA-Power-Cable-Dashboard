@@ -621,14 +621,14 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
   });
 }
 
-export async function fetchWithRetry(url: string, options: RequestInit, retries = 3, initialDelayMs = 1000): Promise<Response> {
+export async function fetchWithRetry(url: string, options: RequestInit, retries = 4, initialDelayMs = 1500): Promise<Response> {
   let delay = initialDelayMs;
   for (let i = 0; i < retries; i++) {
     const res = await fetch(url, options);
     if (res.status === 429) {
       console.warn(`Google API rate limit (429) encountered. Retrying after ${delay}ms... (Attempt ${i + 1}/${retries})`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      delay *= 2;
+      delay *= 2.5;
       continue;
     }
     return res;
@@ -637,99 +637,129 @@ export async function fetchWithRetry(url: string, options: RequestInit, retries 
 }
 
 // Fetch all sheets from the spreadsheet, join columns and output parsed CableAsset array
-export async function fetchSheetsData(accessToken: string, spreadsheetId: string): Promise<CableAsset[]> {
+export async function fetchSheetsData(accessToken: string | null, spreadsheetId: string, runMaintenance = false): Promise<CableAsset[]> {
   // Determine if this spreadsheet is targeted to a specific PEA area via its title and inspect its sheet tabs
   let allowedArea: string | null = null;
   let sheetsMeta: any[] = [];
-  try {
-    const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    if (metaRes.ok) {
-      const meta = await metaRes.json();
-      sheetsMeta = meta.sheets || [];
-      const title = meta.properties?.title || '';
-      const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
-                    title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
-      if (match) {
-        allowedArea = match[1].trim().toUpperCase();
+  let valueRanges: any[] = [];
+  let genRows: any[][] = [];
+  let engRows: any[][] = [];
+  let visRows: any[][] = [];
+  let pdRows: any[][] = [];
+
+  if (accessToken) {
+    try {
+      const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        sheetsMeta = meta.sheets || [];
+        const title = meta.properties?.title || '';
+        const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
+                      title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+        if (match) {
+          allowedArea = match[1].trim().toUpperCase();
+        }
       }
+    } catch (err) {
+      console.warn("Failed to fetch spreadsheet title metadata:", err);
     }
-  } catch (err) {
-    console.warn("Failed to fetch spreadsheet title metadata:", err);
-  }
 
-  // Find actual tab names present in this spreadsheet to prevent HTTP 400 'Unable to parse range' on missing tabs
-  const genSheet = sheetsMeta.find((s: any) => /general/i.test(s.properties?.title || '')) || sheetsMeta[0];
-  const engSheet = sheetsMeta.find((s: any) => /engineering/i.test(s.properties?.title || '')) || (sheetsMeta.length > 1 ? sheetsMeta[1] : null);
-  const visSheet = sheetsMeta.find((s: any) => /(visual|thermal|image)/i.test(s.properties?.title || '')) || (sheetsMeta.length > 2 ? sheetsMeta[2] : null);
-  const pdSheet = sheetsMeta.find((s: any) => /(pd|diagnostic)/i.test(s.properties?.title || ''));
+    // Find actual tab names present in this spreadsheet to prevent HTTP 400 'Unable to parse range' on missing tabs
+    const genSheet = sheetsMeta.find((s: any) => /general/i.test(s.properties?.title || '')) || sheetsMeta[0];
+    const engSheet = sheetsMeta.find((s: any) => /engineering/i.test(s.properties?.title || '')) || (sheetsMeta.length > 1 ? sheetsMeta[1] : null);
+    const visSheet = sheetsMeta.find((s: any) => /(visual|thermal|image)/i.test(s.properties?.title || '')) || (sheetsMeta.length > 2 ? sheetsMeta[2] : null);
+    const pdSheet = sheetsMeta.find((s: any) => /(pd|diagnostic)/i.test(s.properties?.title || ''));
 
-  const rangesToFetch: string[] = [];
-  const rangeIndexMap: { gen?: number; eng?: number; vis?: number; pd?: number } = {};
+    const rangesToFetch: string[] = [];
+    const rangeIndexMap: { gen?: number; eng?: number; vis?: number; pd?: number } = {};
 
-  if (genSheet?.properties?.title) {
-    rangeIndexMap.gen = rangesToFetch.length;
-    rangesToFetch.push(`'${genSheet.properties.title}'!A1:AZ`);
-  } else {
-    rangeIndexMap.gen = rangesToFetch.length;
-    rangesToFetch.push("'General Information'!A1:AZ");
-  }
-
-  if (engSheet?.properties?.title) {
-    rangeIndexMap.eng = rangesToFetch.length;
-    rangesToFetch.push(`'${engSheet.properties.title}'!A1:AZ`);
-  }
-
-  if (visSheet?.properties?.title) {
-    rangeIndexMap.vis = rangesToFetch.length;
-    rangesToFetch.push(`'${visSheet.properties.title}'!A1:AZ`);
-  }
-
-  if (pdSheet?.properties?.title) {
-    rangeIndexMap.pd = rangesToFetch.length;
-    rangesToFetch.push(`'${pdSheet.properties.title}'!A1:AZ`);
-  }
-
-  const res = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${rangesToFetch.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-
-  if (!res.ok) {
-    const errorBody = await res.text();
-    console.error('Spreadsheet fetch error:', res.status, res.statusText, errorBody);
-    
-    let advice = "Please verify file access permissions.";
-    if (res.status === 403 && errorBody.includes('API has not been used in project')) {
-      advice = "The Google Sheets API is not enabled in your Google Cloud Project. Please enable it in the Google Cloud Console.";
-    } else if (res.status === 404) {
-      advice = "The spreadsheet could not be found. It may have been deleted. Please click 'Disconnect' in the top right to reset your connection and create a new one.";
-    } else if (res.status === 403) {
-      advice = "You don't have permission to access this spreadsheet. You might be signed into a different Google account. Try clicking 'Disconnect' to reset.";
-    } else if (res.status === 429) {
-      advice = "Google API rate limit reached. The system will retry shortly or use locally synced database cache.";
+    if (genSheet?.properties?.title) {
+      rangeIndexMap.gen = rangesToFetch.length;
+      rangesToFetch.push(`'${genSheet.properties.title}'!A1:AZ`);
+    } else {
+      rangeIndexMap.gen = rangesToFetch.length;
+      rangesToFetch.push("'General Information'!A1:AZ");
     }
-    
-    throw new Error(`Failed to fetch spreadsheet data (Status: ${res.status}). ${advice}`);
+
+    if (engSheet?.properties?.title) {
+      rangeIndexMap.eng = rangesToFetch.length;
+      rangesToFetch.push(`'${engSheet.properties.title}'!A1:AZ`);
+    }
+
+    if (visSheet?.properties?.title) {
+      rangeIndexMap.vis = rangesToFetch.length;
+      rangesToFetch.push(`'${visSheet.properties.title}'!A1:AZ`);
+    }
+
+    if (pdSheet?.properties?.title) {
+      rangeIndexMap.pd = rangesToFetch.length;
+      rangesToFetch.push(`'${pdSheet.properties.title}'!A1:AZ`);
+    }
+
+    try {
+      const res = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${rangesToFetch.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        valueRanges = data.valueRanges || [];
+        genRows = rangeIndexMap.gen !== undefined ? (valueRanges[rangeIndexMap.gen]?.values || []) : [];
+        engRows = rangeIndexMap.eng !== undefined ? (valueRanges[rangeIndexMap.eng]?.values || []) : [];
+        visRows = rangeIndexMap.vis !== undefined ? (valueRanges[rangeIndexMap.vis]?.values || []) : [];
+        pdRows = rangeIndexMap.pd !== undefined ? (valueRanges[rangeIndexMap.pd]?.values || []) : [];
+      }
+    } catch (apiErr) {
+      console.warn("Google Sheets API batchGet error, falling back to proxy:", apiErr);
+    }
   }
 
-  // Trigger background conversion of existing sheet timestamps to Bangkok UTC+7, equipment ID format migration, and ensure PD sheet exists
-  convertExistingSheetTimestampsToUTC7(accessToken, spreadsheetId).catch(() => {});
-  migrateExistingSheetEquipmentIds(accessToken, spreadsheetId).catch(() => {});
-  if (!pdSheet) {
-    ensurePdDiagnosticsSheetExists(accessToken, spreadsheetId, true).catch(() => {});
+  // Fallback to backend Sheets proxy when accessToken is null or direct API failed
+  if (genRows.length === 0) {
+    try {
+      const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${encodeURIComponent(spreadsheetId)}`);
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (proxyData.valueRanges && Array.isArray(proxyData.valueRanges)) {
+          genRows = proxyData.valueRanges[0]?.values || [];
+          engRows = proxyData.valueRanges[1]?.values || [];
+          visRows = proxyData.valueRanges[2]?.values || [];
+          pdRows = proxyData.valueRanges[3]?.values || [];
+        }
+      }
+    } catch (proxyErr) {
+      console.warn("Proxy sheet fetch failed:", proxyErr);
+    }
   }
 
-  const data = await res.json();
-  const valueRanges = data.valueRanges || [];
-
-  const genRows = rangeIndexMap.gen !== undefined ? (valueRanges[rangeIndexMap.gen]?.values || []) : [];
-  const engRows = rangeIndexMap.eng !== undefined ? (valueRanges[rangeIndexMap.eng]?.values || []) : [];
-  const visRows = rangeIndexMap.vis !== undefined ? (valueRanges[rangeIndexMap.vis]?.values || []) : [];
-  const pdRows = rangeIndexMap.pd !== undefined ? (valueRanges[rangeIndexMap.pd]?.values || []) : [];
+  // Fallback to direct client-side GViz CSV fetch if backend proxy was unavailable
+  if (genRows.length === 0) {
+    try {
+      const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=General%20Information`;
+      const gvizRes = await fetch(gvizUrl);
+      if (gvizRes.ok) {
+        const gvizText = await gvizRes.text();
+        if (gvizText && !gvizText.includes('<!DOCTYPE html>')) {
+          // Simple client-side parse
+          const lines = gvizText.split(/\r?\n/).filter(Boolean);
+          genRows = lines.map(line => line.split(',').map(cell => cell.replace(/^"|"$/g, '').trim()));
+        }
+      }
+    } catch (gvizErr) {
+      console.warn("Direct GViz CSV fetch failed:", gvizErr);
+    }
+  }
 
   if (genRows.length === 0) {
     return [];
+  }
+
+  // Trigger background maintenance only if explicitly requested and token is present
+  if (runMaintenance && accessToken) {
+    convertExistingSheetTimestampsToUTC7(accessToken, spreadsheetId).catch(() => {});
+    migrateExistingSheetEquipmentIds(accessToken, spreadsheetId).catch(() => {});
   }
 
   const genHeaders = genRows[0] || [];
@@ -759,12 +789,41 @@ export async function fetchSheetsData(accessToken: string, spreadsheetId: string
   // Parse Page 1: General Information (Dynamic & Header-driven)
   const generals: GeneralInformation[] = validGenDataRows.map((row: any[], index: number) => {
     const getVal = (headerName: string) => {
-      const idx = genHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
+      const target = normalizeHeader(headerName);
+      const idx = genHeaders.findIndex((h: string) => {
+        const n = normalizeHeader(h);
+        return n === target || n.startsWith(target) || n.includes(target);
+      });
       return idx !== -1 && idx < row.length ? cleanStr(row[idx]) : '';
     };
 
-    const gpsString = getVal('gps') || getVal('coordinates') || '13.7563, 100.5018';
-    const [lat, lng] = gpsString.split(',').map((c: string) => parseFloat(c.trim()) || 0);
+    // Column L (12th column, index 11) is GPS (Latitude, Longitude) in the standard Google Sheet template
+    let gpsString = '';
+    if (row.length > 11 && row[11] && cleanStr(row[11]).includes(',')) {
+      gpsString = cleanStr(row[11]);
+    }
+    if (!gpsString) {
+      const gpsHeaderIdx = genHeaders.findIndex((h: string) => {
+        const n = normalizeHeader(h);
+        return n.includes('gps') || n.includes('coordinate') || n.includes('lat') || n === 'location';
+      });
+      if (gpsHeaderIdx !== -1 && gpsHeaderIdx < row.length) {
+        gpsString = cleanStr(row[gpsHeaderIdx]);
+      }
+    }
+    if (!gpsString) {
+      gpsString = getVal('gps') || getVal('coordinates') || '13.7563, 100.5018';
+    }
+
+    let lat = 13.7563;
+    let lng = 100.5018;
+    if (gpsString && gpsString.includes(',')) {
+      const parts = gpsString.split(',').map((c: string) => parseFloat(c.trim()));
+      if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1]) && (parts[0] !== 0 || parts[1] !== 0)) {
+        lat = parts[0];
+        lng = parts[1];
+      }
+    }
 
     const number = parseInt(getVal('number') || getVal('no')) || (index + 1);
     const rawTs = getVal('timestamp') || getVal('date') || getVal('time');
@@ -2448,59 +2507,113 @@ export interface RegionalSheetScanInfo {
 }
 
 export async function scanRegionalSheetsAssetCounts(
-  accessToken: string,
+  accessToken: string | null,
   spreadsheetIds: string[]
 ): Promise<RegionalSheetScanInfo[]> {
   const uniqueIds = Array.from(new Set(spreadsheetIds)).filter(id => id && id.trim().length > 0);
   
   const areaOrder = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+  const results: RegionalSheetScanInfo[] = [];
 
-  const scanPromises = uniqueIds.map(async (sheetId, idx) => {
-    const fallbackArea = areaOrder[idx] || `AREA_${idx + 1}`;
+  // If no accessToken, use server-side /api/sheets/scan endpoint first
+  if (!accessToken) {
+    try {
+      const scanRes = await fetch('/api/sheets/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spreadsheetIds: uniqueIds })
+      });
+      if (scanRes.ok) {
+        const scanData = await scanRes.json();
+        if (scanData.scans && Array.isArray(scanData.scans)) {
+          return scanData.scans.map((s: any, idx: number) => {
+            const fallbackArea = areaOrder[idx] || `AREA_${idx + 1}`;
+            return {
+              spreadsheetId: s.spreadsheetId,
+              area: fallbackArea,
+              areaName: PEA_AREA_NAMES[fallbackArea] || fallbackArea,
+              title: `PEA Cable Asset Database - ${fallbackArea}`,
+              rowCount: s.rowCount || 0,
+              status: s.status || 'scanned',
+              errorMessage: s.errorMessage
+            };
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("Backend sheets scan error, falling back to sequential scan:", e);
+    }
+  }
+
+  for (let i = 0; i < uniqueIds.length; i++) {
+    const sheetId = uniqueIds[i];
+    const fallbackArea = areaOrder[i] || `AREA_${i + 1}`;
+
+    // Add 150ms delay between consecutive scans to avoid rate limits
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
     try {
       let title = '';
       let area = fallbackArea;
       let generalTabTitle = 'General Information';
-      try {
-        const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties.title,sheets.properties`, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        if (metaRes.ok) {
-          const meta = await metaRes.json();
-          const sheets = meta.sheets || [];
-          const genSheet = sheets.find((s: any) => /general/i.test(s.properties?.title || '')) || sheets[0];
-          if (genSheet?.properties?.title) {
-            generalTabTitle = genSheet.properties.title;
+      if (accessToken) {
+        try {
+          const metaRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties.title,sheets.properties`, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          if (metaRes.ok) {
+            const meta = await metaRes.json();
+            const sheets = meta.sheets || [];
+            const genSheet = sheets.find((s: any) => /general/i.test(s.properties?.title || '')) || sheets[0];
+            if (genSheet?.properties?.title) {
+              generalTabTitle = genSheet.properties.title;
+            }
+            title = meta.properties?.title || '';
+            const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
+                          title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
+            if (match) {
+              area = match[1].trim().toUpperCase();
+            }
           }
-          title = meta.properties?.title || '';
-          const match = title.match(/PEA\s+Cable\s+Asset\s+Database\s*-\s*([A-Za-z0-9]+)/i) || 
-                        title.match(/PEA\s+Cable\s+Asset\s+Database\s+([A-Za-z0-9]+)/i);
-          if (match) {
-            area = match[1].trim().toUpperCase();
-          }
-        }
-      } catch (e) {}
-
-      const range = encodeURIComponent(`'${generalTabTitle}'!A2:A`);
-      const valRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
+        } catch (e) {}
+      }
 
       let rowCount = 0;
-      let isError = !valRes.ok;
+      let isError = false;
       let errorMsg: string | undefined;
 
-      if (valRes.ok) {
-        const valData = await valRes.json();
-        const rows = (valData.values || []).filter((r: any[]) => r && r.length > 0 && r.some((c: any) => c !== undefined && c !== null && String(c).trim() !== ''));
-        rowCount = rows.length;
+      if (accessToken) {
+        const range = encodeURIComponent(`'${generalTabTitle}'!A2:A`);
+        const valRes = await fetchWithRetry(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+
+        isError = !valRes.ok;
+
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          const rows = (valData.values || []).filter((r: any[]) => r && r.length > 0 && r.some((c: any) => c !== undefined && c !== null && String(c).trim() !== ''));
+          rowCount = rows.length;
+        } else {
+          errorMsg = valRes.status === 403 ? 'Access forbidden. Please share sheet with view/edit access.' : valRes.status === 404 ? 'Spreadsheet ID not found.' : 'Sheet unavailable';
+        }
       } else {
-        errorMsg = valRes.status === 403 ? 'Access forbidden. Please share sheet with view/edit access.' : valRes.status === 404 ? 'Spreadsheet ID not found.' : 'Sheet unavailable';
+        // Fallback row count via proxy
+        try {
+          const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${encodeURIComponent(sheetId)}`);
+          if (proxyRes.ok) {
+            const pData = await proxyRes.json();
+            const genRows = pData.valueRanges?.[0]?.values || [];
+            rowCount = Math.max(0, genRows.length - 1);
+          }
+        } catch (pe) {}
       }
 
       const areaName = PEA_AREA_NAMES[area] || area;
 
-      return {
+      results.push({
         spreadsheetId: sheetId,
         area,
         areaName,
@@ -2508,10 +2621,10 @@ export async function scanRegionalSheetsAssetCounts(
         rowCount,
         status: isError ? ('error' as const) : ('scanned' as const),
         errorMessage: errorMsg
-      };
+      });
     } catch (err: any) {
       console.warn(`Scan error for sheet ${sheetId}:`, err);
-      return {
+      results.push({
         spreadsheetId: sheetId,
         area: fallbackArea,
         areaName: PEA_AREA_NAMES[fallbackArea] || fallbackArea,
@@ -2519,11 +2632,10 @@ export async function scanRegionalSheetsAssetCounts(
         rowCount: 0,
         status: 'error' as const,
         errorMessage: err.message || 'Sheet unavailable or permission denied'
-      };
+      });
     }
-  });
+  }
 
-  const results = await Promise.all(scanPromises);
   results.sort((a, b) => {
     const idxA = areaOrder.indexOf(a.area);
     const idxB = areaOrder.indexOf(b.area);

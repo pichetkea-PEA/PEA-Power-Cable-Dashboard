@@ -2,6 +2,7 @@ import {
   PEAUser, 
   CableAsset, 
   EquipmentType, 
+  LocationType,
   HealthStatus, 
   EngineeringInformation,
   GeneralInformation,
@@ -76,6 +77,74 @@ export function getAreaFromCity(city: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Robustly extracts the PEA Area code (N1-NE3) from any asset structure,
+ * checking area property, equipmentId prefix, peaNumber, city mapping, and landmark text.
+ */
+export function getAssetArea(asset: any): string {
+  if (!asset) return 'UNKNOWN';
+
+  // 1. Direct explicit area field if set
+  if (asset.area && typeof asset.area === 'string' && asset.area.trim() !== '' && asset.area.toUpperCase() !== 'ALL') {
+    const clean = asset.area.trim().toUpperCase();
+    if (PEA_AREAS.includes(clean as any)) return clean;
+  }
+
+  // 2. Extract from equipmentId
+  if (asset.equipmentId && typeof asset.equipmentId === 'string') {
+    const raw = asset.equipmentId.trim();
+    // Check standard prefix: C1-..., N1-..., etc.
+    const firstPart = raw.split('-')[0]?.toUpperCase();
+    if (firstPart && PEA_AREAS.includes(firstPart as any)) {
+      return firstPart;
+    }
+    // Check if equipmentId is PEA-C1-... or similar
+    const secondPart = raw.split('-')[1]?.toUpperCase();
+    if (secondPart && PEA_AREAS.includes(secondPart as any)) {
+      return secondPart;
+    }
+    // Substring match for area codes
+    for (const a of ['NE1', 'NE2', 'NE3', 'N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3']) {
+      if (raw.toUpperCase().startsWith(a + '-') || raw.toUpperCase().startsWith(a + '#') || raw.toUpperCase().startsWith(a + '_')) {
+        return a;
+      }
+    }
+  }
+
+  // 3. Extract from peaNumber
+  if (asset.peaNumber && typeof asset.peaNumber === 'string') {
+    const raw = asset.peaNumber.trim();
+    const parts = raw.split('-');
+    for (const p of parts) {
+      const up = p.trim().toUpperCase();
+      if (PEA_AREAS.includes(up as any)) return up;
+    }
+    for (const a of ['NE1', 'NE2', 'NE3', 'N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3']) {
+      if (raw.toUpperCase().includes(`PEA-${a}`) || raw.toUpperCase().includes(`-${a}-`) || raw.toUpperCase().startsWith(a)) {
+        return a;
+      }
+    }
+  }
+
+  // 4. Map from city / province
+  if (asset.city && typeof asset.city === 'string') {
+    const fromCity = getAreaFromCity(asset.city);
+    if (fromCity && PEA_AREAS.includes(fromCity as any)) {
+      return fromCity;
+    }
+  }
+
+  // 5. Check landmark or substation name
+  const locText = `${asset.substationName || ''} ${asset.landmark || ''}`.toUpperCase();
+  for (const a of ['NE1', 'NE2', 'NE3', 'N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3']) {
+    if (locText.includes(`PEA ${a}`) || locText.includes(`AREA ${a}`) || locText.includes(` ${a} `)) {
+      return a;
+    }
+  }
+
+  return 'UNKNOWN';
 }
 
 export const THAI_CITY_TRANSLATIONS: Record<string, string> = {
@@ -1338,6 +1407,180 @@ export function getMockAssets(): CableAsset[] {
       latestUpdatedAt: latestAt
     } as CableAsset;
   });
+}
+
+export const PEA_TARGET_REGIONAL_COUNTS: Record<string, number> = {
+  N1: 540,
+  N2: 143,
+  N3: 312,
+  C1: 2025,
+  C2: 1715,
+  C3: 1279,
+  S1: 299,
+  S2: 781,
+  S3: 148,
+  NE1: 121,
+  NE2: 44,
+  NE3: 517
+};
+
+export const PEA_AREA_GPS_CENTER: Record<string, { lat: number; lng: number }> = {
+  N1: { lat: 18.7883, lng: 98.9853 },
+  N2: { lat: 16.8211, lng: 100.2659 },
+  N3: { lat: 14.7995, lng: 100.6534 },
+  NE1: { lat: 17.4138, lng: 102.7872 },
+  NE2: { lat: 15.2293, lng: 104.8577 },
+  NE3: { lat: 14.9707, lng: 102.0978 },
+  C1: { lat: 14.3532, lng: 100.5684 },
+  C2: { lat: 13.3611, lng: 100.9847 },
+  C3: { lat: 13.8196, lng: 100.0443 },
+  S1: { lat: 13.1119, lng: 99.9399 },
+  S2: { lat: 8.4304, lng: 99.9631 },
+  S3: { lat: 6.5411, lng: 101.2813 }
+};
+
+export const PEA_CITY_GPS: Record<string, { lat: number; lng: number }> = {
+  // C1 (Central Area 1 - 7 provinces)
+  'Phra Nakhon Si Ayutthaya': { lat: 14.3532, lng: 100.5684 },
+  'Ang Thong': { lat: 14.5896, lng: 100.4550 },
+  'Nakhon Nayok': { lat: 14.2069, lng: 101.2131 },
+  'Pathum Thani': { lat: 14.0208, lng: 100.5250 },
+  'Prachin Buri': { lat: 14.0510, lng: 101.3734 },
+  'Sa Kaeo': { lat: 13.8140, lng: 102.0718 },
+  'Saraburi': { lat: 14.5289, lng: 100.9108 },
+
+  // C2 (Central Area 2 - 5 provinces)
+  'Chon Buri': { lat: 13.3611, lng: 100.9847 },
+  'Chachoengsao': { lat: 13.6904, lng: 101.0779 },
+  'Chanthaburi': { lat: 12.6114, lng: 102.1039 },
+  'Rayong': { lat: 12.6814, lng: 101.2816 },
+  'Trat': { lat: 12.2428, lng: 102.5175 },
+
+  // C3 (Central Area 3 - 4 provinces)
+  'Nakhon Pathom': { lat: 13.8196, lng: 100.0443 },
+  'Kanchanaburi': { lat: 14.0228, lng: 99.5328 },
+  'Samut Sakhon': { lat: 13.5475, lng: 100.2744 },
+  'Suphan Buri': { lat: 14.4745, lng: 100.1177 },
+
+  // N1 (Northern Area 1 - 6 provinces)
+  'Chiang Mai': { lat: 18.7883, lng: 98.9853 },
+  'Chiang Rai': { lat: 19.9105, lng: 99.8406 },
+  'Lampang': { lat: 18.2888, lng: 99.4928 },
+  'Lamphun': { lat: 18.5745, lng: 99.0087 },
+  'Mae Hong Son': { lat: 19.3021, lng: 97.9654 },
+  'Phayao': { lat: 19.1664, lng: 99.9019 },
+
+  // N2 (Northern Area 2 - 8 provinces)
+  'Phitsanulok': { lat: 16.8211, lng: 100.2659 },
+  'Kamphaeng Phet': { lat: 16.4828, lng: 99.5227 },
+  'Nan': { lat: 18.7838, lng: 100.7782 },
+  'Phichit': { lat: 16.4429, lng: 100.3488 },
+  'Phrae': { lat: 18.1446, lng: 100.1410 },
+  'Sukhothai': { lat: 17.0078, lng: 99.8230 },
+  'Tak': { lat: 16.8839, lng: 99.1259 },
+  'Uttaradit': { lat: 17.6256, lng: 100.0993 },
+
+  // N3 (Northern Area 3 - 6 provinces)
+  'Lop Buri': { lat: 14.7995, lng: 100.6534 },
+  'Chai Nat': { lat: 15.1852, lng: 100.1251 },
+  'Nakhon Sawan': { lat: 15.7057, lng: 100.1378 },
+  'Phetchabun': { lat: 16.4190, lng: 101.1574 },
+  'Sing Buri': { lat: 14.8936, lng: 100.4015 },
+  'Uthai Thani': { lat: 15.3835, lng: 100.0246 },
+
+  // NE1 (Northeastern Area 1 - 8 provinces)
+  'Udon Thani': { lat: 17.4138, lng: 102.7872 },
+  'Bueng Kan': { lat: 18.3633, lng: 103.6464 },
+  'Khon Kaen': { lat: 16.4322, lng: 102.8236 },
+  'Loei': { lat: 17.4860, lng: 101.7223 },
+  'Nakhon Phanom': { lat: 17.4060, lng: 104.7788 },
+  'Nong Bua Lamphu': { lat: 17.2044, lng: 102.4407 },
+  'Nong Khai': { lat: 17.8783, lng: 102.7413 },
+  'Sakon Nakhon': { lat: 17.1612, lng: 104.1486 },
+
+  // NE2 (Northeastern Area 2 - 8 provinces)
+  'Ubon Ratchathani': { lat: 15.2293, lng: 104.8577 },
+  'Amnat Charoen': { lat: 15.8585, lng: 104.6258 },
+  'Kalasin': { lat: 16.4327, lng: 103.5064 },
+  'Maha Sarakham': { lat: 16.1852, lng: 103.3007 },
+  'Mukdahan': { lat: 16.5436, lng: 104.7235 },
+  'Roi Et': { lat: 16.0538, lng: 103.6520 },
+  'Sisaket': { lat: 15.1186, lng: 104.3220 },
+  'Yasothon': { lat: 15.7926, lng: 104.1451 },
+
+  // NE3 (Northeastern Area 3 - 4 provinces)
+  'Nakhon Ratchasima': { lat: 14.9707, lng: 102.0978 },
+  'Buri Ram': { lat: 14.9930, lng: 103.1029 },
+  'Chaiyaphum': { lat: 15.8105, lng: 102.0315 },
+  'Surin': { lat: 14.8818, lng: 103.4936 },
+
+  // S1 (Southern Area 1 - 6 provinces)
+  'Phetchaburi': { lat: 13.1119, lng: 99.9399 },
+  'Chumphon': { lat: 10.4930, lng: 99.1800 },
+  'Prachuap Khiri Khan': { lat: 11.8124, lng: 99.7974 },
+  'Ranong': { lat: 9.9658, lng: 98.6348 },
+  'Ratchaburi': { lat: 13.5283, lng: 99.8134 },
+  'Samut Songkhram': { lat: 13.4098, lng: 99.9994 },
+
+  // S2 (Southern Area 2 - 6 provinces)
+  'Nakhon Si Thammarat': { lat: 8.4304, lng: 99.9631 },
+  'Krabi': { lat: 8.0863, lng: 98.9063 },
+  'Phang Nga': { lat: 8.4501, lng: 98.5255 },
+  'Phuket': { lat: 7.8804, lng: 98.3923 },
+  'Surat Thani': { lat: 9.1382, lng: 99.3217 },
+  'Trang': { lat: 7.5563, lng: 99.6114 },
+
+  // S3 (Southern Area 3 - 6 provinces)
+  'Yala': { lat: 6.5411, lng: 101.2813 },
+  'Narathiwat': { lat: 6.4255, lng: 101.8253 },
+  'Pattani': { lat: 6.8675, lng: 101.2501 },
+  'Phatthalung': { lat: 7.6167, lng: 100.0740 },
+  'Satun': { lat: 6.6238, lng: 100.0674 },
+  'Songkhla': { lat: 7.1988, lng: 100.5951 }
+};
+
+export function getCityGpsCenter(city?: string, area?: string): { lat: number; lng: number } {
+  if (city) {
+    const clean = city.trim();
+    if (PEA_CITY_GPS[clean]) {
+      return PEA_CITY_GPS[clean];
+    }
+    const cleanLower = clean.toLowerCase();
+    for (const [c, gps] of Object.entries(PEA_CITY_GPS)) {
+      const cLower = c.toLowerCase();
+      if (cLower === cleanLower || cleanLower.includes(cLower) || cLower.includes(cleanLower)) {
+        return gps;
+      }
+    }
+  }
+  if (area && PEA_AREA_GPS_CENTER[area]) {
+    return PEA_AREA_GPS_CENTER[area];
+  }
+  return { lat: 13.7563, lng: 100.5018 };
+}
+
+/**
+ * Ensures only authentic Google Sheets assets are preserved and cleans any synthetic dummy records.
+ * For all genuine assets, their authentic GPS coordinates (from Google Sheets Column L)
+ * are strictly preserved without modification.
+ */
+export function ensureComplete12Areas(existingAssets?: CableAsset[]): CableAsset[] {
+  if (!Array.isArray(existingAssets)) return [];
+
+  // Filter out any synthetic/mock assets from previous generation runs
+  const cleanList = existingAssets.filter(asset => {
+    if (!asset) return false;
+    if (asset.latestUpdatedBy && (asset.latestUpdatedBy.includes('Telemetry System') || asset.latestUpdatedBy.includes('Synthetic'))) return false;
+    if (asset.operatorName && (asset.operatorName.includes('Telemetry System') || asset.operatorName.includes('Synthetic') || asset.operatorName.includes('Automatic Grid Monitor'))) return false;
+    if (asset.assetNumber && (String(asset.assetNumber).startsWith('SAP-900') || String(asset.assetNumber).startsWith('SYNTH'))) return false;
+    if ((asset as any).isSynthetic) return false;
+    return true;
+  });
+
+  return cleanList.map((asset, idx) => ({
+    ...asset,
+    number: asset.number || idx + 1
+  }));
 }
 
 /**

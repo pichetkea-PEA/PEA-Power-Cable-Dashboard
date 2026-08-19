@@ -1,13 +1,13 @@
 import React, { useState, useEffect, FormEvent } from 'react';
 import { PEAUser, CableAsset, UserRole } from './types';
-import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets } from './utils/peaData';
+import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets, PEA_TARGET_REGIONAL_COUNTS, ensureComplete12Areas, getAssetArea } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
 import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1 } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
-import { findUserByEmail, isAdminAccount, saveUserAccount } from './utils/userManagement';
+import { findUserByEmail, isAdminAccount, saveUserAccount, verifyUsernamePassword } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
 import AreaDashboard from './components/AreaDashboard';
 import InputForm from './components/InputForm';
@@ -36,7 +36,8 @@ import {
   ShieldAlert,
   AlertTriangle,
   ChevronRight,
-  Clock
+  Clock,
+  Lock
 } from 'lucide-react';
 
 export default function App() {
@@ -128,6 +129,8 @@ export default function App() {
 
   // Login & Sign-Up form states
   const [loginMode, setLoginMode] = useState<'signin' | 'signup'>('signin');
+  const [usernameInput, setUsernameInput] = useState<string>('');
+  const [passwordInput, setPasswordInput] = useState<string>('');
   const [selectedArea, setSelectedArea] = useState<string>('N1');
   const [selectedRole, setSelectedRole] = useState<UserRole>('Local Operator');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
@@ -167,7 +170,8 @@ export default function App() {
     try {
       const cached = await getCentralAssetsCache();
       if (cached && cached.length > 0) {
-        setAssets(cached);
+        const validated = ensureComplete12Areas(cached);
+        setAssets(validated);
       }
       if ((window as any).firestoreQuotaExceeded) {
         setFirestoreQuotaExceeded(true);
@@ -220,9 +224,8 @@ export default function App() {
       if (targetSheetId) setSpreadsheetId(targetSheetId);
       if (targetFolderId) setFolderId(targetFolderId);
 
-      // Perform full live auto-load directly from Google Sheets API when token is present
+      // Background clearing of obsolete Tab 4 example rows when token is present
       if (token) {
-        // Clear out any obsolete mock/example rows from Tab 4 across sheets in background if not already cleared
         const tab4ClearedKey = 'pea_tab4_example_cleared_v2';
         if (!localStorage.getItem(tab4ClearedKey)) {
           clearAll12SheetsPdDiagnosticData(token)
@@ -234,51 +237,49 @@ export default function App() {
             })
             .catch(err => console.warn('Could not clear Tab 4 example rows:', err));
         }
+      }
 
-        const idsToLoad = (role === 'Local Operator' && area !== 'ALL' && targetSheetId) 
-          ? [targetSheetId] 
-          : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
+      // Unified Data Synchronization for both Google OAuth and Credential logins
+      const idsToLoad = (role === 'Local Operator' && area !== 'ALL' && targetSheetId) 
+        ? [targetSheetId] 
+        : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
 
-        if (idsToLoad.length > 0) {
-          await handleLoadSpreadsheet(token, idsToLoad, isAdminUser, true);
-        } else {
-          setIsSyncingCentralDb(false);
-          setIsLoading(false);
-        }
+      if (idsToLoad.length > 0) {
+        await handleLoadSpreadsheet(token || null, idsToLoad, isAdminUser, !!token);
       } else {
-        // Offline / No token mode
-        let loaded = false;
-        try {
-          const cached = await getCentralAssetsCache();
-          if (cached && cached.length > 0) {
-            setAssets(cached);
-            setSyncSuccessMessage(`Central Admin Database Synchronized! Loaded ${cached.length.toLocaleString()} cable assets from Admin database.`);
-            loaded = true;
-          }
-        } catch (e) {}
+        // Fallback: If no sheet IDs mapped yet, load authentic cached assets from central database
+        setShowLoadingModal(true);
+        setIsScanningSheets(true);
+        setLoadProgressPercent(25);
+        setCurrentStepText('Loading Central Database cable assets...');
 
-        if (!loaded) {
-          const backup = localStorage.getItem('pea_central_assets_backup');
-          if (backup) {
-            try {
+        let workingAssets: CableAsset[] = [];
+        try {
+          const cached = await getCentralAssetsCache(true);
+          if (cached && Array.isArray(cached) && cached.length > 0) {
+            workingAssets = cached;
+          }
+        } catch (e) {
+          console.warn("Error loading cached assets from Firestore:", e);
+        }
+
+        if (workingAssets.length === 0) {
+          try {
+            const backup = localStorage.getItem('pea_central_assets_backup');
+            if (backup) {
               const parsed = JSON.parse(backup);
               if (Array.isArray(parsed) && parsed.length > 0) {
-                setAssets(parsed);
-                setSyncSuccessMessage(`Central Admin Database Loaded from Backup! ${parsed.length.toLocaleString()} cable assets active.`);
-                loaded = true;
+                workingAssets = parsed;
               }
-            } catch (e) {}
-          }
+            }
+          } catch (e) {}
         }
 
-        if (!loaded) {
-          setAssets(getMockAssets());
-          setSyncSuccessMessage(`Central Offline Mode Enabled! Loaded telemetry datasets.`);
-        }
-
-        if ((window as any).firestoreQuotaExceeded) {
-          setFirestoreQuotaExceeded(true);
-        }
+        workingAssets = ensureComplete12Areas(workingAssets);
+        setAssets(workingAssets);
+        setTotalLoadedAssets(workingAssets.length);
+        setLoadProgressPercent(100);
+        setCurrentStepText(`Loaded ${workingAssets.length.toLocaleString()} authentic cable assets.`);
         setIsSyncingCentralDb(false);
         setIsLoading(false);
       }
@@ -349,7 +350,6 @@ export default function App() {
 
     setUser(newUser);
     setNeedsAuth(false);
-    setShowGameLoading(false);
 
     if (role === 'Admin' || role === 'Manager') {
       setActiveTab('admin');
@@ -357,7 +357,13 @@ export default function App() {
       setActiveTab('area');
     }
 
-    await syncCentralDatabase(token || null, email, role, finalArea);
+    try {
+      await syncCentralDatabase(token || null, email, role, finalArea);
+    } catch (err) {
+      console.error("Session database sync error:", err);
+    } finally {
+      setShowGameLoading(false);
+    }
   };
 
   // Shared helper to automatically discover existing sheets and load assets
@@ -473,12 +479,11 @@ export default function App() {
   const fetchSessionCounterRef = React.useRef<number>(0);
 
   // Load spreadsheet data once spreadsheetId is verified
-  const handleLoadSpreadsheet = async (token: string, sheetIds: string[], isAdminUser = false, isForceRefresh = false) => {
-    if (!token) return;
+  const handleLoadSpreadsheet = async (token: string | null, sheetIds: string[], isAdminUser = false, isForceRefresh = false) => {
     let uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
 
-    // Auto-discover if we have fewer than 12 regional sheets
-    if (uniqueIds.length < 12) {
+    // Auto-discover if we have fewer than 12 regional sheets and token is available
+    if (uniqueIds.length < 12 && token) {
       try {
         const discovered = await autoDiscoverAndSync(token);
         if (discovered.spreadsheets) {
@@ -594,8 +599,8 @@ export default function App() {
         });
 
         if (i > 0) {
-          // Add 150ms delay between consecutive spreadsheet batch gets to avoid HTTP 429 rate limit
-          await new Promise(resolve => setTimeout(resolve, 150));
+          // Add 350ms delay between consecutive spreadsheet batch gets to avoid HTTP 429 rate limit
+          await new Promise(resolve => setTimeout(resolve, 350));
         }
 
         if (currentSession !== fetchSessionCounterRef.current) return;
@@ -911,13 +916,13 @@ export default function App() {
     }, 600);
   };
 
-  // Authenticate Google account
   const handleLogin = async () => {
     setIsLoggingIn(true);
     setErrorMessage('');
     try {
       const result = await googleSignIn();
       if (result) {
+        setShowGameLoading(true);
         const email = result.user.email || 'operator@pea.co.th';
         const name = result.user.displayName || 'PEA Operator';
         const uid = result.user.uid;
@@ -950,6 +955,37 @@ export default function App() {
       }
     } catch (err: any) {
       setErrorMessage(`Login failure: ${err.message || 'Unable to sign in'}`);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleUsernamePasswordLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!usernameInput.trim() || !passwordInput.trim()) {
+      setErrorMessage('Please enter both Username and Password.');
+      return;
+    }
+    setIsLoggingIn(true);
+    setErrorMessage('');
+    try {
+      const match = verifyUsernamePassword(usernameInput, passwordInput);
+      if (match) {
+        setShowGameLoading(true);
+        // Authenticate successfully as Natthakorn Sukra (Manager)
+        await finalizeUserSession(
+          match.email,
+          match.name,
+          'uid-natthakorn-497377',
+          match.role,
+          match.interestArea,
+          null
+        );
+      } else {
+        setErrorMessage('Invalid Username or Password. Please try again.');
+      }
+    } catch (err: any) {
+      setErrorMessage(`Login failed: ${err.message || 'Unable to authenticate'}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -1002,6 +1038,7 @@ export default function App() {
   const handleConfirmAdminRoleChoice = async () => {
     if (!pendingAdminUser) return;
     setShowAdminRoleModal(false);
+    setShowGameLoading(true);
 
     const { email, name, uid, accessToken } = pendingAdminUser;
     const registered = findUserByEmail(email);
@@ -1444,8 +1481,60 @@ export default function App() {
                   </span>
                 </div>
 
+                {/* USERNAME & PASSWORD CREDENTIALS LOGIN METHOD */}
+                <form onSubmit={handleUsernamePasswordLogin} className="space-y-3 pt-3 border-t border-gray-100">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Username</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                        <User className="w-4 h-4" />
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Enter username"
+                        value={usernameInput}
+                        onChange={e => setUsernameInput(e.target.value)}
+                        className="w-full bg-gray-50 border border-gray-200 rounded-xl py-2.5 pl-10 pr-3.5 text-xs font-semibold text-gray-700 focus:outline-hidden focus:ring-1 focus:ring-purple-700 focus:bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Password</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                        <Lock className="w-4 h-4" />
+                      </span>
+                      <input
+                        type="password"
+                        placeholder="Enter password"
+                        value={passwordInput}
+                        onChange={e => setPasswordInput(e.target.value)}
+                        className="w-full bg-gray-50 border border-gray-200 rounded-xl py-2.5 pl-10 pr-3.5 text-xs font-semibold text-gray-700 focus:outline-hidden focus:ring-1 focus:ring-purple-700 focus:bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isLoggingIn}
+                    className="w-full bg-purple-900 hover:bg-purple-950 text-white py-2.5 px-4 rounded-xl text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer text-center mt-1"
+                  >
+                    {isLoggingIn ? 'Authenticating Session...' : 'Sign In with Credentials'}
+                  </button>
+                </form>
+
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-200" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white px-3 text-gray-400 font-bold tracking-widest text-[9px]">Or Connect via Google</span>
+                  </div>
+                </div>
+
                 {/* Login CTA buttons */}
-                <div className="space-y-3 pt-3 border-t border-gray-100">
+                <div className="space-y-3">
                   {isIframe && (
                     <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-amber-800 text-[11px] leading-relaxed space-y-1.5">
                       <div className="font-bold flex items-center gap-1.5 text-amber-900">
@@ -1471,7 +1560,7 @@ export default function App() {
                   <button
                     disabled={isLoggingIn}
                     onClick={handleLogin}
-                    className="w-full bg-purple-900 hover:bg-purple-950 text-white py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2.5 shadow-md active:scale-98 transition-all cursor-pointer"
+                    className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2.5 shadow-xs active:scale-98 transition-all cursor-pointer"
                   >
                     <svg className="w-4 h-4 shrink-0" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
                       <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -1711,6 +1800,11 @@ export default function App() {
                         {isCreatingSheet ? 'Creating Template...' : 'Initialize Sheets Database'}
                       </button>
                     )
+                  ) : user ? (
+                    <div className="flex items-center gap-1.5 text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold">
+                      <Database className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Admin Database Connected</span>
+                    </div>
                   ) : (
                     <div className="text-[10px] text-slate-500 font-semibold bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
                       Local Offline Mode

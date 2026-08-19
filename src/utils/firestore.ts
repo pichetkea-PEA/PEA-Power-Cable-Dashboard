@@ -54,8 +54,13 @@ let inMemoryAssetsCache: any[] | null = null;
 let inMemorySectorsCache: { [area: string]: { spreadsheetId: string, folderId: string } } | null = null;
 let inMemoryAdminConfigCache: CentralAdminConfig | null = null;
 
-export function clearCentralAssetsCache(): void {
+export async function clearCentralAssetsCache(): Promise<void> {
   inMemoryAssetsCache = null;
+  await setLocalIndexedDBItem('pea_central_assets', null);
+  await setLocalIndexedDBItem('pea_assets_hash', null);
+  try {
+    localStorage.removeItem('pea_central_assets_backup');
+  } catch (e) {}
 }
 
 export async function getSectorSpreadsheet(interestArea: string): Promise<{ spreadsheetId: string, folderId: string } | null> {

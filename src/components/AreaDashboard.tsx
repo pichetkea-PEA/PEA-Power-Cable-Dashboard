@@ -14,7 +14,8 @@ import {
   COUNTRIES_OF_ORIGIN, 
   MANUFACTURERS, 
   VOLTAGE_LEVELS,
-  formatShortUrl
+  formatShortUrl,
+  getAssetArea
 } from '../utils/peaData';
 import MapChart from './MapChart';
 import RiskMatrix from './RiskMatrix';
@@ -118,7 +119,7 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
   // Filter Assets specifically for user's selected area first
   const areaAssets = useMemo(() => {
     return uniqueAssets.filter(asset => {
-      const areaCode = asset.equipmentId.split('-')[0];
+      const areaCode = getAssetArea(asset);
       if (displayedArea === 'ALL') return true;
       return areaCode === displayedArea;
     });
@@ -813,7 +814,7 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
                   <div>
                     <span className="text-gray-400 font-medium block">PEA Area District</span>
                     <span className="font-bold text-gray-800">
-                      {selectedAsset.equipmentId ? selectedAsset.equipmentId.split('-')[0] : 'N/A'} - {PEA_AREA_NAMES[selectedAsset.equipmentId?.split('-')?.[0] || ''] || 'PEA Region'}
+                      {selectedAsset ? getAssetArea(selectedAsset) : 'N/A'} - {PEA_AREA_NAMES[getAssetArea(selectedAsset)] || 'PEA Region'}
                     </span>
                   </div>
                   <div>
