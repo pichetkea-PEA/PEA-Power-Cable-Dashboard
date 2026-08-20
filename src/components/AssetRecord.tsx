@@ -1290,6 +1290,10 @@ export default function AssetRecord({
       safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
       safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
 
+      if (onRefresh) {
+        onRefresh();
+      }
+
       setSyncStatus('Changes saved successfully!');
       setTimeout(() => {
         setSyncStatus('');
@@ -1497,6 +1501,10 @@ export default function AssetRecord({
       safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
       safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
       safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
+
+      if (onRefresh) {
+        onRefresh();
+      }
 
       setSyncStatus('New inspection entry successfully logged!');
       setProgressModal({

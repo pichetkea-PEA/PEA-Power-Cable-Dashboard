@@ -75,13 +75,21 @@ export default function AssetLoadingModal({
                   {is100Percent
                     ? hasOffline
                       ? 'Sync Completed with Offline Sheets'
+                      : regionalSheets.length === 1
+                      ? `100% ${regionalSheets[0].area} Asset Load Complete`
                       : '100% Asset Load Complete'
                     : isScanning
-                    ? 'Scanning 12 Regional Google Sheets...'
+                    ? regionalSheets.length === 1
+                      ? `Scanning ${regionalSheets[0].area} (${regionalSheets[0].areaName || PEA_AREA_NAMES[regionalSheets[0].area] || regionalSheets[0].area}) Google Sheet...`
+                      : `Scanning ${regionalSheets.length} Regional Google Sheets...`
+                    : regionalSheets.length === 1
+                    ? `Synchronizing ${regionalSheets[0].area} (${regionalSheets[0].areaName || PEA_AREA_NAMES[regionalSheets[0].area] || regionalSheets[0].area}) Asset Database...`
                     : 'Synchronizing Asset Database...'}
                 </h3>
                 <p className="text-xs text-purple-200/80 mt-0.5">
-                  PEA High Voltage Telemetry Pipeline
+                  {regionalSheets.length === 1
+                    ? `PEA High Voltage Telemetry Pipeline • ${regionalSheets[0].area} (${regionalSheets[0].areaName || PEA_AREA_NAMES[regionalSheets[0].area] || regionalSheets[0].area})`
+                    : 'PEA High Voltage Telemetry Pipeline'}
                 </p>
               </div>
             </div>
@@ -128,7 +136,7 @@ export default function AssetLoadingModal({
           <div className="flex items-center gap-2 text-purple-900 truncate">
             <Layers className="w-4 h-4 text-purple-700 shrink-0" />
             <span className="truncate">
-              Pre-Scan Target: <strong className="text-purple-950 font-mono">{totalScannedAssets.toLocaleString()}</strong> assets across 12 sheets
+              Pre-Scan Target: <strong className="text-purple-950 font-mono">{totalScannedAssets.toLocaleString()}</strong> assets {regionalSheets.length === 1 ? `in ${regionalSheets[0].area}` : `across ${regionalSheets.length} sheets`}
             </span>
           </div>
           <div className="flex items-center gap-1.5 font-bold shrink-0 ml-2">
@@ -187,18 +195,22 @@ export default function AssetLoadingModal({
           </div>
         )}
 
-        {/* 12 Sheets Matrix Grid */}
+        {/* Regional Sheets Matrix Grid */}
         <div className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-3">
           <div className="flex items-center justify-between pb-1">
             <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-              12 Regional Google Sheets Status Check
+              {regionalSheets.length === 1
+                ? `${regionalSheets[0].area} Regional Google Sheet Status Check`
+                : `${regionalSheets.length} Regional Google Sheets Status Check`}
             </h4>
             <span className="text-[11px] text-gray-400 font-medium">
-              N1 - NE3 Regional Sector Audit
+              {regionalSheets.length === 1
+                ? `${regionalSheets[0].area} Regional Sector Audit`
+                : 'N1 - NE3 Regional Sector Audit'}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div className={regionalSheets.length === 1 ? "grid grid-cols-1 gap-2.5" : "grid grid-cols-1 sm:grid-cols-2 gap-2.5"}>
             {regionalSheets.map((sheet) => {
               const isDone = sheet.status === 'loaded';
               const isLoading = sheet.status === 'loading' || retryingArea === sheet.area;

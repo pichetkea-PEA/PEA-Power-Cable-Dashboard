@@ -217,15 +217,20 @@ export default function App() {
         allSheetIds = Array.from(new Set(Object.values(firestoreMap).map(item => item.spreadsheetId))).filter(Boolean);
       }
 
-      const targetSheetId = config?.spreadsheetsByArea?.[area] || firestoreMap[area]?.spreadsheetId || allSheetIds[0] || null;
+      const isRegionalUser = (role === 'Local Operator' || (role as string) === 'Operator') && area && area !== 'ALL';
+      const targetSheetId = config?.spreadsheetsByArea?.[area] || firestoreMap[area]?.spreadsheetId || (isRegionalUser ? null : allSheetIds[0]) || null;
       const targetFolderId = config?.foldersByArea?.[area] || firestoreMap[area]?.folderId || null;
 
-      setSpreadsheetIds(allSheetIds);
+      if (isRegionalUser) {
+        setSpreadsheetIds(targetSheetId ? [targetSheetId] : []);
+      } else {
+        setSpreadsheetIds(allSheetIds);
+      }
       if (targetSheetId) setSpreadsheetId(targetSheetId);
       if (targetFolderId) setFolderId(targetFolderId);
 
       // Background clearing of obsolete Tab 4 example rows when token is present
-      if (token) {
+      if (token && !isRegionalUser) {
         const tab4ClearedKey = 'pea_tab4_example_cleared_v2';
         if (!localStorage.getItem(tab4ClearedKey)) {
           clearAll12SheetsPdDiagnosticData(token)
@@ -240,9 +245,9 @@ export default function App() {
       }
 
       // Unified Data Synchronization for both Google OAuth and Credential logins
-      const idsToLoad = (role === 'Local Operator' && area !== 'ALL' && targetSheetId) 
+      const idsToLoad = (isRegionalUser && targetSheetId) 
         ? [targetSheetId] 
-        : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
+        : (isRegionalUser ? [] : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : [])));
 
       if (idsToLoad.length > 0) {
         await handleLoadSpreadsheet(token || null, idsToLoad, isAdminUser, false, role, area);
@@ -251,7 +256,7 @@ export default function App() {
         setShowLoadingModal(true);
         setIsScanningSheets(true);
         setLoadProgressPercent(25);
-        setCurrentStepText('Loading Central Database cable assets...');
+        setCurrentStepText(isRegionalUser ? `Loading cable assets for ${area} (${PEA_AREA_NAMES[area] || area})...` : 'Loading Central Database cable assets...');
 
         let workingAssets: CableAsset[] = [];
         try {
@@ -275,15 +280,24 @@ export default function App() {
           } catch (e) {}
         }
 
-        if (role === 'Local Operator' && area !== 'ALL') {
+        if (isRegionalUser) {
           workingAssets = workingAssets.filter(a => getAssetArea(a) === area);
+          setRegionalSheetStatuses([{
+            spreadsheetId: 'REGIONAL_DATA',
+            area,
+            areaName: PEA_AREA_NAMES[area] || area,
+            scannedCount: workingAssets.length,
+            loadedCount: workingAssets.length,
+            status: 'loaded'
+          }]);
         } else {
           workingAssets = ensureComplete12Areas(workingAssets);
         }
         setAssets(workingAssets);
         setTotalLoadedAssets(workingAssets.length);
+        setTotalScannedAssets(workingAssets.length);
         setLoadProgressPercent(100);
-        setCurrentStepText(`Loaded ${workingAssets.length.toLocaleString()} authentic cable assets.`);
+        setCurrentStepText(isRegionalUser ? `Loaded ${workingAssets.length.toLocaleString()} cable assets for ${area} (${PEA_AREA_NAMES[area] || area}).` : `Loaded ${workingAssets.length.toLocaleString()} authentic cable assets.`);
         setIsSyncingCentralDb(false);
         setIsLoading(false);
       }
@@ -492,24 +506,81 @@ export default function App() {
     filterArea?: string
   ) => {
     const activeToken = getEffectiveGoogleToken(token);
+    const effectiveRole = filterRole || user?.role;
+    const effectiveArea = filterArea || user?.interestArea;
+    const isRegionalOnly = (effectiveRole === 'Local Operator' || (effectiveRole as string) === 'Operator') && effectiveArea && effectiveArea !== 'ALL';
+    const targetArea = (effectiveArea && effectiveArea !== 'ALL') ? effectiveArea : null;
+
     let uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
 
-    // Auto-discover if we have fewer than 12 regional sheets and token is available
-    if (uniqueIds.length < 12 && activeToken) {
-      try {
-        const discovered = await autoDiscoverAndSync(activeToken);
-        if (discovered.spreadsheets) {
-          const discoveredIds = Object.values(discovered.spreadsheets).filter(Boolean);
-          uniqueIds = Array.from(new Set([...uniqueIds, ...discoveredIds]));
+    // Auto-discover logic
+    if (activeToken) {
+      if (isRegionalOnly && targetArea) {
+        if (uniqueIds.length === 0) {
+          try {
+            const discovered = await autoDiscoverAndSync(activeToken);
+            if (discovered.spreadsheets && discovered.spreadsheets[targetArea]) {
+              uniqueIds = [discovered.spreadsheets[targetArea]];
+              setSpreadsheetId(discovered.spreadsheets[targetArea]);
+              setSpreadsheetIds([discovered.spreadsheets[targetArea]]);
+            }
+          } catch (e) {
+            console.warn('Auto-discovery error during regional sheet load:', e);
+          }
         }
-      } catch (e) {
-        console.warn('Auto-discovery error during sheet load:', e);
+      } else if (!isRegionalOnly && uniqueIds.length < 12) {
+        try {
+          const discovered = await autoDiscoverAndSync(activeToken);
+          if (discovered.spreadsheets) {
+            const discoveredIds = Object.values(discovered.spreadsheets).filter(Boolean);
+            uniqueIds = Array.from(new Set([...uniqueIds, ...discoveredIds]));
+          }
+        } catch (e) {
+          console.warn('Auto-discovery error during sheet load:', e);
+        }
       }
     }
 
-    if (uniqueIds.length === 0) return;
+    // If regional user has more than 1 ID, reduce to 1 ID
+    if (isRegionalOnly && targetArea && uniqueIds.length > 1) {
+      uniqueIds = [uniqueIds[0]];
+    }
 
-    if (isForceRefresh) {
+    if (uniqueIds.length === 0) {
+      if (isRegionalOnly && targetArea) {
+        setShowLoadingModal(true);
+        setIsScanningSheets(false);
+        setLoadProgressPercent(100);
+        let cached = await getCentralAssetsCache(true);
+        if (!cached || cached.length === 0) {
+          try {
+            const backup = localStorage.getItem('pea_central_assets_backup');
+            if (backup) cached = JSON.parse(backup);
+          } catch (e) {}
+        }
+        let regional = (cached && Array.isArray(cached)) ? cached.filter(a => getAssetArea(a) === targetArea) : [];
+        if (regional.length === 0) {
+          regional = getMockAssets().filter(a => getAssetArea(a) === targetArea);
+        }
+        setAssets(regional);
+        setTotalLoadedAssets(regional.length);
+        setTotalScannedAssets(regional.length);
+        setRegionalSheetStatuses([{
+          spreadsheetId: 'LOCAL_SCOPE',
+          area: targetArea,
+          areaName: PEA_AREA_NAMES[targetArea] || targetArea,
+          scannedCount: regional.length,
+          loadedCount: regional.length,
+          status: 'loaded'
+        }]);
+        setCurrentStepText(`100% Loaded! Verified ${regional.length.toLocaleString()} cable assets in ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea}).`);
+        setIsSyncingCentralDb(false);
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    if (isForceRefresh && !isRegionalOnly) {
       clearCentralAssetsCache();
     }
 
@@ -523,21 +594,37 @@ export default function App() {
     setShowLoadingModal(true);
     setIsScanningSheets(true);
     setLoadProgressPercent(5);
-    setCurrentStepText(filterRole === 'Local Operator' ? `Scanning Google Sheet for ${filterArea || 'related'} area...` : 'Performing initial pre-scan check across all 12 regional Google Sheets...');
+    setCurrentStepText(
+      isRegionalOnly && targetArea
+        ? `Performing pre-scan check for ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea}) Google Sheet...`
+        : 'Performing initial pre-scan check across all 12 regional Google Sheets...'
+    );
 
     // Pre-populate regional sheet statuses
-    const initialAreas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
-    const initialStatuses: RegionalSheetStatus[] = uniqueIds.map((id, idx) => {
-      const area = (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') ? filterArea : (initialAreas[idx] || `AREA_${idx + 1}`);
-      return {
-        spreadsheetId: id,
-        area,
-        areaName: PEA_AREA_NAMES[area] || area,
+    let initialStatuses: RegionalSheetStatus[] = [];
+    if (isRegionalOnly && targetArea) {
+      initialStatuses = [{
+        spreadsheetId: uniqueIds[0] || 'REGIONAL_SHEET',
+        area: targetArea,
+        areaName: PEA_AREA_NAMES[targetArea] || targetArea,
         scannedCount: 0,
         loadedCount: 0,
         status: 'scanning'
-      };
-    });
+      }];
+    } else {
+      const initialAreas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+      initialStatuses = uniqueIds.map((id, idx) => {
+        const area = initialAreas[idx] || `AREA_${idx + 1}`;
+        return {
+          spreadsheetId: id,
+          area,
+          areaName: PEA_AREA_NAMES[area] || area,
+          scannedCount: 0,
+          loadedCount: 0,
+          status: 'scanning'
+        };
+      });
+    }
     setRegionalSheetStatuses(initialStatuses);
 
     // Pre-load Firestore central assets cache immediately into an asset map unless force refresh requested
@@ -547,8 +634,8 @@ export default function App() {
         const cached = await getCentralAssetsCache();
         if (cached && cached.length > 0) {
           cached.forEach((a, idx) => {
-            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-              if (getAssetArea(a) !== filterArea) return;
+            if (isRegionalOnly && targetArea) {
+              if (getAssetArea(a) !== targetArea) return;
             }
             const key = a.equipmentId ? `${a.spreadsheetId || ''}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || ''}_${a.number || idx}`;
             assetMap.set(key, a);
@@ -561,7 +648,7 @@ export default function App() {
       }
     }
 
-    // STAGE 1: Scanning check of all 12 regional sheets upfront (Requirement 3)
+    // STAGE 1: Scanning check of regional sheet(s) upfront
     let scannedTotal = 0;
     try {
       const scannedList = await scanRegionalSheetsAssetCounts(activeToken, uniqueIds);
@@ -569,10 +656,11 @@ export default function App() {
 
       const scannedStatuses: RegionalSheetStatus[] = scannedList.map(item => {
         scannedTotal += item.rowCount;
+        const itemArea = (isRegionalOnly && targetArea) ? targetArea : item.area;
         return {
           spreadsheetId: item.spreadsheetId,
-          area: item.area,
-          areaName: item.areaName,
+          area: itemArea,
+          areaName: item.areaName || PEA_AREA_NAMES[itemArea] || itemArea,
           scannedCount: item.rowCount,
           loadedCount: 0,
           status: 'scanned'
@@ -582,7 +670,11 @@ export default function App() {
       setRegionalSheetStatuses(scannedStatuses);
       setTotalScannedAssets(scannedTotal);
       setLoadProgressPercent(18);
-      setCurrentStepText(`Pre-scan completed: Identified ${scannedTotal.toLocaleString()} total assets across ${uniqueIds.length} sheets.`);
+      setCurrentStepText(
+        isRegionalOnly && targetArea
+          ? `Pre-scan completed: Identified ${scannedTotal.toLocaleString()} assets in ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea}).`
+          : `Pre-scan completed: Identified ${scannedTotal.toLocaleString()} total assets across ${uniqueIds.length} sheets.`
+      );
     } catch (scanErr) {
       console.warn("Pre-scan failed, continuing directly to full load:", scanErr);
     }
@@ -605,12 +697,18 @@ export default function App() {
 
         const progressVal = Math.min(98, Math.round(18 + ((i + 1) / uniqueIds.length) * 80));
         setLoadProgressPercent(progressVal);
-        setCurrentStepText(`Synchronizing Google Sheet ${i + 1} of ${uniqueIds.length}... (${assetMap.size.toLocaleString()} active assets loaded)`);
+        setCurrentStepText(
+          isRegionalOnly && targetArea
+            ? `Synchronizing Google Sheet for ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea})... (${assetMap.size.toLocaleString()} active assets loaded)`
+            : `Synchronizing Google Sheet ${i + 1} of ${uniqueIds.length}... (${assetMap.size.toLocaleString()} active assets loaded)`
+        );
 
         setSyncProgress({
           current: i + 1,
           total: uniqueIds.length,
-          statusText: `Fetching sector ${i + 1} of ${uniqueIds.length} from Admin Central Drive... (${assetMap.size.toLocaleString()} assets active)`
+          statusText: isRegionalOnly && targetArea
+            ? `Fetching ${targetArea} sector data from Google Sheets... (${assetMap.size.toLocaleString()} assets active)`
+            : `Fetching sector ${i + 1} of ${uniqueIds.length} from Admin Central Drive... (${assetMap.size.toLocaleString()} assets active)`
         });
 
         if (i > 0) {
@@ -647,8 +745,8 @@ export default function App() {
 
           // STALE CACHE EVICTION FOR THIS SPREADSHEET / SECTOR:
           // Determine the sector area prefix from live sheet data
-          let targetSectorArea = '';
-          if (sectorData.length > 0) {
+          let targetSectorArea = isRegionalOnly && targetArea ? targetArea : '';
+          if (!targetSectorArea && sectorData.length > 0) {
             const first = sectorData[0];
             if (first.equipmentId) {
               targetSectorArea = first.equipmentId.split('-')[0]?.trim().toUpperCase() || '';
@@ -672,27 +770,28 @@ export default function App() {
 
           // Insert fresh live rows from Google Sheets
           sectorData.forEach((a, idx) => {
-            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-              if (getAssetArea(a) !== filterArea) return;
+            if (isRegionalOnly && targetArea) {
+              if (getAssetArea(a) !== targetArea) return;
             }
             const key = a.equipmentId ? `${a.spreadsheetId || id}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || id}_${a.number || idx}`;
             assetMap.set(key, a);
           });
 
           // Progressive update so dashboard updates live
-          setAssets(Array.from(assetMap.values()));
+          const currentProgressAssets = Array.from(assetMap.values());
+          setAssets(currentProgressAssets);
           setTotalLoadedAssets(assetMap.size);
 
           setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? {
             ...s,
             status: 'loaded',
-            loadedCount: sectorData.length,
-            scannedCount: sectorData.length
+            loadedCount: isRegionalOnly && targetArea ? currentProgressAssets.length : sectorData.length,
+            scannedCount: isRegionalOnly && targetArea ? currentProgressAssets.length : sectorData.length
           } : s));
         } else {
           failedSectors++;
           setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? { ...s, status: 'error' } : s));
-          console.warn(`Sector sheet ${id} returned 0 records or failed after ${maxAttempts} attempts. Retaining cached assets for this sector.`);
+          console.warn(`Sector sheet ${id} returned 0 records or failed after ${maxAttempts} attempts.`);
         }
       }
 
@@ -706,8 +805,8 @@ export default function App() {
           if (Array.isArray(parsed)) {
             parsed.forEach((pa: any, pIdx: number) => {
               if (pa && (pa.equipmentId || pa.peaNumber)) {
-                if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-                  if (getAssetArea(pa) !== filterArea) return;
+                if (isRegionalOnly && targetArea) {
+                  if (getAssetArea(pa) !== targetArea) return;
                 }
                 let existsInMap = false;
                 for (const [, v] of assetMap) {
@@ -733,17 +832,21 @@ export default function App() {
       }
 
       let finalAssets = Array.from(assetMap.values());
-      if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-        finalAssets = finalAssets.filter(a => getAssetArea(a) === filterArea);
+      if (isRegionalOnly && targetArea) {
+        finalAssets = finalAssets.filter(a => getAssetArea(a) === targetArea);
       }
 
       setLoadProgressPercent(100);
       setTotalLoadedAssets(finalAssets.length);
-      setCurrentStepText(`100% Assets Loaded! ${finalAssets.length.toLocaleString()} Assets Verified.`);
+      setCurrentStepText(
+        isRegionalOnly && targetArea
+          ? `100% Assets Loaded! ${finalAssets.length.toLocaleString()} Assets Verified in ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea}).`
+          : `100% Assets Loaded! ${finalAssets.length.toLocaleString()} Assets Verified.`
+      );
 
       if (finalAssets.length > 0) {
         setAssets(finalAssets);
-        if (filterRole !== 'Local Operator') {
+        if (!isRegionalOnly) {
           saveCentralAssetsCache(finalAssets, true).catch(() => {});
           try {
             localStorage.setItem('pea_central_assets_backup', JSON.stringify(finalAssets));
@@ -751,13 +854,15 @@ export default function App() {
         }
         updateLastFetchedTimestamp();
 
-        if (activeToken && filterRole !== 'Local Operator') {
+        if (activeToken && !isRegionalOnly) {
           syncAll12SheetsTab4FromTab1(activeToken).catch(err => {
             console.warn("Background Tab 4 auto-sync notice:", err);
           });
         }
 
-        if (failedSectors === 0) {
+        if (isRegionalOnly && targetArea) {
+          setSyncSuccessMessage(`Regional Database Synchronized! Loaded ${finalAssets.length.toLocaleString()} cable assets for ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea}).`);
+        } else if (failedSectors === 0) {
           setSyncSuccessMessage(`Database Synchronized! Fully loaded ${finalAssets.length.toLocaleString()} cable assets.`);
         } else {
           setSyncSuccessMessage(`Database Synchronized! Loaded ${finalAssets.length.toLocaleString()} cable assets.`);
@@ -768,12 +873,16 @@ export default function App() {
           const cached = await getCentralAssetsCache();
           if (cached && cached.length > 0) {
             let filteredCached = cached;
-            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-              filteredCached = cached.filter(a => getAssetArea(a) === filterArea);
+            if (isRegionalOnly && targetArea) {
+              filteredCached = cached.filter(a => getAssetArea(a) === targetArea);
             }
             console.log("Loaded Central Admin Database from Firestore chunked cache:", filteredCached.length);
             setAssets(filteredCached);
-            setSyncSuccessMessage(`Loaded ${filteredCached.length.toLocaleString()} cable assets from Firestore Central Database.`);
+            setSyncSuccessMessage(
+              isRegionalOnly && targetArea
+                ? `Loaded ${filteredCached.length.toLocaleString()} cable assets for ${targetArea} from Central Database.`
+                : `Loaded ${filteredCached.length.toLocaleString()} cable assets from Firestore Central Database.`
+            );
             loaded = true;
           }
         } catch (e) {}
@@ -784,8 +893,8 @@ export default function App() {
             try {
               let parsed = JSON.parse(backup);
               if (parsed && parsed.length > 0) {
-                if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
-                  parsed = parsed.filter((a: any) => getAssetArea(a) === filterArea);
+                if (isRegionalOnly && targetArea) {
+                  parsed = parsed.filter((a: any) => getAssetArea(a) === targetArea);
                 }
                 setAssets(parsed);
                 setSyncSuccessMessage(`Loaded ${parsed.length.toLocaleString()} assets from local backup.`);
@@ -796,7 +905,11 @@ export default function App() {
         }
 
         if (!loaded && assets.length === 0) {
-          setAssets(getMockAssets());
+          let fallback = getMockAssets();
+          if (isRegionalOnly && targetArea) {
+            fallback = fallback.filter(a => getAssetArea(a) === targetArea);
+          }
+          setAssets(fallback);
           setSyncSuccessMessage("Central Database offline. Loaded offline backup telemetry datasets.");
         }
 
@@ -806,12 +919,23 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('handleLoadSpreadsheet error:', err);
-      const finalAssets = Array.from(assetMap.values());
+      let finalAssets = Array.from(assetMap.values());
+      if (isRegionalOnly && targetArea) {
+        finalAssets = finalAssets.filter(a => getAssetArea(a) === targetArea);
+      }
       if (finalAssets.length > 0) {
         setAssets(finalAssets);
-        setSyncSuccessMessage(`Central Database Active! Loaded ${finalAssets.length.toLocaleString()} cable assets.`);
+        setSyncSuccessMessage(
+          isRegionalOnly && targetArea
+            ? `Regional Database Active! Loaded ${finalAssets.length.toLocaleString()} cable assets for ${targetArea}.`
+            : `Central Database Active! Loaded ${finalAssets.length.toLocaleString()} cable assets.`
+        );
       } else {
-        setAssets(getMockAssets());
+        let fallback = getMockAssets();
+        if (isRegionalOnly && targetArea) {
+          fallback = fallback.filter(a => getAssetArea(a) === targetArea);
+        }
+        setAssets(fallback);
         setSyncSuccessMessage("Central Database offline. Loaded offline backup telemetry datasets.");
       }
     } finally {
@@ -963,11 +1087,18 @@ export default function App() {
   // Trigger spreadsheet load on change across ALL registered roles
   useEffect(() => {
     if (googleToken && (spreadsheetId || spreadsheetIds.length > 0)) {
-      const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
+      const effectiveRole = user?.role;
+      const effectiveArea = user?.interestArea;
+      const isRegionalOnly = (effectiveRole === 'Local Operator' || (effectiveRole as string) === 'Operator') && effectiveArea && effectiveArea !== 'ALL';
+      const idsToFetch = isRegionalOnly
+        ? (spreadsheetId ? [spreadsheetId] : (spreadsheetIds.length > 0 ? [spreadsheetIds[0]] : []))
+        : (spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []));
       const isAdminUser = user?.role === 'Admin' || (user?.email ? isAdminAccount(user.email) : false);
-      handleLoadSpreadsheet(googleToken, idsToFetch, isAdminUser);
+      if (idsToFetch.length > 0) {
+        handleLoadSpreadsheet(googleToken, idsToFetch, isAdminUser, false, effectiveRole, effectiveArea);
+      }
     }
-  }, [googleToken, spreadsheetId, spreadsheetIds, user?.role, user?.email]);
+  }, [googleToken, spreadsheetId, spreadsheetIds, user?.role, user?.interestArea, user?.email]);
 
   // Handle tab switching with page transition loading screen
   const handleTabChange = (newTab: 'admin' | 'area' | 'input' | 'records' | 'registration') => {
@@ -1035,11 +1166,10 @@ export default function App() {
       const match = verifyUsernamePassword(usernameInput, passwordInput);
       if (match) {
         setShowGameLoading(true);
-        // Authenticate successfully as Natthakorn Sukra (Manager)
         await finalizeUserSession(
           match.email,
           match.name,
-          'uid-natthakorn-497377',
+          `uid-${match.employeeId || match.email}`,
           match.role,
           match.interestArea,
           null
@@ -1246,11 +1376,31 @@ export default function App() {
 
   // Re-fetch spreadsheet assets across ALL registered roles
   const handleManualRefresh = () => {
+    const effectiveRole = user?.role;
+    const effectiveArea = user?.interestArea;
+    const isRegionalOnly = (effectiveRole === 'Local Operator' || (effectiveRole as string) === 'Operator') && effectiveArea && effectiveArea !== 'ALL';
+    
+    if (isRegionalOnly && effectiveArea) {
+      const targetSheet = spreadsheetId || (spreadsheetIds.length > 0 ? spreadsheetIds[0] : null);
+      if (targetSheet) {
+        handleLoadSpreadsheet(googleToken || null, [targetSheet], false, true, effectiveRole, effectiveArea);
+      } else {
+        getCentralAssetsCache(true).then(cached => {
+          if (cached && cached.length > 0) {
+            const scoped = cached.filter(a => getAssetArea(a) === effectiveArea);
+            setAssets(scoped);
+            setSyncSuccessMessage(`Regional Database Refreshed! Loaded ${scoped.length.toLocaleString()} cable assets for ${effectiveArea} (${PEA_AREA_NAMES[effectiveArea] || effectiveArea}).`);
+          }
+        }).catch(() => {});
+      }
+      return;
+    }
+
     clearCentralAssetsCache();
     const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
     const isAdminUser = user?.role === 'Admin' || (user?.email ? isAdminAccount(user.email) : false);
     if (idsToFetch.length > 0) {
-      handleLoadSpreadsheet(googleToken || null, idsToFetch, isAdminUser, true);
+      handleLoadSpreadsheet(googleToken || null, idsToFetch, isAdminUser, true, effectiveRole, effectiveArea);
     } else {
       // Reload from central Firestore cache with force refresh
       getCentralAssetsCache(true).then(cached => {
