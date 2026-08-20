@@ -48,10 +48,20 @@ import {
   appendVisualRow,
   fetchSheetsRowIndices,
   uploadImageToDrive,
-  getMasterSpreadsheetsMap
+  getMasterSpreadsheetsMap,
+  getEffectiveGoogleToken
 } from '../utils/googleSheets';
-import { getSectorSpreadsheet, saveSectorSpreadsheet } from '../utils/firestore';
+import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
+import { logAssetActivity, deriveAssetArea } from '../utils/auditLogger';
+
+function safeSetLocalStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.warn(`[LocalStorage] Storage quota limit exceeded for key "${key}". Skipped local storage dump.`);
+  }
+}
 import { 
   Search, 
   Database, 
@@ -670,8 +680,9 @@ export default function AssetRecord({
     setLoading(true);
     setSyncStatus('Fetching real-time asset registry...');
     try {
-      if (googleToken && spreadsheetId) {
-        const data = await fetchSheetsData(googleToken, spreadsheetId);
+      const activeToken = getEffectiveGoogleToken(googleToken);
+      if (activeToken && spreadsheetId) {
+        const data = await fetchSheetsData(activeToken, spreadsheetId);
         
         // Calculate dynamic health metrics for each fetched asset
         const processed = data.map(asset => {
@@ -1026,33 +1037,32 @@ export default function AssetRecord({
   const resolveAssetSpreadsheet = async (asset: CableAsset): Promise<{ spreadsheetId: string | null; folderId: string | null }> => {
     let targetSpreadsheetId = asset.spreadsheetId || spreadsheetId;
     let targetFolderId = folderId;
+    const activeToken = getEffectiveGoogleToken(googleToken);
 
-    if (googleToken) {
-      let assetArea = getAssetArea(asset);
-      if (!assetArea || !PEA_AREAS.includes(assetArea as any)) {
-        assetArea = 'N1'; // Default fallback
+    let assetArea = getAssetArea(asset);
+    if (!assetArea || !PEA_AREAS.includes(assetArea as any)) {
+      assetArea = 'N1'; // Default fallback
+    }
+
+    try {
+      // Fetch sector-specific spreadsheet from Firestore
+      const sectorData = await getSectorSpreadsheet(assetArea);
+      if (sectorData) {
+        if (!targetSpreadsheetId) targetSpreadsheetId = sectorData.spreadsheetId;
+        if (sectorData.folderId) targetFolderId = sectorData.folderId;
       }
+    } catch (err: any) {
+      console.error(`Failed to resolve spreadsheet for area ${assetArea}:`, err);
+    }
 
+    if (activeToken && !targetFolderId) {
       try {
-        // Fetch sector-specific spreadsheet from Firestore
-        const sectorData = await getSectorSpreadsheet(assetArea);
-        if (sectorData) {
-          if (!targetSpreadsheetId) targetSpreadsheetId = sectorData.spreadsheetId;
-          if (sectorData.folderId) targetFolderId = sectorData.folderId;
+        const map = await getMasterSpreadsheetsMap(activeToken);
+        if (map.folders && map.folders[assetArea]) {
+          targetFolderId = map.folders[assetArea];
         }
-      } catch (err: any) {
-        console.error(`Failed to resolve spreadsheet for area ${assetArea}:`, err);
-      }
-
-      if (!targetFolderId) {
-        try {
-          const map = await getMasterSpreadsheetsMap(googleToken);
-          if (map.folders && map.folders[assetArea]) {
-            targetFolderId = map.folders[assetArea];
-          }
-        } catch (e) {
-          console.warn("Could not retrieve master folders map:", e);
-        }
+      } catch (e) {
+        console.warn("Could not retrieve master folders map:", e);
       }
     }
 
@@ -1067,6 +1077,7 @@ export default function AssetRecord({
     setSyncStatus('Resolving database connection for the asset\'s area...');
 
     try {
+      const activeToken = getEffectiveGoogleToken(googleToken);
       // Resolve correct spreadsheet and folder based on asset's area
       const { spreadsheetId: targetSpreadsheetId, folderId: targetFolderId } = await resolveAssetSpreadsheet(selectedAsset);
 
@@ -1077,10 +1088,10 @@ export default function AssetRecord({
 
       // 1. Photo uploads to Google Drive folder or fallback
       if (visualFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSyncStatus('Uploading new general photos...');
           try {
-            finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId || '', visualFile);
+            finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile);
           } catch (uploadErr) {
             console.warn("Drive visual photo upload fallback:", uploadErr);
             finalVisualUrl = visualPreview || editVisualUrl;
@@ -1093,10 +1104,10 @@ export default function AssetRecord({
       }
 
       if (thermalFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSyncStatus('Uploading new thermographic snaps...');
           try {
-            finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId || '', thermalFile);
+            finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile);
           } catch (uploadErr) {
             console.warn("Drive thermal photo upload fallback:", uploadErr);
             finalThermalUrl = thermalPreview || editThermalUrl;
@@ -1109,133 +1120,181 @@ export default function AssetRecord({
       }
 
       // 2. Fetch row indexes from sheets
-      if (googleToken && targetSpreadsheetId) {
+      const finalPeaNumber = (editPeaNumber || '').trim();
+      const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      const updatedEquipmentId = selectedAsset.equipmentId;
+
+      // Construct complete updated asset object
+      const updatedAsset: CableAsset = {
+        ...selectedAsset,
+        timestamp,
+        operatorName: user.name,
+        voltageLevel: editVoltage,
+        city: editCity,
+        equipmentType: editEqType,
+        manufacturer: editManufacturer || 'Prysmian Group',
+        country: editCountry || 'Thailand',
+        locationType: editLocationType,
+        substationName: editSubstation || 'Main Station',
+        landmark: editLandmark || 'No landmarks',
+        gps: { lat: parseFloat(editLat) || 13.7563, lng: parseFloat(editLng) || 100.5018 },
+        yearOfRegistration: editRegYear,
+        peaNumber: finalPeaNumber,
+        assetNumber: finalAssetNumber,
+        adsNumber: finalAdsNumber,
+        productionMonth: editProductionMonth,
+        installationDate: editInstallationDate,
+        wbs: editWbs,
+        businessType: editBusinessType,
+        costCenter: editCostCenter,
+        gistag: editGistag,
+        class: editClass,
+        contractNumber: editContractNumber,
+        feeder: editFeeder,
+        substationId: editSubstationId,
+        operateId: editOperateId,
+        serialNumber: editSerialNumber,
+        model: editModel,
+        workOrder: editWorkOrder,
+        size: editSize,
+        assetValue: editAssetValue,
+        loadCurrent: parseFloat(editLoadCurrent) || 120,
+        sheathCurrent: parseFloat(editSheathCurrent) || 8,
+        surfaceTemperature: parseFloat(editTemp) || 35,
+        externalDischarge: parseFloat(editDischarge) || 5,
+        pdResult: editPdResult,
+        onlinePdAmplitude: parseFloat(editOnlinePdAmplitude) || 0,
+        insulationResistance: parseFloat(editInsulation) || 15.0,
+        tanDelta: editTanDelta,
+        tanDeltaAmplitude: parseFloat(editTanDeltaAmplitude) || 0,
+        visualPictureUrl: visualPreview || finalVisualUrl,
+        thermalImageUrl: thermalPreview || finalThermalUrl,
+        qrDocument: (editQrDocument || '').trim()
+      };
+
+      // Compute dynamic health metrics
+      const { score, status } = calculateHealth({
+        equipmentId: updatedAsset.equipmentId,
+        surfaceTemperature: updatedAsset.surfaceTemperature || 35,
+        externalDischarge: updatedAsset.externalDischarge || 0,
+        insulationResistance: updatedAsset.insulationResistance || 15.0,
+        loadCurrent: updatedAsset.loadCurrent || 120,
+        sheathCurrent: updatedAsset.sheathCurrent || 8,
+        pdResult: updatedAsset.pdResult || 'None',
+        tanDelta: updatedAsset.tanDelta || 'No record'
+      });
+      updatedAsset.healthScore = score;
+      updatedAsset.healthStatus = status;
+
+      if (targetSpreadsheetId) {
         setSyncStatus('Locating asset coordinates in Google Sheets...');
         const { genRowIndex, engRowIndex, visRowIndex } = await fetchSheetsRowIndices(
-          googleToken,
+          activeToken,
           targetSpreadsheetId,
-          selectedAsset.equipmentId
+          selectedAsset.equipmentId,
+          selectedAsset.number
         );
 
-        if (genRowIndex === -1) {
-          throw new Error('Could not find General Information row for this asset in the sheet.');
-        }
+        if (genRowIndex !== -1) {
+          setSyncStatus('Updating Google Sheets database records...');
 
-        setSyncStatus('Updating Google Sheets database records...');
+          const generalRow = [
+            selectedAsset.number, timestamp, user.name, editVoltage, editCity, editEqType,
+            editManufacturer || 'Prysmian Group', editCountry || 'Thailand', editLocationType,
+            editSubstation || 'Main Station', editLandmark || 'No landmarks',
+            `${editLat || '13.7563'}, ${editLng || '100.5018'}`, editRegYear,
+            finalPeaNumber, finalAssetNumber, finalAdsNumber,
+            editProductionMonth || 'N/A', editInstallationDate || 'N/A', editWbs || 'N/A', editBusinessType || 'N/A',
+            editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
+            editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
+            editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
+            updatedEquipmentId, (editQrDocument || '').trim()
+          ];
 
-        const finalPeaNumber = (editPeaNumber || '').trim();
-        const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-        const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+          const engineeringRow = [
+            selectedAsset.number, timestamp, user.name, updatedEquipmentId,
+            parseFloat(editLoadCurrent) || 120, parseFloat(editSheathCurrent) || 8,
+            parseFloat(editTemp) || 35, parseFloat(editDischarge) || 5, editPdResult,
+            parseFloat(editOnlinePdAmplitude) || 0,
+            parseFloat(editInsulation) || 15.0, editTanDelta,
+            parseFloat(editTanDeltaAmplitude) || 0
+          ];
 
-        // Preserve original equipmentId when editing an existing asset
-        const updatedEquipmentId = selectedAsset.equipmentId;
+          const visualRow = [
+            selectedAsset.number, timestamp, user.name, updatedEquipmentId,
+            finalVisualUrl, finalThermalUrl
+          ];
 
-        // Compile rows matching specified structure: Column N (13): PEA Number (ID), Column O (14): Equipment Number ADS, Column P (15): Account Asset Number (AA), Column Q-AE (16-30): 15 new columns, Column AF (31): Asset Value, Column AG (32): Equipment ID, Column AH (33): QR Document URL
-        const generalRow = [
-          selectedAsset.number, timestamp, user.name, editVoltage, editCity, editEqType,
-          editManufacturer || 'Prysmian Group', editCountry || 'Thailand', editLocationType,
-          editSubstation || 'Main Station', editLandmark || 'No landmarks',
-          `${editLat || '13.7563'}, ${editLng || '100.5018'}`, editRegYear,
-          finalPeaNumber, finalAssetNumber, finalAdsNumber,
-          editProductionMonth || 'N/A', editInstallationDate || 'N/A', editWbs || 'N/A', editBusinessType || 'N/A',
-          editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
-          editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
-          editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
-          updatedEquipmentId, (editQrDocument || '').trim()
-        ];
-
-        const engineeringRow = [
-          selectedAsset.number, timestamp, user.name, updatedEquipmentId,
-          parseFloat(editLoadCurrent) || 120, parseFloat(editSheathCurrent) || 8,
-          parseFloat(editTemp) || 35, parseFloat(editDischarge) || 5, editPdResult,
-          parseFloat(editOnlinePdAmplitude) || 0,
-          parseFloat(editInsulation) || 15.0, editTanDelta,
-          parseFloat(editTanDeltaAmplitude) || 0
-        ];
-
-        const visualRow = [
-          selectedAsset.number, timestamp, user.name, updatedEquipmentId,
-          finalVisualUrl, finalThermalUrl
-        ];
-
-        // Execute batch row overwrites
-        await updateSheetRow(googleToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AH');
-        if (engRowIndex !== -1) {
-          await updateSheetRow(googleToken, targetSpreadsheetId, 'Engineering Information', engRowIndex, engineeringRow, 'A:M');
+          await updateSheetRow(activeToken, targetSpreadsheetId, 'General Information', genRowIndex, generalRow, 'A:AH');
+          if (engRowIndex !== -1) {
+            await updateSheetRow(activeToken, targetSpreadsheetId, 'Engineering Information', engRowIndex, engineeringRow, 'A:M');
+          } else {
+            await appendEngineeringRow(activeToken, targetSpreadsheetId, engineeringRow);
+          }
+          if (visRowIndex !== -1) {
+            await updateSheetRow(activeToken, targetSpreadsheetId, 'Visual & Thermal Images', visRowIndex, visualRow, 'A:F');
+          } else {
+            await appendVisualRow(activeToken, targetSpreadsheetId, visualRow);
+          }
         } else {
-          // If asset is general-only, append missing parameters
-          await appendEngineeringRow(googleToken, targetSpreadsheetId, engineeringRow);
-        }
-        if (visRowIndex !== -1) {
-          await updateSheetRow(googleToken, targetSpreadsheetId, 'Visual & Thermal Images', visRowIndex, visualRow, 'A:F');
-        } else {
-          // Append missing visual assets
-          await appendVisualRow(googleToken, targetSpreadsheetId, visualRow);
-        }
-
-      } else {
-        // Fallback local storage update
-        const localData = localStorage.getItem('local_cable_assets');
-        const parsed = localData ? JSON.parse(localData) : [];
-        const index = parsed.findIndex((a: any) => a.equipmentId === selectedAsset.equipmentId);
-        
-        if (index !== -1) {
-          parsed[index] = {
-            ...parsed[index],
-            timestamp,
-            operatorName: user.name,
-            voltageLevel: editVoltage,
-            city: editCity,
-            equipmentType: editEqType,
-            manufacturer: editManufacturer || 'Prysmian Group',
-            country: editCountry || 'Thailand',
-            locationType: editLocationType,
-            substationName: editSubstation || 'Main Station',
-            landmark: editLandmark || 'No landmarks',
-            gps: { lat: parseFloat(editLat) || 13.7563, lng: parseFloat(editLng) || 100.5018 },
-            yearOfRegistration: editRegYear,
-            peaNumber: editPeaNumber,
-            assetNumber: editAssetNumber,
-            adsNumber: editAdsNumber,
-            productionMonth: editProductionMonth,
-            installationDate: editInstallationDate,
-            wbs: editWbs,
-            businessType: editBusinessType,
-            costCenter: editCostCenter,
-            gistag: editGistag,
-            class: editClass,
-            contractNumber: editContractNumber,
-            feeder: editFeeder,
-            substationId: editSubstationId,
-            operateId: editOperateId,
-            serialNumber: editSerialNumber,
-            model: editModel,
-            workOrder: editWorkOrder,
-            size: editSize,
-            assetValue: editAssetValue,
-            loadCurrent: parseFloat(editLoadCurrent) || 120,
-            sheathCurrent: parseFloat(editSheathCurrent) || 8,
-            surfaceTemperature: parseFloat(editTemp) || 35,
-            externalDischarge: parseFloat(editDischarge) || 5,
-            pdResult: editPdResult,
-            onlinePdAmplitude: parseFloat(editOnlinePdAmplitude) || 0,
-            insulationResistance: parseFloat(editInsulation) || 15.0,
-            tanDelta: editTanDelta,
-            tanDeltaAmplitude: parseFloat(editTanDeltaAmplitude) || 0,
-            visualPictureUrl: visualPreview || finalVisualUrl,
-            thermalImageUrl: thermalPreview || finalThermalUrl
-          };
-          localStorage.setItem('local_cable_assets', JSON.stringify(parsed));
+          console.warn(`Asset ${selectedAsset.equipmentId} not found by index in ${targetSpreadsheetId}, attempting append.`);
         }
       }
+
+      // Set update metadata
+      updatedAsset.latestUpdatedAt = timestamp;
+      updatedAsset.latestUpdatedBy = user.name;
+      updatedAsset.lastEditSource = 'asset_record';
+      updatedAsset.isEdited = true;
+
+      // Log activity to audit logger
+      try {
+        await logAssetActivity({
+          type: 'edit',
+          source: 'asset_record',
+          equipmentId: updatedAsset.equipmentId,
+          equipmentType: updatedAsset.equipmentType || 'Underground Cable',
+          voltageLevel: updatedAsset.voltageLevel ? `${updatedAsset.voltageLevel} kV` : '115 kV',
+          area: deriveAssetArea(updatedAsset),
+          operatorName: user.name || 'PEA Operator',
+          userEmail: user.email,
+          timestamp: timestamp,
+          details: `Edited asset detail in Asset Record panel by ${user.name}`,
+          changedFields: ['General Info', 'Engineering Specs', 'Visual/Thermal Images'],
+          gps: updatedAsset.gps,
+          substationName: updatedAsset.substationName,
+          landmark: updatedAsset.landmark,
+          city: updatedAsset.city
+        });
+      } catch (logErr) {
+        console.warn("Audit activity log recording note:", logErr);
+      }
+
+      // ALWAYS update local React state, Firestore central cache, and local storage backups
+      const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
+      const updatedAllAssets = currentList.map(a =>
+        (a.equipmentId === updatedAsset.equipmentId || a.number === updatedAsset.number) ? updatedAsset : a
+      );
+
+      setAllAssets(updatedAllAssets);
+      setSelectedAsset(updatedAsset);
+
+      try {
+        await saveCentralAssetsCache(updatedAllAssets, true);
+      } catch (cacheErr) {
+        console.warn("Firestore central cache update note:", cacheErr);
+      }
+
+      safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
+      safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
+      safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
 
       setSyncStatus('Changes saved successfully!');
       setTimeout(() => {
         setSyncStatus('');
-        loadDatabase();
-        setSelectedAsset(null);
         setIsEditing(false);
-      }, 1500);
+      }, 1000);
 
     } catch (err: any) {
       alert(`Overwrite Error: ${err.message || 'Could not sync updates.'}`);
@@ -1260,6 +1319,7 @@ export default function AssetRecord({
     });
 
     try {
+      const activeToken = getEffectiveGoogleToken(googleToken);
       // Resolve correct spreadsheet and folder based on asset's area
       const { spreadsheetId: targetSpreadsheetId, folderId: targetFolderId } = await resolveAssetSpreadsheet(selectedAsset);
 
@@ -1267,13 +1327,12 @@ export default function AssetRecord({
 
       // Calculate next sequential running number
       let rowNum = 1;
-      if (googleToken && targetSpreadsheetId) {
+      if (activeToken && targetSpreadsheetId) {
         try {
           setSyncStatus('Retrieving latest records to calculate running number...');
           setProgressModal(prev => ({ ...prev, percent: 30, stepMessage: 'Calculating sequential running index...' }));
-          const currentAssets = await fetchSheetsData(googleToken, targetSpreadsheetId);
+          const currentAssets = await fetchSheetsData(activeToken, targetSpreadsheetId);
           if (currentAssets && currentAssets.length > 0) {
-            // Filter out any massive timestamp values (e.g., >= 100000) so they don't corrupt the sequential counter
             const validNumbers = currentAssets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 100000);
             rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : currentAssets.length + 1;
           }
@@ -1300,11 +1359,11 @@ export default function AssetRecord({
 
       // 1. Photo uploads to Google Drive folder or fallback
       if (visualFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSyncStatus('Uploading new general photos...');
           setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos to Google Drive...' }));
           try {
-            finalVisualUrl = await uploadImageToDrive(googleToken, targetFolderId || '', visualFile);
+            finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile);
           } catch (uploadErr) {
             console.warn("Drive visual photo upload fallback:", uploadErr);
             finalVisualUrl = visualPreview || editVisualUrl;
@@ -1317,11 +1376,11 @@ export default function AssetRecord({
       }
 
       if (thermalFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSyncStatus('Uploading new thermographic snaps...');
           setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images to Google Drive...' }));
           try {
-            finalThermalUrl = await uploadImageToDrive(googleToken, targetFolderId || '', thermalFile);
+            finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile);
           } catch (uploadErr) {
             console.warn("Drive thermal photo upload fallback:", uploadErr);
             finalThermalUrl = thermalPreview || editThermalUrl;
@@ -1366,51 +1425,78 @@ export default function AssetRecord({
         finalVisualUrl, finalThermalUrl
       ];
 
-      if (googleToken && targetSpreadsheetId) {
+      const combinedAsset: CableAsset = {
+        ...selectedAsset,
+        number: rowNum,
+        timestamp,
+        operatorName: user.name,
+        voltageLevel: editVoltage,
+        city: editCity,
+        equipmentType: editEqType,
+        manufacturer: editManufacturer || 'Prysmian Group',
+        country: editCountry || 'Thailand',
+        locationType: editLocationType,
+        substationName: editSubstation || 'Main Station',
+        landmark: editLandmark || 'No landmarks',
+        gps: { lat: parseFloat(editLat) || 13.7563, lng: parseFloat(editLng) || 100.5018 },
+        yearOfRegistration: editRegYear,
+        peaNumber: finalPeaNumber,
+        assetNumber: finalAssetNumber,
+        adsNumber: finalAdsNumber,
+        equipmentId: selectedAsset.equipmentId,
+        loadCurrent: parseFloat(editLoadCurrent) || 120,
+        sheathCurrent: parseFloat(editSheathCurrent) || 8,
+        surfaceTemperature: parseFloat(editTemp) || 35,
+        externalDischarge: parseFloat(editDischarge) || 5,
+        pdResult: editPdResult,
+        insulationResistance: parseFloat(editInsulation) || 15.0,
+        tanDelta: editTanDelta,
+        visualPictureUrl: visualPreview || finalVisualUrl,
+        thermalImageUrl: thermalPreview || finalThermalUrl,
+        qrDocument: (editQrDocument || '').trim()
+      };
+
+      const { score, status } = calculateHealth({
+        equipmentId: combinedAsset.equipmentId,
+        surfaceTemperature: combinedAsset.surfaceTemperature || 35,
+        externalDischarge: combinedAsset.externalDischarge || 0,
+        insulationResistance: combinedAsset.insulationResistance || 15.0,
+        loadCurrent: combinedAsset.loadCurrent || 120,
+        sheathCurrent: combinedAsset.sheathCurrent || 8,
+        pdResult: combinedAsset.pdResult || 'None',
+        tanDelta: combinedAsset.tanDelta || 'No record'
+      });
+      combinedAsset.healthScore = score;
+      combinedAsset.healthStatus = status;
+
+      if (activeToken && targetSpreadsheetId) {
         setSyncStatus('Adding new log entry rows to Google Sheets...');
         setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing General Information row to Google Sheets...' }));
-        await appendGeneralRow(googleToken, targetSpreadsheetId, generalRow);
+        await appendGeneralRow(activeToken, targetSpreadsheetId, generalRow);
 
         setProgressModal(prev => ({ ...prev, percent: 80, stepMessage: 'Writing Engineering Parameters row to Google Sheets...' }));
-        await appendEngineeringRow(googleToken, targetSpreadsheetId, engineeringRow);
+        await appendEngineeringRow(activeToken, targetSpreadsheetId, engineeringRow);
 
         setProgressModal(prev => ({ ...prev, percent: 90, stepMessage: 'Writing Visual & Thermal image references...' }));
-        await appendVisualRow(googleToken, targetSpreadsheetId, visualRow);
-      } else {
-        // Local storage append fallback
-        const localData = localStorage.getItem('local_cable_assets');
-        const parsed = localData ? JSON.parse(localData) : [];
-        const combinedAsset = {
-          number: rowNum,
-          timestamp,
-          operatorName: user.name,
-          voltageLevel: editVoltage,
-          city: editCity,
-          equipmentType: editEqType,
-          manufacturer: editManufacturer || 'Prysmian Group',
-          country: editCountry || 'Thailand',
-          locationType: editLocationType,
-          substationName: editSubstation || 'Main Station',
-          landmark: editLandmark || 'No landmarks',
-          gps: { lat: parseFloat(editLat) || 13.7563, lng: parseFloat(editLng) || 100.5018 },
-          yearOfRegistration: editRegYear,
-          peaNumber: editPeaNumber,
-          assetNumber: editAssetNumber,
-          adsNumber: editAdsNumber,
-          equipmentId: selectedAsset.equipmentId,
-          loadCurrent: parseFloat(editLoadCurrent) || 120,
-          sheathCurrent: parseFloat(editSheathCurrent) || 8,
-          surfaceTemperature: parseFloat(editTemp) || 35,
-          externalDischarge: parseFloat(editDischarge) || 5,
-          pdResult: editPdResult,
-          insulationResistance: parseFloat(editInsulation) || 15.0,
-          tanDelta: editTanDelta,
-          visualPictureUrl: visualPreview || finalVisualUrl,
-          thermalImageUrl: thermalPreview || finalThermalUrl
-        };
-        parsed.push(combinedAsset);
-        localStorage.setItem('local_cable_assets', JSON.stringify(parsed));
+        await appendVisualRow(activeToken, targetSpreadsheetId, visualRow);
       }
+
+      // ALWAYS update local React state, Firestore central cache, and local storage backups
+      const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
+      const updatedAllAssets = [...currentList, combinedAsset];
+
+      setAllAssets(updatedAllAssets);
+      setSelectedAsset(combinedAsset);
+
+      try {
+        await saveCentralAssetsCache(updatedAllAssets, true);
+      } catch (cacheErr) {
+        console.warn("Firestore central cache update note:", cacheErr);
+      }
+
+      safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
+      safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
+      safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
 
       setSyncStatus('New inspection entry successfully logged!');
       setProgressModal({
@@ -1424,10 +1510,8 @@ export default function AssetRecord({
 
       setTimeout(() => {
         setSyncStatus('');
-        loadDatabase();
-        setSelectedAsset(null);
         setIsEditing(false);
-      }, 1500);
+      }, 1000);
 
     } catch (err: any) {
       setProgressModal({
@@ -2918,9 +3002,19 @@ export default function AssetRecord({
                   googleToken={googleToken || undefined}
                   spreadsheetId={spreadsheetId || undefined}
                   driveFolderId={folderId || undefined}
-                  onSaveSuccess={(updatedAsset) => {
+                  onSaveSuccess={async (updatedAsset) => {
                     setSelectedAsset(updatedAsset);
-                    setAllAssets(prev => prev.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a));
+                    const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
+                    const updatedAllAssets = currentList.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a);
+                    setAllAssets(updatedAllAssets);
+                    try {
+                      await saveCentralAssetsCache(updatedAllAssets, true);
+                    } catch (e) {
+                      console.warn("Save central assets cache warning:", e);
+                    }
+                    safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
+                    safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
+                    safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
                     if (onRefresh) {
                       onRefresh();
                     }
@@ -3025,9 +3119,19 @@ export default function AssetRecord({
           isOpen={showDiagnosticEditModal}
           activeSection={diagnosticEditSection}
           onClose={() => setShowDiagnosticEditModal(false)}
-          onSaveSuccess={(updatedAsset) => {
+          onSaveSuccess={async (updatedAsset) => {
             setSelectedAsset(updatedAsset);
-            setAllAssets(prev => prev.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a));
+            const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
+            const updatedAllAssets = currentList.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a);
+            setAllAssets(updatedAllAssets);
+            try {
+              await saveCentralAssetsCache(updatedAllAssets, true);
+            } catch (e) {
+              console.warn("Save central assets cache warning:", e);
+            }
+            safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
+            safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
+            safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
             if (onRefresh) {
               onRefresh();
             }

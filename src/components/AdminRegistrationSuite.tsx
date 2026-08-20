@@ -44,7 +44,7 @@ import {
   Download,
   Loader2
 } from 'lucide-react';
-import { updateSheetRow, fetchSheetsRowIndices, autoDiscoverAndSync, fetchSheetsData, appendGeneralRow, appendEngineeringRow, appendVisualRow, appendGeneralRowsBatch, appendEngineeringRowsBatch, appendVisualRowsBatch, fetchLastSheetNumber, getMasterSpreadsheetsMap, batchUpdateSheetRows } from '../utils/googleSheets';
+import { updateSheetRow, fetchSheetsRowIndices, autoDiscoverAndSync, fetchSheetsData, appendGeneralRow, appendEngineeringRow, appendVisualRow, appendGeneralRowsBatch, appendEngineeringRowsBatch, appendVisualRowsBatch, fetchLastSheetNumber, getMasterSpreadsheetsMap, batchUpdateSheetRows, getEffectiveGoogleToken } from '../utils/googleSheets';
 import { saveCentralAssetsCache } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
@@ -67,6 +67,8 @@ export default function AdminRegistrationSuite({
   onRefresh,
   user
 }: AdminRegistrationSuiteProps) {
+  const activeToken = getEffectiveGoogleToken(googleToken);
+
   // Navigation Tabs within Registration Suite
   const [activeSubTab, setActiveSubTab] = useState<'register' | 'integrity'>('register');
 
@@ -404,13 +406,13 @@ export default function AdminRegistrationSuite({
 
       const allCollectedAssets: { pea: string; area: string }[] = [];
 
-      if (googleToken) {
-        const { spreadsheets } = await getMasterSpreadsheetsMap(googleToken);
+      if (activeToken) {
+        const { spreadsheets } = await getMasterSpreadsheetsMap(activeToken);
         const entries = Object.entries(spreadsheets);
         await Promise.all(
           entries.map(async ([area, sheetId]) => {
             try {
-              const sheetAssets = await fetchSheetsData(googleToken, sheetId);
+              const sheetAssets = await fetchSheetsData(activeToken, sheetId);
               sheetAssets.forEach(asset => {
                 const pea = (asset.peaNumber || '').trim();
                 if (pea && pea !== 'N/A') {
@@ -833,13 +835,13 @@ export default function AdminRegistrationSuite({
     try {
       const allCollectedAssets: { pea: string; area: string }[] = [];
 
-      if (googleToken) {
-        const { spreadsheets } = await autoDiscoverAndSync(googleToken);
+      if (activeToken) {
+        const { spreadsheets } = await autoDiscoverAndSync(activeToken);
         const entries = Object.entries(spreadsheets);
         await Promise.all(
           entries.map(async ([area, sheetId]) => {
             try {
-              const sheetAssets = await fetchSheetsData(googleToken, sheetId);
+              const sheetAssets = await fetchSheetsData(activeToken, sheetId);
               sheetAssets.forEach(asset => {
                 const pea = (asset.peaNumber || '').trim();
                 if (pea && pea !== 'N/A') {
@@ -1347,7 +1349,8 @@ export default function AdminRegistrationSuite({
       try {
         const updatedList = [...newlyCreatedAssets, ...(assets || [])];
         localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
-        await saveCentralAssetsCache(updatedList).catch(e => {
+        localStorage.setItem('pea_central_assets_backup', JSON.stringify(updatedList));
+        await saveCentralAssetsCache(updatedList, true).catch(e => {
           console.warn("Background cache save warning during sync:", e);
         });
       } catch (e) {
@@ -1465,9 +1468,9 @@ export default function AdminRegistrationSuite({
         const groupRecords = group.records;
 
         let sheetLastNum = 0;
-        if (googleToken && currentSpId && currentSpId !== 'local_sheet') {
+        if (activeToken && currentSpId && currentSpId !== 'local_sheet') {
           try {
-            sheetLastNum = await fetchLastSheetNumber(googleToken, currentSpId);
+            sheetLastNum = await fetchLastSheetNumber(activeToken, currentSpId);
           } catch (e) {
             console.warn("Error fetching last sheet number for batch:", e);
           }
@@ -1610,7 +1613,7 @@ export default function AdminRegistrationSuite({
         }
 
         // Execute batch API requests per spreadsheet
-        if (googleToken && currentSpId && currentSpId !== 'local_sheet') {
+        if (activeToken && currentSpId && currentSpId !== 'local_sheet') {
           setProgressModal({
             isOpen: true,
             title: 'Registering New Assets',
@@ -1621,7 +1624,7 @@ export default function AdminRegistrationSuite({
             totalItems: totalCount,
             currentItemIndex: totalRegisteredCount - 1
           });
-          await appendGeneralRowsBatch(googleToken, currentSpId, generalRowsBatch);
+          await appendGeneralRowsBatch(activeToken, currentSpId, generalRowsBatch);
 
           setProgressModal({
             isOpen: true,
@@ -1633,7 +1636,7 @@ export default function AdminRegistrationSuite({
             totalItems: totalCount,
             currentItemIndex: totalRegisteredCount - 1
           });
-          await appendEngineeringRowsBatch(googleToken, currentSpId, engineeringRowsBatch);
+          await appendEngineeringRowsBatch(activeToken, currentSpId, engineeringRowsBatch);
 
           setProgressModal({
             isOpen: true,
@@ -1645,7 +1648,7 @@ export default function AdminRegistrationSuite({
             totalItems: totalCount,
             currentItemIndex: totalRegisteredCount - 1
           });
-          await appendVisualRowsBatch(googleToken, currentSpId, visualRowsBatch);
+          await appendVisualRowsBatch(activeToken, currentSpId, visualRowsBatch);
         }
       }
 
@@ -1935,11 +1938,11 @@ export default function AdminRegistrationSuite({
       const sheetsToCheck = spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
       const cachedSheetsData: { [sId: string]: any[] } = {};
 
-      if (googleToken) {
+      if (activeToken) {
         await Promise.all(
           sheetsToCheck.map(async (sId) => {
             try {
-              const sheetRowsData = await fetchSheetsData(googleToken, sId);
+              const sheetRowsData = await fetchSheetsData(activeToken, sId);
               cachedSheetsData[sId] = sheetRowsData;
             } catch (e) {
               console.error(`Error caching sheet ${sId} for Option 2 update:`, e);
@@ -2040,7 +2043,7 @@ export default function AdminRegistrationSuite({
         const match = foundLocations[0];
         const existing = match.rowData;
 
-        if (googleToken && match.spreadsheetId !== 'local') {
+        if (activeToken && match.spreadsheetId !== 'local') {
           const updatedAds = newAds ? newAds : (existing.assetNumber || '');
           const updatedAa = newAa ? newAa : (existing.adsNumber || '');
 
@@ -2095,7 +2098,7 @@ export default function AdminRegistrationSuite({
       // Phase 2: Execute batch updates grouped by spreadsheetId
       const sheetsToUpdateList = Object.keys(batchUpdatesBySheet);
       
-      if (googleToken && sheetsToUpdateList.length > 0) {
+      if (activeToken && sheetsToUpdateList.length > 0) {
         setOption2TotalToUpdate(sheetsToUpdateList.length);
         setOption2CurrentIndex(0);
 
@@ -2104,7 +2107,7 @@ export default function AdminRegistrationSuite({
           const updates = batchUpdatesBySheet[sId];
           setOption2CurrentPea(`Saving ${updates.length} rows to sheet...`);
           
-          await batchUpdateSheetRows(googleToken, sId, updates);
+          await batchUpdateSheetRows(activeToken, sId, updates);
           setOption2CurrentIndex(sIdx + 1);
         }
       }
@@ -2132,9 +2135,10 @@ export default function AdminRegistrationSuite({
       try {
         if (assets && assets.length > 0) {
           localStorage.setItem('local_cable_assets', JSON.stringify(assets));
+          localStorage.setItem('pea_central_assets_backup', JSON.stringify(assets));
           
           // Save to central assets cache in background - DO NOT AWAIT to prevent UI hanging under offline/quota limits
-          saveCentralAssetsCache(assets).catch(e => {
+          saveCentralAssetsCache(assets, true).catch(e => {
             console.warn("Background cache save failed in Option 2:", e);
           });
         }
@@ -2230,8 +2234,8 @@ export default function AdminRegistrationSuite({
         const duplicatesToEliminate = sorted.slice(1);
 
         for (const item of duplicatesToEliminate) {
-          if (googleToken && spreadsheetId) {
-            const mappings = await fetchSheetsRowIndices(googleToken, spreadsheetId, item.equipmentId, item.number);
+          if (spreadsheetId) {
+            const mappings = await fetchSheetsRowIndices(activeToken, spreadsheetId, item.equipmentId, item.number);
             if (mappings.genRowIndex > 0) {
               // Update field with a custom cleared tag or rename
               const nullifiedRow = [
@@ -2268,7 +2272,7 @@ export default function AdminRegistrationSuite({
                 item.size || '',
                 `DEL-${item.equipmentId}`
               ];
-              await updateSheetRow(googleToken, spreadsheetId, 'General Information', mappings.genRowIndex, nullifiedRow, 'A:AF');
+              await updateSheetRow(activeToken, spreadsheetId, 'General Information', mappings.genRowIndex, nullifiedRow, 'A:AF');
             }
           } else {
             // Local offline resolution
@@ -2305,8 +2309,8 @@ export default function AdminRegistrationSuite({
     setSavingAssetId(editingAsset.equipmentId);
     try {
       const targetSheetId = editingAsset.spreadsheetId || spreadsheetId;
-      if (googleToken && targetSheetId) {
-        const mappings = await fetchSheetsRowIndices(googleToken, targetSheetId, editingAsset.equipmentId, editingAsset.number);
+      if (targetSheetId) {
+        const mappings = await fetchSheetsRowIndices(activeToken, targetSheetId, editingAsset.equipmentId, editingAsset.number);
         if (mappings.genRowIndex > 0) {
           const finalPeaNumber = editPea.trim();
           const finalAssetNumber = editAds.trim();
@@ -2351,7 +2355,7 @@ export default function AdminRegistrationSuite({
             updatedEquipmentId
           ];
 
-          await updateSheetRow(googleToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AG');
+          await updateSheetRow(activeToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AG');
           
           // Update engineering row if present
           if (mappings.engRowIndex > 0) {
@@ -2370,7 +2374,7 @@ export default function AdminRegistrationSuite({
               editingAsset.tanDelta || 'No Action Required',
               editingAsset.tanDeltaAmplitude || 0
             ];
-            await updateSheetRow(googleToken, targetSheetId, 'Engineering Information', mappings.engRowIndex, engineeringRow, 'A:M');
+            await updateSheetRow(activeToken, targetSheetId, 'Engineering Information', mappings.engRowIndex, engineeringRow, 'A:M');
           }
 
           // Update visual row if present
@@ -2383,7 +2387,7 @@ export default function AdminRegistrationSuite({
               editingAsset.visualPictureUrl || '',
               editingAsset.thermalImageUrl || ''
             ];
-            await updateSheetRow(googleToken, targetSheetId, 'Visual & Thermal Images', mappings.visRowIndex, visualRow, 'A:F');
+            await updateSheetRow(activeToken, targetSheetId, 'Visual & Thermal Images', mappings.visRowIndex, visualRow, 'A:F');
           }
         }
       } else {

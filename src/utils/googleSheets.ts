@@ -3,6 +3,21 @@ import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getC
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
+// Helper to resolve an effective Google access token from parameters, localStorage, or central store
+export function getEffectiveGoogleToken(token?: string | null): string | null {
+  if (token && typeof token === 'string' && token.trim().length > 0) {
+    try {
+      localStorage.setItem('pea_google_token', token.trim());
+    } catch (e) {}
+    return token.trim();
+  }
+  try {
+    const saved = localStorage.getItem('pea_google_token');
+    if (saved && saved.trim().length > 0) return saved.trim();
+  } catch (e) {}
+  return null;
+}
+
 // Helper to set public write permissions on Google Drive files so all authorized users can sync
 export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
   if (!accessToken || !fileId) return;
@@ -418,9 +433,23 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
 }
 
 // Upload file to specific Google Drive Folder and return publicly accessible direct URL
-export async function uploadFileToDrive(accessToken: string, folderId: string, file: File): Promise<string> {
-  if (!accessToken || !file) {
-    throw new Error('Missing access token or file');
+export async function uploadFileToDrive(accessToken: string | null | undefined, folderId: string, file: File): Promise<string> {
+  const token = getEffectiveGoogleToken(accessToken);
+  if (!file) {
+    throw new Error('Missing file for upload');
+  }
+
+  if (!token) {
+    if (file.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(file.name)) {
+      console.warn("No active Google token available for Drive upload. Converting image to Base64 Data URL fallback.");
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string || '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    }
+    throw new Error('Missing access token for Google Drive upload');
   }
 
   const cleanFolderId = folderId ? String(folderId).trim() : '';
@@ -440,7 +469,7 @@ export async function uploadFileToDrive(accessToken: string, folderId: string, f
   let res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${accessToken}`
+      Authorization: `Bearer ${token}`
     },
     body: formData
   });
@@ -456,7 +485,7 @@ export async function uploadFileToDrive(accessToken: string, folderId: string, f
     res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${accessToken}`
+        Authorization: `Bearer ${token}`
       },
       body: retryFormData
     });
@@ -488,7 +517,7 @@ export async function uploadFileToDrive(accessToken: string, folderId: string, f
     await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -1279,78 +1308,170 @@ export async function fetchWithBackoff(url: string, options: RequestInit = {}, m
   return fetch(url, options);
 }
 
+// Universal write helpers that support direct Google OAuth write AND backend proxy fallback
+export async function executeUniversalSheetAppend(
+  accessToken: string | null | undefined,
+  spreadsheetId: string,
+  sheetName: string,
+  values: any[][]
+): Promise<void> {
+  const token = getEffectiveGoogleToken(accessToken);
+  
+  // 1. If client token is available, attempt direct Google Sheets API write
+  if (token) {
+    try {
+      const range = `'${sheetName}'!A1`;
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range,
+          majorDimension: 'ROWS',
+          values
+        })
+      });
+      if (res.ok) return;
+      console.warn(`Direct Google Sheets append failed (${res.status}), trying server proxy fallback...`);
+    } catch (e) {
+      console.warn('Direct Google Sheets append error, trying server proxy fallback:', e);
+    }
+  }
+
+  // 2. Fallback to Express backend proxy
+  try {
+    const proxyRes = await fetch('/api/sheets/append-row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spreadsheetId,
+        sheetName,
+        values,
+        token: token || undefined
+      })
+    });
+    const proxyData = await proxyRes.json();
+    if (proxyRes.ok && proxyData.success) {
+      return;
+    }
+    throw new Error(proxyData.error || 'Server proxy could not append row to Google Sheets.');
+  } catch (proxyErr: any) {
+    console.error(`[Universal Sheet Append Error]:`, proxyErr);
+    throw new Error(`Google Sheets append failed for "${sheetName}": ${proxyErr.message || 'Authorization error'}`);
+  }
+}
+
+export async function executeUniversalSheetUpdate(
+  accessToken: string | null | undefined,
+  spreadsheetId: string,
+  sheetName: string,
+  rowIndex: number,
+  values: any[][],
+  maxColLetter: string = 'AH'
+): Promise<void> {
+  const token = getEffectiveGoogleToken(accessToken);
+  const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
+
+  // 1. Direct Google Sheets API if token available
+  if (token) {
+    try {
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range,
+          majorDimension: 'ROWS',
+          values
+        })
+      });
+      if (res.ok) return;
+      console.warn(`Direct Google Sheets update failed (${res.status}), trying server proxy fallback...`);
+    } catch (e) {
+      console.warn('Direct Google Sheets update error, trying server proxy fallback:', e);
+    }
+  }
+
+  // 2. Server proxy fallback
+  try {
+    const proxyRes = await fetch('/api/sheets/update-row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spreadsheetId,
+        range,
+        values,
+        token: token || undefined
+      })
+    });
+    const proxyData = await proxyRes.json();
+    if (proxyRes.ok && proxyData.success) {
+      return;
+    }
+    throw new Error(proxyData.error || 'Server proxy could not update row in Google Sheets.');
+  } catch (proxyErr: any) {
+    console.error(`[Universal Sheet Update Error]:`, proxyErr);
+    throw new Error(`Google Sheets update failed for "${sheetName}" row ${rowIndex}: ${proxyErr.message || 'Authorization error'}`);
+  }
+}
+
 // Append new general row
-export async function appendGeneralRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+export async function appendGeneralRow(accessToken: string | null | undefined, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+  const token = getEffectiveGoogleToken(accessToken);
   let rowValues: any[];
   if (Array.isArray(rowOrData)) {
     rowValues = rowOrData;
   } else {
-    // It's an object! Let's fetch the first row (headers) to align it
-    const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:AZ1`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    if (!resHeaders.ok) throw new Error('Failed to fetch General Information headers for alignment');
-    const dataHeaders = await resHeaders.json();
-    const headers = dataHeaders.values?.[0] || [];
+    // If object, fetch headers or use default
+    let headers: string[] = [];
+    if (token) {
+      try {
+        const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:AZ1`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resHeaders.ok) {
+          const dataHeaders = await resHeaders.json();
+          headers = dataHeaders.values?.[0] || [];
+        }
+      } catch (e) {}
+    }
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'General Information'!A1",
-      majorDimension: 'ROWS',
-      values: [rowValues]
-    })
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to append general information to Google Sheets: ${errorText}`);
-  }
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', [rowValues]);
 
-  // Automatically sync and link Tab 4 Columns A-J from Tab 1 for this Google Sheet
-  syncSingleSpreadsheetTab4FromTab1(accessToken, spreadsheetId).catch(err => {
-    console.warn(`[Auto-Link Tab 4] Post-append sync notice for spreadsheet ${spreadsheetId}:`, err);
-  });
+  // Automatically sync and link Tab 4 Columns A-J from Tab 1 for this Google Sheet if token available
+  if (token) {
+    syncSingleSpreadsheetTab4FromTab1(token, spreadsheetId).catch(err => {
+      console.warn(`[Auto-Link Tab 4] Post-append sync notice for spreadsheet ${spreadsheetId}:`, err);
+    });
+  }
 }
 
 // Append multiple general rows in a SINGLE API call (Batch Append to avoid 60 requests/min rate limit)
-export async function appendGeneralRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+export async function appendGeneralRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
+  const token = getEffectiveGoogleToken(accessToken);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', rowsValues);
 
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'General Information'!A1",
-      majorDimension: 'ROWS',
-      values: rowsValues
-    })
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to batch append general information to Google Sheets: ${errorText}`);
+  if (token) {
+    syncSingleSpreadsheetTab4FromTab1(token, spreadsheetId).catch(err => {
+      console.warn(`[Auto-Link Tab 4] Post-batch append sync notice for spreadsheet ${spreadsheetId}:`, err);
+    });
   }
-
-  // Automatically sync and link Tab 4 Columns A-J from Tab 1 for this Google Sheet
-  syncSingleSpreadsheetTab4FromTab1(accessToken, spreadsheetId).catch(err => {
-    console.warn(`[Auto-Link Tab 4] Post-batch append sync notice for spreadsheet ${spreadsheetId}:`, err);
-  });
 }
 
 // Fetch highest number in Column A of General Information sheet
-export async function fetchLastSheetNumber(accessToken: string, spreadsheetId: string): Promise<number> {
+export async function fetchLastSheetNumber(accessToken: string | null | undefined, spreadsheetId: string): Promise<number> {
+  const token = getEffectiveGoogleToken(accessToken);
+  if (!token) return 0;
   try {
     const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
+      headers: { Authorization: `Bearer ${token}` }
     });
     if (!res.ok) return 0;
     const data = await res.json();
@@ -1372,134 +1493,45 @@ export async function fetchLastSheetNumber(accessToken: string, spreadsheetId: s
 }
 
 // Append new engineering row
-export async function appendEngineeringRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+export async function appendEngineeringRow(accessToken: string | null | undefined, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+  const token = getEffectiveGoogleToken(accessToken);
   let rowValues: any[];
   if (Array.isArray(rowOrData)) {
     rowValues = rowOrData;
   } else {
-    // Fetch headers of Engineering Information to align
-    const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:AZ1`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    if (!resHeaders.ok) throw new Error('Failed to fetch Engineering Information headers for alignment');
-    const dataHeaders = await resHeaders.json();
-    const headers = dataHeaders.values?.[0] || [];
+    let headers: string[] = [];
+    if (token) {
+      try {
+        const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:AZ1`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resHeaders.ok) {
+          const dataHeaders = await resHeaders.json();
+          headers = dataHeaders.values?.[0] || [];
+        }
+      } catch (e) {}
+    }
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'Engineering Information'!A1",
-      majorDimension: 'ROWS',
-      values: [rowValues]
-    })
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to append engineering parameters to Google Sheets: ${errorText}`);
-  }
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', [rowValues]);
 }
 
 // Append multiple engineering rows in a SINGLE API call
-export async function appendEngineeringRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+export async function appendEngineeringRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27Engineering%20Information%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'Engineering Information'!A1",
-      majorDimension: 'ROWS',
-      values: rowsValues
-    })
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to batch append engineering parameters to Google Sheets: ${errorText}`);
-  }
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', rowsValues);
 }
 
 // Append new visual images row
-export async function appendVisualRow(accessToken: string, spreadsheetId: string, row: any[]) {
-  const possibleSheetNames = [
-    'Visual & Thermal Images',
-    'Visual & Thermal',
-    'Visual Images',
-    'Visual',
-    'Visual&Thermal Images'
-  ];
-
-  for (const sheetName of possibleSheetNames) {
-    try {
-      const encodedRange = encodeURIComponent(`'${sheetName}'!A1`);
-      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          range: `'${sheetName}'!A1`,
-          majorDimension: 'ROWS',
-          values: [row]
-        })
-      });
-
-      if (res.ok) {
-        return; // Successfully appended
-      }
-    } catch (err) {
-      // try next candidate sheet name
-    }
-  }
-
-  // Log warning if visual sheet tab does not exist or append fails, so main asset registration is not blocked
-  console.warn(`Visual & Thermal Images sheet tab not found or append skipped for spreadsheet ${spreadsheetId}`);
+export async function appendVisualRow(accessToken: string | null | undefined, spreadsheetId: string, row: any[]) {
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', [row]);
 }
 
 // Append multiple visual rows in a SINGLE API call
-export async function appendVisualRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+export async function appendVisualRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-
-  const possibleSheetNames = [
-    'Visual & Thermal Images',
-    'Visual & Thermal',
-    'Visual Images',
-    'Visual',
-    'Visual&Thermal Images'
-  ];
-
-  for (const sheetName of possibleSheetNames) {
-    try {
-      const encodedRange = encodeURIComponent(`'${sheetName}'!A1`);
-      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          range: `'${sheetName}'!A1`,
-          majorDimension: 'ROWS',
-          values: rowsValues
-        })
-      });
-
-      if (res.ok) return;
-    } catch (err) {
-      // try next candidate sheet name
-    }
-  }
-  console.warn(`Visual & Thermal Images sheet tab not found or batch append skipped for spreadsheet ${spreadsheetId}`);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', rowsValues);
 }
 
 // Ensure 'PD & Diagnostic Data' sheet exists on the spreadsheet, creating it, formatting headers, and backfilling rows if missing
@@ -1928,83 +1960,70 @@ export async function clearAll12SheetsPdDiagnosticData(accessToken: string): Pro
 }
 
 // Append new PD diagnostic row
-export async function appendPdDiagnosticRow(accessToken: string, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
-  await ensurePdDiagnosticsSheetExists(accessToken, spreadsheetId);
+export async function appendPdDiagnosticRow(accessToken: string | null | undefined, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+  const token = getEffectiveGoogleToken(accessToken);
+  if (token) {
+    await ensurePdDiagnosticsSheetExists(token, spreadsheetId);
+  }
   let rowValues: any[];
   if (Array.isArray(rowOrData)) {
     rowValues = rowOrData;
   } else {
-    const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AZ1`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const dataHeaders = resHeaders.ok ? await resHeaders.json() : null;
-    const headers = dataHeaders?.values?.[0] || PD_DIAGNOSTIC_HEADERS;
+    let headers: string[] = [];
+    if (token) {
+      try {
+        const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AZ1`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const dataHeaders = resHeaders.ok ? await resHeaders.json() : null;
+        headers = dataHeaders?.values?.[0] || PD_DIAGNOSTIC_HEADERS;
+      } catch (e) {}
+    }
+    if (headers.length === 0) headers = PD_DIAGNOSTIC_HEADERS;
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'PD & Diagnostic Data'!A1",
-      majorDimension: 'ROWS',
-      values: [rowValues]
-    })
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    console.warn(`Failed to append PD diagnostic row to Google Sheets: ${errorText}`);
-  }
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', [rowValues]);
 }
 
 // Append multiple PD diagnostic rows in a SINGLE API call
-export async function appendPdDiagnosticRowsBatch(accessToken: string, spreadsheetId: string, rowsValues: any[][]) {
+export async function appendPdDiagnosticRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-  await ensurePdDiagnosticsSheetExists(accessToken, spreadsheetId);
-
-  const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:append?valueInputOption=USER_ENTERED`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range: "'PD & Diagnostic Data'!A1",
-      majorDimension: 'ROWS',
-      values: rowsValues
-    })
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    console.warn(`Failed to batch append PD diagnostic rows to Google Sheets: ${errorText}`);
+  const token = getEffectiveGoogleToken(accessToken);
+  if (token) {
+    await ensurePdDiagnosticsSheetExists(token, spreadsheetId);
   }
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', rowsValues);
 }
 
 // Update specific spreadsheet row
 export async function updateSheetRow(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string,
   sheetName: string,
   rowIndex: number,
   rowValuesOrData: any[] | Record<string, any>,
   columnRange: string
 ) {
+  const token = getEffectiveGoogleToken(accessToken);
   let rowValues: any[];
   let maxColLetter = columnRange.split(':')[1] || 'AF';
 
   if (Array.isArray(rowValuesOrData)) {
     rowValues = rowValuesOrData;
   } else {
-    // Fetch headers of that sheet to align
-    const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'${sheetName}'!A1:AZ1`)}`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    if (!resHeaders.ok) throw new Error(`Failed to fetch ${sheetName} headers for alignment`);
-    const dataHeaders = await resHeaders.json();
-    const headers = dataHeaders.values?.[0] || [];
+    let headers: string[] = [];
+    if (token) {
+      try {
+        const resHeaders = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'${sheetName}'!A1:AZ1`)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (resHeaders.ok) {
+          const dataHeaders = await resHeaders.json();
+          headers = dataHeaders.values?.[0] || [];
+        }
+      } catch (e) {}
+    }
     rowValues = alignRowWithHeaders(headers, rowValuesOrData);
     
     // Calculate max target column letter dynamically
@@ -2022,26 +2041,10 @@ export async function updateSheetRow(
     }
   }
 
-  const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      range,
-      majorDimension: 'ROWS',
-      values: [rowValues]
-    })
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to update row in Google Sheets (${sheetName}): ${errorText}`);
-  }
+  await executeUniversalSheetUpdate(accessToken, spreadsheetId, sheetName, rowIndex, [rowValues], maxColLetter);
 
-  if (sheetName.toLowerCase().includes('general')) {
-    syncSingleSpreadsheetTab4FromTab1(accessToken, spreadsheetId).catch(err => {
+  if (token && sheetName.toLowerCase().includes('general')) {
+    syncSingleSpreadsheetTab4FromTab1(token, spreadsheetId).catch(err => {
       console.warn(`[Auto-Link Tab 4] Post-update sync notice for spreadsheet ${spreadsheetId}:`, err);
     });
   }
@@ -2049,65 +2052,118 @@ export async function updateSheetRow(
 
 // Batch update multiple rows/ranges on a single spreadsheet in a single API call
 export async function batchUpdateSheetRows(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string,
   updates: { range: string; values: any[][] }[]
 ) {
   if (updates.length === 0) return;
+  const token = getEffectiveGoogleToken(accessToken);
   
-  const body = {
-    valueInputOption: 'USER_ENTERED',
-    data: updates.map(u => ({
-      range: u.range,
-      majorDimension: 'ROWS',
-      values: u.values
-    }))
-  };
+  // 1. Direct API if token exists
+  if (token) {
+    try {
+      const body = {
+        valueInputOption: 'USER_ENTERED',
+        data: updates.map(u => ({
+          range: u.range,
+          majorDimension: 'ROWS',
+          values: u.values
+        }))
+      };
 
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to batch update spreadsheet ${spreadsheetId}: ${errorText}`);
+      if (res.ok) return;
+    } catch (e) {
+      console.warn('Direct batch update error, falling back to proxy:', e);
+    }
+  }
+
+  // 2. Server proxy fallback
+  try {
+    const proxyRes = await fetch('/api/sheets/batch-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spreadsheetId,
+        updates,
+        token: token || undefined
+      })
+    });
+    const proxyData = await proxyRes.json();
+    if (proxyRes.ok && proxyData.success) {
+      return;
+    }
+    throw new Error(proxyData.error || 'Failed to batch update spreadsheet');
+  } catch (proxyErr: any) {
+    throw new Error(`Failed to batch update spreadsheet ${spreadsheetId}: ${proxyErr.message}`);
   }
 }
 
 // Fetch row mappings for an equipmentId or specific record number to support overwrite edits
 export async function fetchSheetsRowIndices(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string,
   equipmentId: string,
   recordNumber?: number
 ): Promise<{ genRowIndex: number; engRowIndex: number; visRowIndex: number; pdRowIndex: number }> {
-  const ranges = [
-    "'General Information'!A1:AZ",
-    "'Engineering Information'!A1:AZ",
-    "'Visual & Thermal Images'!A1:AZ",
-    "'PD & Diagnostic Data'!A1:AZ"
-  ];
+  const token = getEffectiveGoogleToken(accessToken);
+  let genRows: any[][] = [];
+  let engRows: any[][] = [];
+  let visRows: any[][] = [];
+  let pdRows: any[][] = [];
 
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
+  // 1. Try Direct Google Sheets API if token available
+  if (token) {
+    try {
+      const ranges = [
+        "'General Information'!A1:AZ",
+        "'Engineering Information'!A1:AZ",
+        "'Visual & Thermal Images'!A1:AZ",
+        "'PD & Diagnostic Data'!A1:AZ"
+      ];
 
-  if (!res.ok) {
-    throw new Error('Failed to retrieve spreadsheet row mappings.');
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&')}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const valueRanges = data.valueRanges || [];
+        genRows = valueRanges[0]?.values || [];
+        engRows = valueRanges[1]?.values || [];
+        visRows = valueRanges[2]?.values || [];
+        pdRows = valueRanges[3]?.values || [];
+      }
+    } catch (e) {
+      console.warn('Direct fetchSheetsRowIndices batchGet failed, falling back to server CSV proxy:', e);
+    }
   }
 
-  const data = await res.json();
-  const valueRanges = data.valueRanges || [];
-
-  const genRows = valueRanges[0]?.values || [];
-  const engRows = valueRanges[1]?.values || [];
-  const visRows = valueRanges[2]?.values || [];
-  const pdRows = valueRanges[3]?.values || [];
+  // 2. Fallback to /api/sheets/data (CSV proxy) for credential users or when token fails
+  if (genRows.length === 0 && engRows.length === 0) {
+    try {
+      const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${spreadsheetId}`);
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (proxyData.success && Array.isArray(proxyData.valueRanges)) {
+          genRows = proxyData.valueRanges[0]?.values || [];
+          engRows = proxyData.valueRanges[1]?.values || [];
+          visRows = proxyData.valueRanges[2]?.values || [];
+          pdRows = proxyData.valueRanges[3]?.values || [];
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch spreadsheet rows via proxy for index resolution:', e);
+    }
+  }
 
   const genHeaders = genRows[0] || [];
   const engHeaders = engRows[0] || [];

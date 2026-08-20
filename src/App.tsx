@@ -3,7 +3,7 @@ import { PEAUser, CableAsset, UserRole } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets, PEA_TARGET_REGIONAL_COUNTS, ensureComplete12Areas, getAssetArea } from './utils/peaData';
 import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
 import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
-import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1 } from './utils/googleSheets';
+import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1, getEffectiveGoogleToken } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
@@ -245,7 +245,7 @@ export default function App() {
         : (allSheetIds.length > 0 ? allSheetIds : (targetSheetId ? [targetSheetId] : []));
 
       if (idsToLoad.length > 0) {
-        await handleLoadSpreadsheet(token || null, idsToLoad, isAdminUser, !!token);
+        await handleLoadSpreadsheet(token || null, idsToLoad, isAdminUser, false, role, area);
       } else {
         // Fallback: If no sheet IDs mapped yet, load authentic cached assets from central database
         setShowLoadingModal(true);
@@ -275,7 +275,11 @@ export default function App() {
           } catch (e) {}
         }
 
-        workingAssets = ensureComplete12Areas(workingAssets);
+        if (role === 'Local Operator' && area !== 'ALL') {
+          workingAssets = workingAssets.filter(a => getAssetArea(a) === area);
+        } else {
+          workingAssets = ensureComplete12Areas(workingAssets);
+        }
         setAssets(workingAssets);
         setTotalLoadedAssets(workingAssets.length);
         setLoadProgressPercent(100);
@@ -479,13 +483,21 @@ export default function App() {
   const fetchSessionCounterRef = React.useRef<number>(0);
 
   // Load spreadsheet data once spreadsheetId is verified
-  const handleLoadSpreadsheet = async (token: string | null, sheetIds: string[], isAdminUser = false, isForceRefresh = false) => {
+  const handleLoadSpreadsheet = async (
+    token: string | null,
+    sheetIds: string[],
+    isAdminUser = false,
+    isForceRefresh = false,
+    filterRole?: UserRole,
+    filterArea?: string
+  ) => {
+    const activeToken = getEffectiveGoogleToken(token);
     let uniqueIds = Array.from(new Set(sheetIds)).filter(id => id && id.trim().length > 0);
 
     // Auto-discover if we have fewer than 12 regional sheets and token is available
-    if (uniqueIds.length < 12 && token) {
+    if (uniqueIds.length < 12 && activeToken) {
       try {
-        const discovered = await autoDiscoverAndSync(token);
+        const discovered = await autoDiscoverAndSync(activeToken);
         if (discovered.spreadsheets) {
           const discoveredIds = Object.values(discovered.spreadsheets).filter(Boolean);
           uniqueIds = Array.from(new Set([...uniqueIds, ...discoveredIds]));
@@ -511,12 +523,12 @@ export default function App() {
     setShowLoadingModal(true);
     setIsScanningSheets(true);
     setLoadProgressPercent(5);
-    setCurrentStepText('Performing initial pre-scan check across all 12 regional Google Sheets...');
+    setCurrentStepText(filterRole === 'Local Operator' ? `Scanning Google Sheet for ${filterArea || 'related'} area...` : 'Performing initial pre-scan check across all 12 regional Google Sheets...');
 
     // Pre-populate regional sheet statuses
     const initialAreas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
     const initialStatuses: RegionalSheetStatus[] = uniqueIds.map((id, idx) => {
-      const area = initialAreas[idx] || `AREA_${idx + 1}`;
+      const area = (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') ? filterArea : (initialAreas[idx] || `AREA_${idx + 1}`);
       return {
         spreadsheetId: id,
         area,
@@ -535,6 +547,9 @@ export default function App() {
         const cached = await getCentralAssetsCache();
         if (cached && cached.length > 0) {
           cached.forEach((a, idx) => {
+            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+              if (getAssetArea(a) !== filterArea) return;
+            }
             const key = a.equipmentId ? `${a.spreadsheetId || ''}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || ''}_${a.number || idx}`;
             assetMap.set(key, a);
           });
@@ -549,7 +564,7 @@ export default function App() {
     // STAGE 1: Scanning check of all 12 regional sheets upfront (Requirement 3)
     let scannedTotal = 0;
     try {
-      const scannedList = await scanRegionalSheetsAssetCounts(token, uniqueIds);
+      const scannedList = await scanRegionalSheetsAssetCounts(activeToken, uniqueIds);
       if (currentSession !== fetchSessionCounterRef.current) return;
 
       const scannedStatuses: RegionalSheetStatus[] = scannedList.map(item => {
@@ -612,7 +627,7 @@ export default function App() {
         while (attempts < maxAttempts && !sectorData) {
           attempts++;
           try {
-            sectorData = await fetchSheetsData(token, id);
+            sectorData = await fetchSheetsData(activeToken, id);
           } catch (err: any) {
             if (err.message?.includes('Status: 404')) {
               console.warn(`Spreadsheet ${id} not found.`);
@@ -657,6 +672,9 @@ export default function App() {
 
           // Insert fresh live rows from Google Sheets
           sectorData.forEach((a, idx) => {
+            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+              if (getAssetArea(a) !== filterArea) return;
+            }
             const key = a.equipmentId ? `${a.spreadsheetId || id}_${a.equipmentId.trim()}_${a.number || idx}` : `ROW_${a.spreadsheetId || id}_${a.number || idx}`;
             assetMap.set(key, a);
           });
@@ -680,40 +698,82 @@ export default function App() {
 
       if (currentSession !== fetchSessionCounterRef.current) return;
 
-      const finalAssets = Array.from(assetMap.values());
+      // Preserve and merge any locally / newly registered assets from local storage or backup cache
+      try {
+        const localSaved = localStorage.getItem('local_cable_assets') || localStorage.getItem('pea_central_assets_backup');
+        if (localSaved) {
+          const parsed = JSON.parse(localSaved);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((pa: any, pIdx: number) => {
+              if (pa && (pa.equipmentId || pa.peaNumber)) {
+                if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+                  if (getAssetArea(pa) !== filterArea) return;
+                }
+                let existsInMap = false;
+                for (const [, v] of assetMap) {
+                  if (pa.equipmentId && v.equipmentId && v.equipmentId.trim().toLowerCase() === pa.equipmentId.trim().toLowerCase()) {
+                    existsInMap = true;
+                    break;
+                  }
+                  if (pa.peaNumber && v.peaNumber && v.peaNumber.trim().toLowerCase() === pa.peaNumber.trim().toLowerCase()) {
+                    existsInMap = true;
+                    break;
+                  }
+                }
+                if (!existsInMap) {
+                  const pKey = pa.equipmentId ? `LOCAL_${pa.equipmentId.trim()}` : `PEA_${pa.peaNumber.trim()}`;
+                  assetMap.set(pKey, pa);
+                }
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Error merging locally registered assets:", e);
+      }
+
+      let finalAssets = Array.from(assetMap.values());
+      if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+        finalAssets = finalAssets.filter(a => getAssetArea(a) === filterArea);
+      }
+
       setLoadProgressPercent(100);
       setTotalLoadedAssets(finalAssets.length);
-      setCurrentStepText(`100% Assets Loaded! ${finalAssets.length.toLocaleString()} / ${scannedTotal || finalAssets.length} Assets Verified Across 12 Regional Sheets.`);
+      setCurrentStepText(`100% Assets Loaded! ${finalAssets.length.toLocaleString()} Assets Verified.`);
 
       if (finalAssets.length > 0) {
         setAssets(finalAssets);
-        // Force save to central cache to sync clean live Google Sheets data across all users
-        saveCentralAssetsCache(finalAssets, true).catch(() => {});
-        try {
-          localStorage.setItem('pea_central_assets_backup', JSON.stringify(finalAssets));
-        } catch (e) {}
+        if (filterRole !== 'Local Operator') {
+          saveCentralAssetsCache(finalAssets, true).catch(() => {});
+          try {
+            localStorage.setItem('pea_central_assets_backup', JSON.stringify(finalAssets));
+          } catch (e) {}
+        }
         updateLastFetchedTimestamp();
 
-        // Background auto-sync for Tab 4 (PD & Diagnostic Data) Columns A-J across all 12 regional Google Sheets
-        if (token) {
-          syncAll12SheetsTab4FromTab1(token).catch(err => {
+        if (activeToken && filterRole !== 'Local Operator') {
+          syncAll12SheetsTab4FromTab1(activeToken).catch(err => {
             console.warn("Background Tab 4 auto-sync notice:", err);
           });
         }
 
         if (failedSectors === 0) {
-          setSyncSuccessMessage(`Central Database Synchronized! 100% Verified with Google Sheets. Fully loaded ${finalAssets.length.toLocaleString()} cable assets across ${uniqueIds.length} sectors.`);
+          setSyncSuccessMessage(`Database Synchronized! Fully loaded ${finalAssets.length.toLocaleString()} cable assets.`);
         } else {
-          setSyncSuccessMessage(`Central Database Synchronized! Loaded ${finalAssets.length.toLocaleString()} cable assets (${successfulSectors}/${uniqueIds.length} sectors live).`);
+          setSyncSuccessMessage(`Database Synchronized! Loaded ${finalAssets.length.toLocaleString()} cable assets.`);
         }
       } else {
         let loaded = false;
         try {
           const cached = await getCentralAssetsCache();
           if (cached && cached.length > 0) {
-            console.log("Loaded Central Admin Database from Firestore chunked cache:", cached.length);
-            setAssets(cached);
-            setSyncSuccessMessage(`Loaded ${cached.length.toLocaleString()} cable assets from Firestore Central Database.`);
+            let filteredCached = cached;
+            if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+              filteredCached = cached.filter(a => getAssetArea(a) === filterArea);
+            }
+            console.log("Loaded Central Admin Database from Firestore chunked cache:", filteredCached.length);
+            setAssets(filteredCached);
+            setSyncSuccessMessage(`Loaded ${filteredCached.length.toLocaleString()} cable assets from Firestore Central Database.`);
             loaded = true;
           }
         } catch (e) {}
@@ -722,8 +782,11 @@ export default function App() {
           const backup = localStorage.getItem('pea_central_assets_backup');
           if (backup) {
             try {
-              const parsed = JSON.parse(backup);
+              let parsed = JSON.parse(backup);
               if (parsed && parsed.length > 0) {
+                if (filterRole === 'Local Operator' && filterArea && filterArea !== 'ALL') {
+                  parsed = parsed.filter((a: any) => getAssetArea(a) === filterArea);
+                }
                 setAssets(parsed);
                 setSyncSuccessMessage(`Loaded ${parsed.length.toLocaleString()} assets from local backup.`);
                 loaded = true;
@@ -1186,8 +1249,8 @@ export default function App() {
     clearCentralAssetsCache();
     const idsToFetch = spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
     const isAdminUser = user?.role === 'Admin' || (user?.email ? isAdminAccount(user.email) : false);
-    if (googleToken && idsToFetch.length > 0) {
-      handleLoadSpreadsheet(googleToken, idsToFetch, isAdminUser, true);
+    if (idsToFetch.length > 0) {
+      handleLoadSpreadsheet(googleToken || null, idsToFetch, isAdminUser, true);
     } else {
       // Reload from central Firestore cache with force refresh
       getCentralAssetsCache(true).then(cached => {

@@ -3,6 +3,14 @@ import { db } from './firebaseAuth';
 import { doc, setDoc } from 'firebase/firestore';
 
 export const PRESEEDED_USERS: Record<string, PEAUser> = {
+  'g51056018@gmail.com': {
+    email: 'g51056018@gmail.com',
+    name: 'Natthakorn Sukra#2',
+    employeeId: 'PEA-510560',
+    status: 'active',
+    role: 'Manager',
+    interestArea: 'ALL'
+  },
   'natthakorn@rockchatn.com': {
     email: 'natthakorn@rockchatn.com',
     name: 'Natthakorn Sukra',

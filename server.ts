@@ -791,6 +791,168 @@ async function fetchSheetCsvTab(spreadsheetId: string, tabNames: string[]): Prom
   return [];
 }
 
+// In-memory token store for Google API operations
+let serverGoogleToken: string | null = process.env.GOOGLE_OAUTH_ACCESS_TOKEN || null;
+
+// Token management endpoint
+app.post('/api/sheets/token', (req, res) => {
+  const { token, userEmail } = req.body;
+  if (token && typeof token === 'string' && token.trim()) {
+    serverGoogleToken = token.trim();
+    console.log(`[Google Token] Cached active token for server operations (from ${userEmail || 'client'})`);
+    res.json({ success: true, message: 'Server Google token updated' });
+  } else {
+    res.status(400).json({ error: 'Valid token string required' });
+  }
+});
+
+app.get('/api/sheets/token', (req, res) => {
+  res.json({
+    hasToken: !!serverGoogleToken,
+    tokenPreview: serverGoogleToken ? `${serverGoogleToken.substring(0, 10)}...` : null
+  });
+});
+
+// Google Sheets Write/Update Row Proxy
+app.post('/api/sheets/update-row', async (req, res) => {
+  const { spreadsheetId, range, values, token: clientToken } = req.body;
+  if (!spreadsheetId || !range || !values) {
+    res.status(400).json({ error: 'spreadsheetId, range, and values are required.' });
+    return;
+  }
+
+  const effectiveToken = clientToken || serverGoogleToken;
+  if (!effectiveToken) {
+    res.status(401).json({
+      error: 'Unauthorized: No active Google OAuth token available for writing to Google Sheets. Please log in with Google OAuth (e.g. g51056018@gmail.com or pichet.kea@gmail.com) to authorize sheet updates.'
+    });
+    return;
+  }
+
+  try {
+    const encodedRange = encodeURIComponent(range);
+    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${effectiveToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        range,
+        majorDimension: 'ROWS',
+        values: Array.isArray(values[0]) ? values : [values]
+      })
+    });
+
+    const data = await googleRes.json();
+    if (!googleRes.ok) {
+      console.error('[Sheets Update Proxy Error]:', data);
+      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to update sheet row' });
+      return;
+    }
+
+    res.json({ success: true, data });
+  } catch (err: any) {
+    console.error('[Sheets Update Exception]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Google Sheets Append Row Proxy
+app.post('/api/sheets/append-row', async (req, res) => {
+  const { spreadsheetId, sheetName, values, token: clientToken } = req.body;
+  if (!spreadsheetId || !sheetName || !values) {
+    res.status(400).json({ error: 'spreadsheetId, sheetName, and values are required.' });
+    return;
+  }
+
+  const effectiveToken = clientToken || serverGoogleToken;
+  if (!effectiveToken) {
+    res.status(401).json({
+      error: 'Unauthorized: No active Google OAuth token available for appending to Google Sheets. Please log in with Google OAuth to authorize sheet writes.'
+    });
+    return;
+  }
+
+  try {
+    const range = `'${sheetName}'!A1`;
+    const encodedRange = encodeURIComponent(range);
+    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${effectiveToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        range,
+        majorDimension: 'ROWS',
+        values: Array.isArray(values[0]) ? values : [values]
+      })
+    });
+
+    const data = await googleRes.json();
+    if (!googleRes.ok) {
+      console.error('[Sheets Append Proxy Error]:', data);
+      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to append sheet row' });
+      return;
+    }
+
+    res.json({ success: true, data });
+  } catch (err: any) {
+    console.error('[Sheets Append Exception]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Google Sheets Batch Update Proxy
+app.post('/api/sheets/batch-update', async (req, res) => {
+  const { spreadsheetId, updates, token: clientToken } = req.body;
+  if (!spreadsheetId || !Array.isArray(updates) || updates.length === 0) {
+    res.status(400).json({ error: 'spreadsheetId and updates array are required.' });
+    return;
+  }
+
+  const effectiveToken = clientToken || serverGoogleToken;
+  if (!effectiveToken) {
+    res.status(401).json({
+      error: 'Unauthorized: No active Google OAuth token available for batch updates.'
+    });
+    return;
+  }
+
+  try {
+    const body = {
+      valueInputOption: 'USER_ENTERED',
+      data: updates.map((u: any) => ({
+        range: u.range,
+        majorDimension: 'ROWS',
+        values: u.values
+      }))
+    };
+
+    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${effectiveToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await googleRes.json();
+    if (!googleRes.ok) {
+      console.error('[Sheets Batch Update Proxy Error]:', data);
+      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to batch update sheet' });
+      return;
+    }
+
+    res.json({ success: true, data });
+  } catch (err: any) {
+    console.error('[Sheets Batch Update Exception]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Google Sheets Data Proxy endpoint (for credential login & unauthenticated fetch)
 app.get('/api/sheets/data', async (req, res) => {
   const spreadsheetId = req.query.spreadsheetId as string;

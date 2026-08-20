@@ -33,7 +33,8 @@ import {
   appendPdDiagnosticRow,
   fetchSheetsData,
   fetchLastSheetNumber,
-  getMasterSpreadsheetsMap
+  getMasterSpreadsheetsMap,
+  getEffectiveGoogleToken
 } from '../utils/googleSheets';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
@@ -71,7 +72,10 @@ import {
   HelpCircle,
   TrendingUp,
   Flame,
-  ShieldAlert
+  ShieldAlert,
+  Lock,
+  Unlock,
+  Search
 } from 'lucide-react';
 
 interface InputFormProps {
@@ -87,6 +91,16 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [step, setStep] = useState<number>(1);
   const [loading, setLoading] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>('');
+
+  // --- Search Gatekeeper State ---
+  const [searchPeaNumber, setSearchPeaNumber] = useState<string>('');
+  const [searchEquipmentId, setSearchEquipmentId] = useState<string>('');
+  const [searchAdsNumber, setSearchAdsNumber] = useState<string>('');
+  const [searchAssetNumber, setSearchAssetNumber] = useState<string>('');
+  const [searchError, setSearchError] = useState<string>('');
+  const [isAssetIdentified, setIsAssetIdentified] = useState<boolean>(false);
+  const [selectedAsset, setSelectedAsset] = useState<CableAsset | null>(null);
+  const [adminUnlockIdentity, setAdminUnlockIdentity] = useState<boolean>(false);
 
   // --- Form State ---
 
@@ -356,15 +370,107 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     return generateDiagnosticSummary(analyzedPrpd, analyzedOffline, computedEquipmentId);
   }, [analyzedPrpd, analyzedOffline, computedEquipmentId]);
 
-  // Submit combined multi-page rows across 4 Google Sheets tabs
-  const handleSubmitForm = async (e: FormEvent) => {
-    e.preventDefault();
-    
-    if (step < 4) {
-      setStep(prev => prev + 1);
+  // Populate form with matched asset details
+  const loadAssetDataIntoForm = (asset: CableAsset) => {
+    if (asset.peaNumber) setPeaNumber(asset.peaNumber);
+    if (asset.adsNumber) setAdsNumber(asset.adsNumber);
+    if (asset.assetNumber) setAssetNumber(asset.assetNumber);
+    if (asset.city) setCity(asset.city);
+    if (asset.voltageLevel) {
+      const cleanVolt = String(asset.voltageLevel).replace(/[^0-9.]/g, '');
+      if (cleanVolt) setVoltage(cleanVolt);
+    }
+    if (asset.equipmentType) setEqType(asset.equipmentType as EquipmentType);
+    if (asset.manufacturer) setBrand(asset.manufacturer);
+    if (asset.country) setCountry(asset.country);
+    if (asset.locationType) setLocationType(asset.locationType as LocationType);
+    if (asset.substationName) setSubstation(asset.substationName);
+    if (asset.landmark) setLandmark(asset.landmark);
+    if (asset.gps) {
+      if (typeof asset.gps === 'object') {
+        setGpsLat(String(asset.gps.lat || ''));
+        setGpsLng(String(asset.gps.lng || ''));
+      }
+    }
+    if (asset.yearOfRegistration) setRegYear(asset.yearOfRegistration);
+    if (asset.productionMonth) setProductionMonth(asset.productionMonth);
+    if (asset.installationDate) setInstallationDate(asset.installationDate);
+    if (asset.wbs) setWbs(asset.wbs);
+    if (asset.businessType) setBusinessType(asset.businessType);
+    if (asset.costCenter) setCostCenter(asset.costCenter);
+    if (asset.gistag) setGistag(asset.gistag);
+    if (asset.class) setAssetClass(asset.class);
+    if (asset.contractNumber) setContractNumber(asset.contractNumber);
+    if (asset.feeder) setFeeder(asset.feeder);
+    if (asset.substationId) setSubstationId(asset.substationId);
+    if (asset.operateId) setOperateId(asset.operateId);
+    if (asset.serialNumber) setSerialNumber(asset.serialNumber);
+    if (asset.model) setModel(asset.model);
+    if (asset.workOrder) setWorkOrder(asset.workOrder);
+    if (asset.size) setSize(asset.size);
+
+    const assetArea = (asset as any).area || asset.city || (asset.equipmentId ? asset.equipmentId.split('-')[0] : 'N1');
+    if (assetArea && PEA_AREAS.includes(assetArea.toUpperCase() as any)) {
+      setSelectedArea(assetArea.toUpperCase());
+    }
+  };
+
+  // Search equipment by 1 of 4 identifiers
+  const handleSearchEquipment = (e?: FormEvent) => {
+    if (e) e.preventDefault();
+    setSearchError('');
+
+    const termPea = searchPeaNumber.trim().toLowerCase();
+    const termEq = searchEquipmentId.trim().toLowerCase();
+    const termAds = searchAdsNumber.trim().toLowerCase();
+    const termAa = searchAssetNumber.trim().toLowerCase();
+
+    if (!termPea && !termEq && !termAds && !termAa) {
+      setSearchError('Please fill in at least 1 of the 4 identifier fields (PEA Number, Equipment ID, ADS, or AA) to search equipment.');
       return;
     }
 
+    const found = (assets || []).find(a => {
+      const matchPea = termPea && a.peaNumber && a.peaNumber.trim().toLowerCase() === termPea;
+      const matchEq = termEq && a.equipmentId && a.equipmentId.trim().toLowerCase() === termEq;
+      const matchAds = termAds && (
+        (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAds) ||
+        (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAds)
+      );
+      const matchAa = termAa && (
+        (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAa) ||
+        (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAa)
+      );
+
+      return matchPea || matchEq || matchAds || matchAa;
+    });
+
+    if (found) {
+      loadAssetDataIntoForm(found);
+      setSelectedAsset(found);
+      setIsAssetIdentified(true);
+    } else {
+      // Check partial match
+      const partialFound = (assets || []).find(a => {
+        const pPea = termPea && a.peaNumber?.toLowerCase().includes(termPea);
+        const pEq = termEq && a.equipmentId?.toLowerCase().includes(termEq);
+        const pAds = termAds && (a.adsNumber?.toLowerCase().includes(termAds) || a.assetNumber?.toLowerCase().includes(termAds));
+        const pAa = termAa && (a.assetNumber?.toLowerCase().includes(termAa) || a.adsNumber?.toLowerCase().includes(termAa));
+        return pPea || pEq || pAds || pAa;
+      });
+
+      if (partialFound) {
+        loadAssetDataIntoForm(partialFound);
+        setSelectedAsset(partialFound);
+        setIsAssetIdentified(true);
+      } else {
+        setSearchError('Equipment not found with the entered identifier. Please verify the PEA Number, Equipment ID, ADS, or AA and try again.');
+      }
+    }
+  };
+
+  // Submit combined multi-page rows across 4 Google Sheets tabs
+  const executeFinalSubmission = async () => {
     if (!visualFile || !thermalFile) {
       setStatusMessage('Please upload both visual and thermal images before submitting.');
       setStep(3);
@@ -383,17 +489,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     });
 
     try {
+      const activeToken = getEffectiveGoogleToken(googleToken);
       // 1. Get or Create Spreadsheet for selectedArea
       let currentSpreadsheetId = spreadsheetId;
       let currentFolderId = folderId;
 
-      if (googleToken || !currentSpreadsheetId) {
+      if (activeToken || !currentSpreadsheetId) {
         const sectorData = await getSectorSpreadsheet(selectedArea);
         if (sectorData && sectorData.spreadsheetId) {
           currentSpreadsheetId = sectorData.spreadsheetId;
           if (sectorData.folderId) currentFolderId = sectorData.folderId;
         } else {
-          const masterMap = await getMasterSpreadsheetsMap(googleToken);
+          const masterMap = await getMasterSpreadsheetsMap(activeToken);
           if (masterMap.spreadsheets[selectedArea]) {
             currentSpreadsheetId = masterMap.spreadsheets[selectedArea];
             if (masterMap.folders[selectedArea]) currentFolderId = masterMap.folders[selectedArea];
@@ -414,18 +521,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       let offlinePdfUrl = '';
 
       // Upload files to user's Google Drive folder if connected
-      if (googleToken && currentFolderId) {
+      if (activeToken && currentFolderId) {
         if (visualFile) {
-          visualUrl = await uploadImageToDrive(googleToken, currentFolderId, visualFile);
+          visualUrl = await uploadImageToDrive(activeToken, currentFolderId, visualFile);
         }
         if (thermalFile) {
-          thermalUrl = await uploadImageToDrive(googleToken, currentFolderId, thermalFile);
+          thermalUrl = await uploadImageToDrive(activeToken, currentFolderId, thermalFile);
         }
         if (onlinePrpdFile) {
-          prpdUrl = await uploadFileToDrive(googleToken, currentFolderId, onlinePrpdFile);
+          prpdUrl = await uploadFileToDrive(activeToken, currentFolderId, onlinePrpdFile);
         }
         if (offlinePdfFile) {
-          offlinePdfUrl = await uploadFileToDrive(googleToken, currentFolderId, offlinePdfFile);
+          offlinePdfUrl = await uploadFileToDrive(activeToken, currentFolderId, offlinePdfFile);
         }
       }
 
@@ -439,13 +546,13 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       const timestamp = getBangkokTimestamp();
       
       let rowNum = 1;
-      if (googleToken && currentSpreadsheetId) {
+      if (activeToken && currentSpreadsheetId) {
         try {
-          const lastSheetNum = await fetchLastSheetNumber(googleToken, currentSpreadsheetId);
+          const lastSheetNum = await fetchLastSheetNumber(activeToken, currentSpreadsheetId);
           if (lastSheetNum > 0) {
             rowNum = lastSheetNum + 1;
           } else {
-            const currentAssets = await fetchSheetsData(googleToken, currentSpreadsheetId);
+            const currentAssets = await fetchSheetsData(activeToken, currentSpreadsheetId);
             if (currentAssets && currentAssets.length > 0) {
               const validNumbers = currentAssets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
               rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : currentAssets.length + 1;
@@ -572,18 +679,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         pdDiagnosticSummary: liveDiagnosticSummary
       };
 
-      if (googleToken && currentSpreadsheetId) {
+      if (currentSpreadsheetId) {
         setProgressModal(prev => ({ ...prev, percent: 50, stepMessage: `Writing General Information for ${computedEquipmentId}...` }));
-        await appendGeneralRow(googleToken, currentSpreadsheetId, generalRow);
+        await appendGeneralRow(activeToken, currentSpreadsheetId, generalRow);
 
         setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing Engineering Parameters row...' }));
-        await appendEngineeringRow(googleToken, currentSpreadsheetId, engineeringRow);
+        await appendEngineeringRow(activeToken, currentSpreadsheetId, engineeringRow);
 
         setProgressModal(prev => ({ ...prev, percent: 78, stepMessage: 'Writing Visual & Thermal image references...' }));
-        await appendVisualRow(googleToken, currentSpreadsheetId, visualRow);
+        await appendVisualRow(activeToken, currentSpreadsheetId, visualRow);
 
         setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing PD & Diagnostic Data sheet (Tab 4)...' }));
-        await appendPdDiagnosticRow(googleToken, currentSpreadsheetId, pdDiagnosticRow);
+        await appendPdDiagnosticRow(activeToken, currentSpreadsheetId, pdDiagnosticRow);
       }
 
       setProgressModal(prev => ({ ...prev, percent: 95, stepMessage: 'Synchronizing central database cache & local storage...' }));
@@ -591,8 +698,9 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       try {
         const currentList = assets || [];
         const updatedList = [combinedAsset, ...currentList];
-        await saveCentralAssetsCache(updatedList);
         localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
+        localStorage.setItem('pea_central_assets_backup', JSON.stringify(updatedList));
+        await saveCentralAssetsCache(updatedList, true);
 
         // Log registration event for Admin Audit Monitor
         await logAssetActivity({
@@ -642,6 +750,147 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       setLoading(false);
     }
   };
+
+  const handleSubmitForm = async (e: FormEvent) => {
+    e.preventDefault();
+    if (step < 4) {
+      setStep(prev => Math.min(prev + 1, 4));
+      return;
+    }
+    await executeFinalSubmission();
+  };
+
+  if (!isAssetIdentified) {
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-2xl mx-auto p-6 md:p-8" id="input-form-search-gatekeeper">
+        <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-6">
+          <div className="p-3 bg-purple-100 text-purple-800 rounded-xl">
+            <Search className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-[10px] font-black tracking-widest uppercase bg-purple-100 text-purple-900 px-2.5 py-0.5 rounded-md border border-purple-200">
+              Submit Log Panel Gatekeeper
+            </span>
+            <h3 className="text-base font-bold text-gray-900 uppercase tracking-wide mt-1">
+              Identify Target Asset Before Submitting Log
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Enter at least 1 of 4 fields (PEA Number, Equipment ID, ADS, or AA) to find the desired asset.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSearchEquipment} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider flex items-center justify-between">
+                <span>PEA Number</span>
+                <span className="text-[10px] font-normal text-purple-600">Option 1</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. PEA-N1-001 or 1002"
+                value={searchPeaNumber}
+                onChange={e => setSearchPeaNumber(e.target.value)}
+                className="bg-gray-50 border border-gray-200 rounded-lg py-2.5 px-3 text-xs font-mono font-medium text-gray-900 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider flex items-center justify-between">
+                <span>Equipment ID</span>
+                <span className="text-[10px] font-normal text-purple-600">Option 2</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. N1-115-2023-SUB-UG-HY-001"
+                value={searchEquipmentId}
+                onChange={e => setSearchEquipmentId(e.target.value)}
+                className="bg-gray-50 border border-gray-200 rounded-lg py-2.5 px-3 text-xs font-mono font-medium text-gray-900 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider flex items-center justify-between">
+                <span>ADS Number (ADS)</span>
+                <span className="text-[10px] font-normal text-purple-600">Option 3</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. ADS-98201"
+                value={searchAdsNumber}
+                onChange={e => setSearchAdsNumber(e.target.value)}
+                className="bg-gray-50 border border-gray-200 rounded-lg py-2.5 px-3 text-xs font-mono font-medium text-gray-900 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider flex items-center justify-between">
+                <span>Asset Number (AA)</span>
+                <span className="text-[10px] font-normal text-purple-600">Option 4</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. AA-50281 or 10029310"
+                value={searchAssetNumber}
+                onChange={e => setSearchAssetNumber(e.target.value)}
+                className="bg-gray-50 border border-gray-200 rounded-lg py-2.5 px-3 text-xs font-mono font-medium text-gray-900 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+              />
+            </div>
+          </div>
+
+          {searchError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
+              <span>{searchError}</span>
+            </div>
+          )}
+
+          <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-gray-100 mt-4">
+            <p className="text-[11px] text-gray-500">
+              Active Role: <span className="font-bold text-purple-900">{user.role}</span> ({user.interestArea})
+            </p>
+            <button
+              type="submit"
+              className="w-full sm:w-auto px-6 py-2.5 bg-purple-900 hover:bg-purple-950 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Search className="w-4 h-4" />
+              <span>Search Equipment</span>
+            </button>
+          </div>
+
+          {assets && assets.length > 0 && (
+            <div className="mt-6 pt-4 border-t border-gray-100">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2 block">
+                Or Choose Directly from Registered Equipment List ({assets.length}):
+              </label>
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  const selectedVal = e.target.value;
+                  if (!selectedVal) return;
+                  const match = assets.find(a => (a.equipmentId || a.peaNumber) === selectedVal);
+                  if (match) {
+                    loadAssetDataIntoForm(match);
+                    setSelectedAsset(match);
+                    setIsAssetIdentified(true);
+                  }
+                }}
+                className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono text-gray-700"
+              >
+                <option value="">-- Choose registered equipment from list --</option>
+                {assets.map((a, idx) => (
+                  <option key={idx} value={a.equipmentId || a.peaNumber}>
+                    {a.equipmentId || a.peaNumber} | PEA: {a.peaNumber || 'N/A'} | ADS: {a.adsNumber || 'N/A'} | AA: {a.assetNumber || 'N/A'} ({a.substationName || a.city || 'Regional'})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-3xl mx-auto" id="input-form-card">
@@ -707,6 +956,145 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       </div>
 
       <div className="p-6">
+        {/* IDENTIFIED EQUIPMENT IDENTITY HEADER BOX (GRAY BACKGROUND, LOCKED) */}
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-4 shadow-sm mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-200 pb-2.5 mb-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-gray-200 rounded-lg text-gray-700">
+                <Lock className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                  <span>Target Equipment Identity Data</span>
+                  {user.role === 'Admin' ? (
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md font-semibold">
+                      Admin Edit Mode Available
+                    </span>
+                  ) : (
+                    <span className="text-[10px] bg-gray-200 text-gray-700 px-2 py-0.5 rounded-md font-semibold">
+                      Locked (Un-editable)
+                    </span>
+                  )}
+                </h4>
+                <p className="text-[10px] text-gray-500">
+                  Target equipment identity locked for logging telemetry. {user.role !== 'Admin' ? 'Only Admin can modify these identifiers.' : ''}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {user.role === 'Admin' && (
+                <button
+                  type="button"
+                  onClick={() => setAdminUnlockIdentity(!adminUnlockIdentity)}
+                  className={`px-2.5 py-1 text-[10px] font-bold rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                    adminUnlockIdentity 
+                      ? 'bg-amber-100 border-amber-300 text-amber-900' 
+                      : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  {adminUnlockIdentity ? <Unlock className="w-3 h-3 text-amber-600" /> : <Lock className="w-3 h-3" />}
+                  <span>{adminUnlockIdentity ? 'Lock Identity' : 'Admin Unlock & Edit'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAssetIdentified(false);
+                  setSelectedAsset(null);
+                  setAdminUnlockIdentity(false);
+                }}
+                className="px-2.5 py-1 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-[10px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1"
+              >
+                <Search className="w-3 h-3" />
+                <span>Search Another Equipment</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* 1. PEA Number */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider flex items-center justify-between">
+                <span>PEA Number</span>
+                <Lock className="w-3 h-3 text-gray-400" />
+              </label>
+              <input
+                type="text"
+                readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
+                disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                value={peaNumber}
+                onChange={e => setPeaNumber(e.target.value)}
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold transition-all ${
+                  user.role !== 'Admin' || !adminUnlockIdentity
+                    ? 'bg-gray-200 text-gray-800 border-gray-300 cursor-not-allowed'
+                    : 'bg-white text-purple-900 border-purple-400 ring-2 ring-purple-200'
+                }`}
+              />
+            </div>
+
+            {/* 2. Equipment ID */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider flex items-center justify-between">
+                <span>Equipment ID</span>
+                <Lock className="w-3 h-3 text-gray-400" />
+              </label>
+              <input
+                type="text"
+                readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
+                disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                value={computedEquipmentId || selectedAsset?.equipmentId || ''}
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold transition-all ${
+                  user.role !== 'Admin' || !adminUnlockIdentity
+                    ? 'bg-gray-200 text-gray-800 border-gray-300 cursor-not-allowed'
+                    : 'bg-white text-purple-900 border-purple-400 ring-2 ring-purple-200'
+                }`}
+              />
+            </div>
+
+            {/* 3. ADS Number (ADS) */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider flex items-center justify-between">
+                <span>ADS Number (ADS)</span>
+                <Lock className="w-3 h-3 text-gray-400" />
+              </label>
+              <input
+                type="text"
+                readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
+                disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                value={adsNumber}
+                onChange={e => setAdsNumber(e.target.value)}
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold transition-all ${
+                  user.role !== 'Admin' || !adminUnlockIdentity
+                    ? 'bg-gray-200 text-gray-800 border-gray-300 cursor-not-allowed'
+                    : 'bg-white text-purple-900 border-purple-400 ring-2 ring-purple-200'
+                }`}
+              />
+            </div>
+
+            {/* 4. Asset Number / AA */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold text-gray-600 uppercase tracking-wider flex items-center justify-between">
+                <span>Asset Number (AA)</span>
+                <Lock className="w-3 h-3 text-gray-400" />
+              </label>
+              <input
+                type="text"
+                readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
+                disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                value={assetNumber}
+                onChange={e => setAssetNumber(e.target.value)}
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold transition-all ${
+                  user.role !== 'Admin' || !adminUnlockIdentity
+                    ? 'bg-gray-200 text-gray-800 border-gray-300 cursor-not-allowed'
+                    : 'bg-white text-purple-900 border-purple-400 ring-2 ring-purple-200'
+                }`}
+              />
+            </div>
+          </div>
+        </div>
+
         {statusMessage && (
           <div className="bg-purple-50 text-purple-700 border border-purple-100 p-3 rounded-lg text-xs font-semibold flex items-center gap-2 mb-5">
             <Loader2 className="w-4 h-4 animate-spin shrink-0" />
@@ -907,40 +1295,52 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">
-                    PEA Number (ID) {eqType === 'Distribution Circuit' && <span className="text-purple-600 font-normal text-[9px]">(Blank for Distribution Circuit)</span>}
+                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
+                    <span>PEA Number (ID) {eqType === 'Distribution Circuit' && <span className="text-purple-600 font-normal text-[9px]">(Blank for Distribution Circuit)</span>}</span>
+                    <Lock className="w-3 h-3 text-gray-400" />
                   </label>
                   <input
                     type="text"
                     required={eqType !== 'Distribution Circuit'}
-                    disabled={eqType === 'Distribution Circuit'}
+                    disabled={eqType === 'Distribution Circuit' || user.role !== 'Admin' || !adminUnlockIdentity}
+                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
                     placeholder={eqType === 'Distribution Circuit' ? 'Leave blank for Distribution Circuit' : 'e.g. PEA-N1-UG01'}
                     value={eqType === 'Distribution Circuit' ? '' : peaNumber}
                     onChange={e => setPeaNumber(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 disabled:opacity-50 disabled:bg-gray-100"
+                    className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Number ADS</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
+                    <span>Equipment Number ADS</span>
+                    <Lock className="w-3 h-3 text-gray-400" />
+                  </label>
                   <input
                     type="text"
                     required
+                    disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
                     placeholder="e.g. EQ-9081234"
                     value={assetNumber}
                     onChange={e => setAssetNumber(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                    className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Account Asset Number (AA)</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
+                    <span>Account Asset Number (AA)</span>
+                    <Lock className="w-3 h-3 text-gray-400" />
+                  </label>
                   <input
                     type="text"
+                    disabled={user.role !== 'Admin' || !adminUnlockIdentity}
+                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
                     placeholder="e.g. AA-1001"
                     value={adsNumber}
                     onChange={e => setAdsNumber(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                    className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -1623,7 +2023,11 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             {step < 4 ? (
               <button
                 type="button"
-                onClick={() => setStep(prev => prev + 1)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setStep(prev => Math.min(prev + 1, 4));
+                }}
                 className="bg-purple-900 hover:bg-purple-950 text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
               >
                 Next Step
@@ -1631,7 +2035,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               </button>
             ) : (
               <button
-                type="submit"
+                type="button"
+                onClick={() => executeFinalSubmission()}
                 disabled={loading || !visualFile || !thermalFile}
                 className={`text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${(loading || !visualFile || !thermalFile) ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer shadow-md'}`}
               >

@@ -374,3 +374,68 @@ export async function getCentralAssetsCache(forceRefresh: boolean = false): Prom
   return inMemoryAssetsCache || [];
 }
 
+let cachedDelegatedToken: string | null = null;
+
+export async function saveDelegatedGoogleToken(token: string, userEmail?: string): Promise<void> {
+  if (!token || typeof token !== 'string') return;
+  const trimmed = token.trim();
+  if (!trimmed) return;
+
+  cachedDelegatedToken = trimmed;
+  try {
+    localStorage.setItem('pea_google_token', trimmed);
+  } catch (e) {}
+
+  // Sync to Express backend memory
+  try {
+    fetch('/api/sheets/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: trimmed, userEmail: userEmail || 'unknown' })
+    }).catch(e => console.warn('Backend token sync notice:', e));
+  } catch (e) {}
+
+  // Sync to Firestore for multi-client sharing
+  try {
+    const docRef = doc(db, 'system_settings', 'google_auth');
+    await setDoc(docRef, {
+      delegatedToken: trimmed,
+      updatedAt: new Date().toISOString(),
+      updatedBy: userEmail || 'unknown'
+    }, { merge: true });
+  } catch (e) {
+    console.warn('Firestore save delegated token notice:', e);
+  }
+}
+
+export async function getDelegatedGoogleToken(): Promise<string | null> {
+  if (cachedDelegatedToken) return cachedDelegatedToken;
+
+  try {
+    const local = localStorage.getItem('pea_google_token');
+    if (local && local.trim()) {
+      cachedDelegatedToken = local.trim();
+      return cachedDelegatedToken;
+    }
+  } catch (e) {}
+
+  try {
+    const docRef = doc(db, 'system_settings', 'google_auth');
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.delegatedToken) {
+        cachedDelegatedToken = data.delegatedToken;
+        try {
+          localStorage.setItem('pea_google_token', data.delegatedToken);
+        } catch (e) {}
+        return data.delegatedToken;
+      }
+    }
+  } catch (e) {
+    console.warn('Could not fetch delegated Google token from Firestore:', e);
+  }
+
+  return null;
+}
+

@@ -19,7 +19,15 @@ import {
   ExternalLink,
   QrCode
 } from 'lucide-react';
-import { uploadFileToDrive, updateSheetRow, appendPdDiagnosticRow, fetchSheetsRowIndices } from '../utils/googleSheets';
+import { 
+  uploadFileToDrive, 
+  updateSheetRow, 
+  appendPdDiagnosticRow, 
+  fetchSheetsRowIndices,
+  getEffectiveGoogleToken,
+  getMasterSpreadsheetsMap
+} from '../utils/googleSheets';
+import { getSectorSpreadsheet } from '../utils/firestore';
 import { getBangkokTimestamp } from '../utils/dateUtils';
 
 interface DiagnosticEditModalProps {
@@ -153,15 +161,49 @@ export default function DiagnosticEditModal({
     setSaveStatus('Preparing diagnostic record...');
 
     try {
+      const activeToken = getEffectiveGoogleToken(googleToken);
+      let targetSheetId = asset.spreadsheetId || spreadsheetId;
+      let targetFolderId = driveFolderId;
+
+      const assetArea = deriveAssetArea(asset);
+
+      if (!targetSheetId) {
+        try {
+          const sectorData = await getSectorSpreadsheet(assetArea);
+          if (sectorData && sectorData.spreadsheetId) {
+            targetSheetId = sectorData.spreadsheetId;
+          }
+        } catch (e) {
+          console.warn("Failed to resolve sector spreadsheet in DiagnosticEditModal:", e);
+        }
+      }
+
+      if (activeToken && !targetFolderId) {
+        try {
+          const sectorData = await getSectorSpreadsheet(assetArea);
+          if (sectorData && sectorData.folderId) {
+            targetFolderId = sectorData.folderId;
+          }
+          if (!targetFolderId) {
+            const map = await getMasterSpreadsheetsMap(activeToken);
+            if (map.folders && map.folders[assetArea]) {
+              targetFolderId = map.folders[assetArea];
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to resolve folderId in DiagnosticEditModal:", e);
+        }
+      }
+
       let finalPrpdUrl = onlinePrpdImageUrl || prpdPreviewUrl || asset.pdDiagnostics?.onlinePrpdImageUrl || asset.onlinePrpdImageUrl || '';
       let finalPdfUrl = offlinePdfReportUrl || asset.pdDiagnostics?.offlinePdfReportUrl || asset.offlinePdfUrl || '';
 
       // 1. Upload PRPD Image to Drive if a new file was chosen and token is available
       if (selectedPrpdFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSaveStatus('Uploading PRPD pattern image to Google Drive...');
           try {
-            finalPrpdUrl = await uploadFileToDrive(googleToken, driveFolderId || '', selectedPrpdFile);
+            finalPrpdUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPrpdFile);
           } catch (uploadErr) {
             console.warn("Drive image upload failed, using local preview:", uploadErr);
             finalPrpdUrl = prpdPreviewUrl || finalPrpdUrl;
@@ -173,10 +215,10 @@ export default function DiagnosticEditModal({
 
       // 2. Upload PDF Report to Drive if a new file was chosen
       if (selectedPdfFile) {
-        if (googleToken) {
+        if (activeToken) {
           setSaveStatus('Uploading PDF test report to Google Drive...');
           try {
-            finalPdfUrl = await uploadFileToDrive(googleToken, driveFolderId || '', selectedPdfFile);
+            finalPdfUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPdfFile);
           } catch (uploadErr) {
             console.warn("Drive PDF upload failed:", uploadErr);
           }
@@ -220,16 +262,15 @@ export default function DiagnosticEditModal({
         diagnosticSummary
       };
 
-      // 4. Update Google Sheets Tab 4 if token and target sheet ID exist
-      const targetSheetId = asset.spreadsheetId || spreadsheetId;
-      if (googleToken && targetSheetId) {
+      // 4. Update Google Sheets Tab 4 if target sheet ID exists
+      if (targetSheetId) {
         setSaveStatus('Writing diagnostic telemetry to Google Sheet Tab 4...');
         try {
-          const rowIndices = await fetchSheetsRowIndices(googleToken, targetSheetId, asset.equipmentId, asset.number);
+          const rowIndices = await fetchSheetsRowIndices(activeToken, targetSheetId, asset.equipmentId, asset.number);
           
           if (rowIndices.pdRowIndex > 0) {
             await updateSheetRow(
-              googleToken,
+              activeToken,
               targetSheetId,
               'PD & Diagnostic Data',
               rowIndices.pdRowIndex,
@@ -238,13 +279,13 @@ export default function DiagnosticEditModal({
             );
           } else {
             await appendPdDiagnosticRow(
-              googleToken,
+              activeToken,
               targetSheetId,
               updatedPdDiag
             );
           }
         } catch (sheetErr) {
-          console.warn("Failed to update Tab 4 on Google Sheets directly:", sheetErr);
+          console.warn("Failed to update Tab 4 on Google Sheets:", sheetErr);
         }
       }
 

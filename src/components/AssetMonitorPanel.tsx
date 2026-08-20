@@ -26,7 +26,8 @@ import {
   Users,
   Building2,
   ChevronRight,
-  Database
+  Database,
+  Check
 } from 'lucide-react';
 
 interface AssetMonitorPanelProps {
@@ -37,6 +38,26 @@ interface AssetMonitorPanelProps {
 }
 
 type TimeRangeOption = '7d' | '30d' | '90d' | 'all';
+
+function extractDateKey(timestamp?: string): string {
+  if (!timestamp) return '';
+  const s = String(timestamp).trim();
+  if (s.includes('T')) return s.split('T')[0];
+  if (s.includes(' ')) return s.split(' ')[0];
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  } catch (e) {}
+  return s.slice(0, 10);
+}
+
+function isTodayDate(timestamp?: string): boolean {
+  if (!timestamp) return false;
+  const dateKey = extractDateKey(timestamp);
+  const todayKey = extractDateKey(new Date().toISOString());
+  return !!dateKey && dateKey === todayKey;
+}
 
 export default function AssetMonitorPanel({
   user,
@@ -142,26 +163,32 @@ export default function AssetMonitorPanel({
     });
   }, [activeTab, registrationLogs, editLogs, cutoffMs, selectedArea, selectedVoltage, selectedType, searchQuery]);
 
-  // Day-by-Day comparison grouping
+  // Day-by-Day comparison grouping for vertical bar chart
   const dayByDayComparison = useMemo(() => {
     const dayCounts: Record<string, number> = {};
     const now = new Date();
 
-    // Initialize days in range if timeRange !== 'all'
-    const daysToInclude = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 14;
+    // Initialize days in range
+    const daysToInclude = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : timeRange === '90d' ? 90 : 14;
     for (let i = daysToInclude - 1; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      const dateKey = d.toISOString().split('T')[0];
+      const dateKey = extractDateKey(d.toISOString());
       dayCounts[dateKey] = 0;
     }
 
+    let totalPeriodCount = 0;
+
     currentLogs.forEach(log => {
       try {
-        const dStr = new Date(log.timestamp).toISOString().split('T')[0];
-        if (dayCounts[dStr] !== undefined) {
-          dayCounts[dStr] += 1;
-        } else {
-          dayCounts[dStr] = (dayCounts[dStr] || 0) + 1;
+        const dStr = extractDateKey(log.timestamp);
+        if (dStr) {
+          if (dayCounts[dStr] !== undefined) {
+            dayCounts[dStr] += 1;
+            totalPeriodCount += 1;
+          } else if (timeRange === 'all') {
+            dayCounts[dStr] = (dayCounts[dStr] || 0) + 1;
+            totalPeriodCount += 1;
+          }
         }
       } catch (e) {
         // ignore invalid dates
@@ -172,16 +199,16 @@ export default function AssetMonitorPanel({
     const maxCount = Math.max(...entries.map(e => e[1]), 1);
 
     // Calculate Day-over-Day metric
-    const todayKey = now.toISOString().split('T')[0];
+    const todayKey = extractDateKey(now.toISOString());
     const yesterdayDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayKey = yesterdayDate.toISOString().split('T')[0];
+    const yesterdayKey = extractDateKey(yesterdayDate.toISOString());
 
     const todayCount = dayCounts[todayKey] || 0;
     const yesterdayCount = dayCounts[yesterdayKey] || 0;
     // If there is no activity in the present day, it must show 0 for day-over-day comparison
     const dodDiff = todayCount === 0 ? 0 : todayCount - yesterdayCount;
 
-    return { entries, maxCount, todayCount, yesterdayCount, dodDiff };
+    return { entries, maxCount, todayCount, yesterdayCount, dodDiff, totalPeriodCount };
   }, [currentLogs, timeRange]);
 
   // Breakdown by Equipment Type
@@ -247,7 +274,7 @@ export default function AssetMonitorPanel({
 
     if (!mapInstanceRef.current) {
       const map = L.map(mapContainerRef.current, {
-        preferCanvas: true, // Crucial for rendering thousands of pins with stellar performance
+        preferCanvas: true,
         center: [13.7563, 100.5018],
         zoom: 6,
         zoomControl: false
@@ -277,31 +304,30 @@ export default function AssetMonitorPanel({
     validLogsWithGps.forEach(log => {
       if (!log.gps) return;
 
-      const isReg = activeTab === 'registrations';
-      const color = isReg ? '#10b981' : '#a855f7'; // Emerald for registration, Purple for edit
+      const isEdit = log.type === 'edit' || log.source === 'asset_record' || log.details?.toLowerCase().includes('edit') || activeTab === 'edits';
+      const color = isEdit ? '#4f46e5' : '#10b981';
 
-      const logDate = new Date(log.timestamp);
-      const isToday = !isNaN(logDate.getTime()) && logDate.toDateString() === new Date().toDateString();
+      const isToday = isTodayDate(log.timestamp);
 
-      // Highlight today's new registered pins with larger radius and distinct gold-yellow fill + red boundary
+      // Highlight today's pins with larger radius and distinct fill + prominent boundary
       const marker = L.circleMarker([log.gps.lat, log.gps.lng], {
         radius: isToday ? 11 : 6,
-        fillColor: isToday ? '#f59e0b' : color, // Gold/Amber for today, standard for other days
-        color: isToday ? '#ef4444' : '#ffffff', // Red boundary for today, white for other days
+        fillColor: isToday ? (isEdit ? '#4f46e5' : '#f59e0b') : color,
+        color: isToday ? (isEdit ? '#312e81' : '#ef4444') : '#ffffff',
         weight: isToday ? 3.0 : 1.5,
         opacity: 1.0,
         fillOpacity: isToday ? 1.0 : 0.85
       });
 
       marker.bindPopup(`
-        <div style="font-family: sans-serif; padding: 4px; max-width: 200px;">
+        <div style="font-family: sans-serif; padding: 4px; max-width: 220px;">
           ${isToday ? `
-            <div style="background-color: #ef4444; color: #ffffff; font-size: 8px; font-weight: 900; text-align: center; padding: 2px 4px; border-radius: 4px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
-              ★ Added Today ★
+            <div style="background: ${isEdit ? 'linear-gradient(to right, #2563eb, #4f46e5)' : 'linear-gradient(to right, #f59e0b, #eab308)'}; color: #ffffff; font-size: 8.5px; font-weight: 900; text-align: center; padding: 3px 6px; border-radius: 4px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
+              ${isEdit ? '✏️ EDIT DATA (TODAY) ✏️' : '★ NEW ASSET ADDED TODAY ★'}
             </div>
           ` : ''}
-          <div style="font-size: 10px; font-weight: bold; color: ${isToday ? '#d97706' : color}; text-transform: uppercase;">
-            ${isReg ? 'New Registration' : 'Asset Record Modification'}
+          <div style="font-size: 10px; font-weight: bold; color: ${isEdit ? '#4f46e5' : '#059669'}; text-transform: uppercase;">
+            ${isEdit ? '✏️ Edit Data (Asset Record Panel)' : 'New Asset Registration'}
           </div>
           <div style="font-size: 12px; font-weight: bold; color: #0f172a; margin-top: 2px;">
             ${log.equipmentId}
@@ -310,7 +336,7 @@ export default function AssetMonitorPanel({
             Type: <strong>${log.equipmentType}</strong> (${log.voltageLevel})
           </div>
           <div style="font-size: 10px; color: #475569;">
-            Operator: <strong>${log.operatorName}</strong>
+            ${isEdit ? 'Edited by' : 'Registered by'}: <strong>${log.operatorName}</strong>
           </div>
           <div style="font-size: 9px; color: #94a3b8; margin-top: 4px;">
             ${log.timestamp}
@@ -577,61 +603,128 @@ export default function AssetMonitorPanel({
         </div>
       </div>
 
-      {/* Day-by-Day Visual Trend Comparison Panel */}
+      {/* Day-by-Day Visual Trend Comparison Panel - Vertical Bar Chart */}
       <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
           <div className="space-y-0.5">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-purple-600" />
+              <BarChart3 className="w-4 h-4 text-purple-600" />
               <span>Day-by-Day Comparison Trend ({activeTab === 'registrations' ? 'New Registrations' : 'Asset Edits & Modifications'})</span>
             </h3>
             <p className="text-[11px] text-slate-500">
-              Daily comparison histogram showing record volume changes per calendar day.
+              Daily vertical comparison bar chart showing asset change volume per calendar day over selected period.
             </p>
           </div>
 
-          <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-full text-[10px] font-bold">
-            Max Daily Volume: {dayByDayComparison.maxCount} records
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="px-3 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-full text-[10px] font-bold">
+              Max Daily Volume: {dayByDayComparison.maxCount} records
+            </span>
+            <span className="px-3 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-full text-[10px] font-bold">
+              Total Period Volume: {dayByDayComparison.totalPeriodCount} records
+            </span>
+          </div>
         </div>
 
-        {/* Day-by-Day Histogram Bars */}
+        {/* Day-by-Day Vertical Bar Chart */}
         <div className="pt-2">
           {dayByDayComparison.entries.length === 0 ? (
-            <div className="text-center py-8 text-xs text-slate-400">No activity data found for the selected filter range.</div>
+            <div className="text-center py-12 text-xs text-slate-400">No activity data found for the selected filter range.</div>
           ) : (
-            <div className="space-y-2">
-              <div className="flex items-end gap-1.5 h-36 pt-4 px-2 overflow-x-auto">
-                {dayByDayComparison.entries.map(([dateKey, count]) => {
-                  const pct = Math.max((count / dayByDayComparison.maxCount) * 100, 4);
-                  const isToday = dateKey === new Date().toISOString().split('T')[0];
+            <div className="relative">
+              {/* Background Reference Gridlines */}
+              <div className="absolute inset-0 top-6 bottom-8 pointer-events-none flex flex-col justify-between z-0 pl-10 pr-2">
+                <div className="border-b border-dashed border-slate-200 w-full relative">
+                  <span className="absolute -left-10 -top-2.5 text-[9px] font-mono text-slate-400 w-8 text-right font-medium">
+                    {dayByDayComparison.maxCount}
+                  </span>
+                </div>
+                <div className="border-b border-dashed border-slate-200/80 w-full relative">
+                  <span className="absolute -left-10 -top-2.5 text-[9px] font-mono text-slate-400 w-8 text-right font-medium">
+                    {Math.round(dayByDayComparison.maxCount * 0.5)}
+                  </span>
+                </div>
+                <div className="border-b border-slate-300 w-full relative">
+                  <span className="absolute -left-10 -top-2.5 text-[9px] font-mono text-slate-400 w-8 text-right font-medium">
+                    0
+                  </span>
+                </div>
+              </div>
 
-                  return (
-                    <div key={dateKey} className="flex-1 min-w-[20px] flex flex-col items-center gap-1.5 group relative">
-                      {/* Tooltip on hover */}
-                      <div className="absolute -top-8 hidden group-hover:flex bg-slate-900 text-white text-[10px] font-mono px-2 py-1 rounded shadow-lg whitespace-nowrap z-30">
-                        {dateKey}: {count} records
+              {/* Scrollable Bar Columns Container */}
+              <div className="relative z-10 pl-10">
+                <div className="flex items-end gap-2 sm:gap-3 h-52 pt-6 pb-2 px-2 overflow-x-auto">
+                  {dayByDayComparison.entries.map(([dateKey, count]) => {
+                    const pct = dayByDayComparison.maxCount > 0 
+                      ? (count / dayByDayComparison.maxCount) * 100 
+                      : 0;
+                    const isToday = isTodayDate(dateKey);
+
+                    return (
+                      <div 
+                        key={dateKey} 
+                        className="flex-1 min-w-[32px] max-w-[56px] h-full flex flex-col items-center justify-end group relative cursor-pointer"
+                      >
+                        {/* Hover Tooltip */}
+                        <div className="absolute -top-10 hidden group-hover:flex flex-col items-center bg-slate-900 text-white text-[10px] px-2.5 py-1 rounded-lg shadow-xl whitespace-nowrap z-30 pointer-events-none">
+                          <span className="font-bold text-yellow-400">{dateKey} {isToday ? '(Today)' : ''}</span>
+                          <span className="font-mono text-white">{count} {activeTab === 'registrations' ? 'New Registrations' : 'Asset Edits'}</span>
+                          <div className="w-2 h-2 bg-slate-900 rotate-45 -mb-1 mt-0.5" />
+                        </div>
+
+                        {/* Top Number Label */}
+                        <div className="mb-1 text-center shrink-0">
+                          {count > 0 ? (
+                            <span className={`text-[10px] font-mono font-bold block ${
+                              isToday 
+                                ? activeTab === 'registrations' 
+                                  ? 'text-amber-700 font-black' 
+                                  : 'text-indigo-700 font-black'
+                                : activeTab === 'registrations' 
+                                ? 'text-emerald-700' 
+                                : 'text-purple-700'
+                            }`}>
+                              {count}
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-mono text-slate-300 block">0</span>
+                          )}
+                        </div>
+
+                        {/* Bar Track & Fill */}
+                        <div className="w-full bg-slate-100 hover:bg-slate-200/60 rounded-t-lg h-36 flex items-end overflow-hidden border-b-2 border-slate-300/80 transition-colors">
+                          <div
+                            style={{ 
+                               height: count > 0 ? `${Math.max(pct, 8)}%` : '0%' 
+                            }}
+                            className={`w-full transition-all duration-300 rounded-t-lg ${
+                              isToday
+                                ? activeTab === 'registrations'
+                                  ? 'bg-gradient-to-t from-amber-500 via-amber-400 to-yellow-300 shadow-md ring-1 ring-amber-300'
+                                  : 'bg-gradient-to-t from-blue-600 via-indigo-500 to-purple-400 shadow-md ring-1 ring-indigo-300'
+                                : activeTab === 'registrations'
+                                ? 'bg-gradient-to-t from-emerald-600 via-emerald-500 to-teal-400 group-hover:from-emerald-500 group-hover:to-teal-300 shadow-xs'
+                                : 'bg-gradient-to-t from-purple-600 via-indigo-500 to-blue-400 group-hover:from-purple-500 group-hover:to-indigo-300 shadow-xs'
+                            }`}
+                          />
+                        </div>
+
+                        {/* Date Label on Bottom */}
+                        <div className="mt-1.5 shrink-0 text-center">
+                          <span className={`text-[10px] font-mono block ${
+                            isToday 
+                              ? activeTab === 'registrations'
+                                ? 'font-black text-amber-800 bg-amber-100 px-1 py-0.5 rounded shadow-xs'
+                                : 'font-black text-indigo-800 bg-indigo-100 px-1 py-0.5 rounded shadow-xs' 
+                              : 'text-slate-500 font-medium'
+                          }`}>
+                            {dateKey.slice(5)}
+                          </span>
+                        </div>
                       </div>
-
-                      <div className="w-full bg-slate-100 rounded-t-md h-full flex items-end overflow-hidden">
-                        <div
-                          style={{ height: `${pct}%` }}
-                          className={`w-full transition-all duration-300 rounded-t-md ${
-                            isToday
-                              ? 'bg-gradient-to-t from-yellow-500 to-amber-400'
-                              : activeTab === 'registrations'
-                              ? 'bg-gradient-to-t from-emerald-600 to-teal-400 group-hover:from-emerald-500 group-hover:to-teal-300'
-                              : 'bg-gradient-to-t from-purple-600 to-indigo-400 group-hover:from-purple-500 group-hover:to-indigo-300'
-                          }`}
-                        />
-                      </div>
-
-                      <span className={`text-[9px] font-mono rotate-45 sm:rotate-0 origin-left ${isToday ? 'font-bold text-amber-600' : 'text-slate-400'}`}>
-                        {dateKey.slice(5)}
-                      </span>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -811,24 +904,26 @@ export default function AssetMonitorPanel({
 
       {/* Detailed Activity Log Table */}
       <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <div className="space-y-0.5">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Database className="w-4 h-4 text-purple-600" />
               <span>Detailed Activity Stream Log ({activeTab === 'registrations' ? 'New Registrations' : 'Asset Edits & Changes'})</span>
             </h3>
-            <p className="text-[11px] text-slate-500">Full audit log stream showing timestamped changes and user attribution</p>
+            <p className="text-[11px] text-slate-500">Full audit log stream showing timestamped changes, attribution, and status banners</p>
           </div>
 
-          <span className="text-xs font-mono text-slate-500 font-bold">
-            Showing {currentLogs.length} Records
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-slate-600 bg-slate-100 px-3 py-1 rounded-full font-bold border border-slate-200">
+              Showing {currentLogs.length} Records
+            </span>
+          </div>
         </div>
 
-        <div className="overflow-x-auto max-h-[400px] overflow-y-auto pr-1 border border-slate-100 rounded-lg">
+        <div className="overflow-x-auto max-h-[440px] overflow-y-auto pr-1 border border-slate-100 rounded-xl">
           <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50">
+            <thead className="sticky top-0 z-20 bg-slate-50 border-b border-slate-200 shadow-xs">
+              <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                 <th className="py-2.5 px-3">Equipment ID</th>
                 <th className="py-2.5 px-3">Type</th>
                 <th className="py-2.5 px-3">Voltage</th>
@@ -842,67 +937,90 @@ export default function AssetMonitorPanel({
             <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
               {currentLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     No activity logs matching the selected filters.
                   </td>
                 </tr>
               ) : (
-                currentLogs.slice(0, 100).map((log) => {
+                currentLogs.slice(0, 150).map((log) => {
                   const targetAsset = assets.find(a => a.equipmentId === log.equipmentId);
-                  const logDate = new Date(log.timestamp);
-                  const isToday = !isNaN(logDate.getTime()) && logDate.toDateString() === new Date().toDateString();
+                  const isToday = isTodayDate(log.timestamp);
+                  const isEdit = log.type === 'edit' || log.source === 'asset_record' || log.details?.toLowerCase().includes('edit') || activeTab === 'edits';
 
                   return (
                     <tr 
                       key={log.id} 
                       className={`transition-colors border-l-4 ${
-                        isToday 
-                          ? 'bg-amber-50 hover:bg-amber-100/80 border-l-amber-500 font-semibold' 
-                          : 'hover:bg-purple-50/40 border-l-transparent'
+                        isEdit
+                          ? isToday 
+                            ? 'bg-indigo-50/90 hover:bg-indigo-100/80 border-l-indigo-600 font-semibold'
+                            : 'hover:bg-indigo-50/40 border-l-transparent'
+                          : isToday
+                            ? 'bg-amber-50/90 hover:bg-amber-100/80 border-l-amber-500 font-semibold' 
+                            : 'hover:bg-slate-50 border-l-transparent'
                       }`}
                     >
-                      <td className="py-2.5 px-3 font-mono font-bold text-purple-900">
+                      <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
                         <div className="flex items-center gap-1.5">
                           {isToday && (
-                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
+                            <span className={`w-2 h-2 rounded-full ${isEdit ? 'bg-indigo-600' : 'bg-amber-500'} animate-ping shrink-0`} />
                           )}
-                          <span>{log.equipmentId}</span>
+                          <span className={isEdit ? 'text-indigo-900' : 'text-slate-900'}>{log.equipmentId}</span>
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-slate-800">
                         {log.equipmentType}
                       </td>
                       <td className="py-2.5 px-3">
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded font-mono text-[10px]">
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded font-mono text-[10px] font-bold border border-slate-200/60">
                           {log.voltageLevel}
                         </span>
                       </td>
                       <td className="py-2.5 px-3">
                         <span className="font-bold text-slate-900">{log.area}</span>
                         {log.substationName && (
-                          <span className="text-[10px] text-slate-500 block truncate max-w-[120px]">
+                          <span className="text-[10px] text-slate-500 block truncate max-w-[130px]">
                             {log.substationName}
                           </span>
                         )}
                       </td>
                       <td className="py-2.5 px-3">
                         <div className="flex items-center gap-1.5">
-                          <User className="w-3 h-3 text-purple-500" />
+                          <User className={`w-3.5 h-3.5 ${isEdit ? 'text-indigo-600' : 'text-emerald-600'}`} />
                           <span className="font-bold text-slate-900">{log.operatorName}</span>
                         </div>
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500">
+                      <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500 whitespace-nowrap">
                         {log.timestamp}
                       </td>
-                      <td className="py-2.5 px-3 text-[11px] text-slate-600 max-w-xs truncate">
-                        <div className="flex items-center gap-2">
-                          {isToday && (
-                            <span className="px-1.5 py-0.5 bg-amber-500 text-white font-bold text-[8px] rounded tracking-wider whitespace-nowrap uppercase">
-                              ★ New Today
-                            </span>
+                      <td className="py-2.5 px-3 text-[11px] text-slate-700 max-w-md">
+                        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                          {/* Activity Banner / Badge */}
+                          {isEdit ? (
+                            isToday ? (
+                              <span className="px-2.5 py-0.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-700 text-white font-black text-[9px] rounded-md shadow-sm tracking-wider whitespace-nowrap uppercase flex items-center gap-1 shrink-0 ring-1 ring-indigo-400">
+                                <FileEdit className="w-2.5 h-2.5" />
+                                ✏️ EDIT DATA (TODAY)
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 bg-indigo-100 text-indigo-800 font-bold text-[9px] rounded-md tracking-wider whitespace-nowrap uppercase flex items-center gap-1 shrink-0 border border-indigo-300">
+                                <FileEdit className="w-2.5 h-2.5" />
+                                ✏️ EDIT DATA
+                              </span>
+                            )
+                          ) : (
+                            isToday ? (
+                              <span className="px-2.5 py-0.5 bg-gradient-to-r from-amber-500 to-yellow-500 text-white font-black text-[9px] rounded-md shadow-xs tracking-wider whitespace-nowrap uppercase flex items-center gap-1 shrink-0 ring-1 ring-amber-400">
+                                ★ NEW TODAY
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 font-bold text-[9px] rounded-md tracking-wider whitespace-nowrap uppercase shrink-0 border border-emerald-200">
+                                New Registration
+                              </span>
+                            )
                           )}
-                          <span className="truncate">
-                            {log.details || (activeTab === 'registrations' ? 'New asset added to database' : 'Asset telemetry & specs modified')}
+                          <span className="truncate text-slate-600 font-medium">
+                            {log.details || (isEdit ? `Edited asset data in Asset Record panel for ${log.equipmentId}` : `Registered ${log.equipmentType} in ${log.area}`)}
                           </span>
                         </div>
                       </td>
@@ -910,7 +1028,7 @@ export default function AssetMonitorPanel({
                         {targetAsset && onSelectAsset && (
                           <button
                             onClick={() => onSelectAsset(targetAsset)}
-                            className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ml-auto cursor-pointer"
+                            className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ml-auto cursor-pointer shadow-xs"
                           >
                             <span>Inspect</span>
                             <ChevronRight className="w-3 h-3" />

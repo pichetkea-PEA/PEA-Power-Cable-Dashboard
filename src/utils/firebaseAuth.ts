@@ -53,6 +53,9 @@ export const initAuth = (
       if (credential?.accessToken) {
         cachedAccessToken = credential.accessToken;
         sessionStorage.setItem('google_access_token', credential.accessToken);
+        try {
+          localStorage.setItem('pea_google_token', credential.accessToken);
+        } catch (e) {}
         sessionStorage.setItem('pea_session_active', 'true');
         if (auth.currentUser && onAuthSuccess) {
           onAuthSuccess(auth.currentUser, cachedAccessToken);
@@ -105,6 +108,9 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
     cachedAccessToken = credential.accessToken;
     sessionStorage.setItem('google_access_token', credential.accessToken);
+    try {
+      localStorage.setItem('pea_google_token', credential.accessToken);
+    } catch (e) {}
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     sessionStorage.removeItem('pea_session_active');

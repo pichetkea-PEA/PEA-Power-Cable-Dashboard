@@ -90,6 +90,10 @@ export interface GeneralInformation {
   assetValue?: string; // Col AF in Google Sheets, Col AD in uploaded CSV
   equipmentId: string; // Col AG in Google Sheets
   qrDocument?: string; // Col AH in Google Sheets - Link to online storage cloud for engineering documents
+  source?: 'registration_suite' | 'asset_record' | 'batch_import' | 'manual';
+  registrationDate?: string;
+  isEdited?: boolean;
+  lastEditSource?: 'registration_suite' | 'asset_record' | 'batch_import' | 'manual';
   customFields?: Record<string, string>;
 }
 
