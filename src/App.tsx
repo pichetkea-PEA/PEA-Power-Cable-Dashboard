@@ -17,6 +17,7 @@ import AssetMonitorPanel from './components/AssetMonitorPanel';
 import PeaLogo from './components/PeaLogo';
 import GameLoadingScreen from './components/GameLoadingScreen';
 import Sidebar from './components/Sidebar';
+import { AssetActivityLog } from './utils/auditLogger';
 import { 
   Zap, 
   Layers, 
@@ -51,6 +52,8 @@ export default function App() {
   
   // App UI states
   const [activeTab, setActiveTab] = useState<'admin' | 'area' | 'input' | 'records' | 'registration' | 'monitor'>('area');
+  const [inspectedEquipmentId, setInspectedEquipmentId] = useState<string | null>(null);
+  const [inspectedLog, setInspectedLog] = useState<AssetActivityLog | null>(null);
   const [urlEquipmentId] = useState<string | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -2166,7 +2169,12 @@ export default function App() {
                   folderId={folderId}
                   assets={assets}
                   onRefresh={handleManualRefresh}
-                  initialEquipmentId={urlEquipmentId}
+                  initialEquipmentId={inspectedEquipmentId || urlEquipmentId}
+                  inspectedLog={inspectedLog}
+                  onClearInspectMode={() => {
+                    setInspectedEquipmentId(null);
+                    setInspectedLog(null);
+                  }}
                 />
               )}
 
@@ -2187,7 +2195,9 @@ export default function App() {
                 <AssetMonitorPanel
                   user={user}
                   assets={assets}
-                  onSelectAsset={(selected) => {
+                  onSelectAsset={(selected, log) => {
+                    setInspectedEquipmentId(selected.equipmentId);
+                    setInspectedLog(log || null);
                     setActiveTab('records');
                   }}
                   onRefresh={handleManualRefresh}

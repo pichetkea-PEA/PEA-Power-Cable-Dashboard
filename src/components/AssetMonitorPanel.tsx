@@ -33,7 +33,7 @@ import {
 interface AssetMonitorPanelProps {
   user: PEAUser;
   assets: CableAsset[];
-  onSelectAsset?: (asset: CableAsset) => void;
+  onSelectAsset?: (asset: CableAsset, log?: AssetActivityLog) => void;
   onRefresh?: () => void;
 }
 
@@ -943,7 +943,23 @@ export default function AssetMonitorPanel({
                 </tr>
               ) : (
                 currentLogs.slice(0, 150).map((log) => {
-                  const targetAsset = assets.find(a => a.equipmentId === log.equipmentId);
+                  const targetAsset = assets.find(a => 
+                    a.equipmentId?.trim().toLowerCase() === log.equipmentId?.trim().toLowerCase() ||
+                    a.peaNumber?.trim().toLowerCase() === log.equipmentId?.trim().toLowerCase() ||
+                    a.assetNumber?.trim().toLowerCase() === log.equipmentId?.trim().toLowerCase()
+                  ) || ({
+                    number: 0,
+                    equipmentId: log.equipmentId,
+                    equipmentType: (log.equipmentType as any) || 'Underground Cable',
+                    voltageLevel: log.voltageLevel ? log.voltageLevel.replace(/[^0-9.]/g, '') : '115',
+                    city: log.city || 'Bangkok',
+                    substationName: log.substationName || 'Main Substation',
+                    landmark: log.landmark || '',
+                    operatorName: log.operatorName,
+                    timestamp: log.timestamp,
+                    gps: log.gps || { lat: 13.7563, lng: 100.5018 },
+                    changedFields: log.changedFields
+                  } as CableAsset);
                   const isToday = isTodayDate(log.timestamp);
                   const isEdit = log.type === 'edit' || log.source === 'asset_record' || log.details?.toLowerCase().includes('edit') || activeTab === 'edits';
 
@@ -1025,10 +1041,11 @@ export default function AssetMonitorPanel({
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-right">
-                        {targetAsset && onSelectAsset && (
+                        {onSelectAsset && (
                           <button
-                            onClick={() => onSelectAsset(targetAsset)}
-                            className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ml-auto cursor-pointer shadow-xs"
+                            onClick={() => onSelectAsset(targetAsset, log)}
+                            className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ml-auto cursor-pointer shadow-xs hover:shadow-sm active:scale-95"
+                            title="Inspect asset and highlight edited fields in Asset Record panel"
                           >
                             <span>Inspect</span>
                             <ChevronRight className="w-3 h-3" />

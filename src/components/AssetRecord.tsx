@@ -53,7 +53,7 @@ import {
 } from '../utils/googleSheets';
 import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
-import { logAssetActivity, deriveAssetArea } from '../utils/auditLogger';
+import { logAssetActivity, deriveAssetArea, AssetActivityLog } from '../utils/auditLogger';
 
 function safeSetLocalStorage(key: string, value: string): void {
   try {
@@ -104,6 +104,8 @@ interface AssetRecordProps {
   assets?: CableAsset[];
   onRefresh?: () => void;
   initialEquipmentId?: string | null;
+  inspectedLog?: AssetActivityLog | null;
+  onClearInspectMode?: () => void;
 }
 
 export default function AssetRecord({ 
@@ -113,7 +115,9 @@ export default function AssetRecord({
   folderId,
   assets,
   onRefresh,
-  initialEquipmentId
+  initialEquipmentId,
+  inspectedLog,
+  onClearInspectMode
 }: AssetRecordProps) {
   // --- Filter State ---
   const [filterArea, setFilterArea] = useState<string>((user.role === 'Admin' || user.role === 'Manager') ? 'All' : user.interestArea);
@@ -536,13 +540,149 @@ export default function AssetRecord({
     }
   };
 
-  // Style inputs based on editing state
-  const getInputClassName = (isSelect = false) => {
+  // --- Audit & Inspect Highlight State ---
+  const [inspectedLogState, setInspectedLogState] = useState<AssetActivityLog | null>(inspectedLog || null);
+
+  useEffect(() => {
+    if (inspectedLog) {
+      setInspectedLogState(inspectedLog);
+    }
+  }, [inspectedLog]);
+
+  // Derived state: Determine which fields were modified in the inspected activity or across revisions
+  const highlightedFields = useMemo(() => {
+    if (!selectedAsset) return new Set<string>();
+    const fields = new Set<string>();
+
+    // 1. If explicit log.changedFields exists
+    if (inspectedLogState?.changedFields && Array.isArray(inspectedLogState.changedFields) && inspectedLogState.changedFields.length > 0) {
+      for (const f of inspectedLogState.changedFields) {
+        const lower = f.toLowerCase().trim();
+        if (lower.includes('general') || lower.includes('detail')) {
+          ['voltageLevel', 'city', 'locationType', 'equipmentType', 'substationName', 'landmark', 'gps', 'yearOfRegistration', 'assetNumber', 'adsNumber', 'assetValue', 'model', 'serialNumber', 'size', 'manufacturer', 'country', 'wbs'].forEach(k => fields.add(k));
+        } else if (lower.includes('engineering') || lower.includes('telemetry') || lower.includes('spec')) {
+          ['loadCurrent', 'sheathCurrent', 'surfaceTemperature', 'externalDischarge', 'pdResult', 'onlinePdAmplitude', 'insulationResistance', 'tanDelta', 'tanDeltaAmplitude'].forEach(k => fields.add(k));
+        } else if (lower.includes('visual') || lower.includes('thermal') || lower.includes('image') || lower.includes('photo')) {
+          fields.add('visualPictureUrl');
+          fields.add('thermalImageUrl');
+        } else {
+          fields.add(f);
+        }
+      }
+    }
+
+    // 2. If current asset has changedFields recorded
+    if (selectedAsset.changedFields && Array.isArray(selectedAsset.changedFields) && selectedAsset.changedFields.length > 0) {
+      for (const f of selectedAsset.changedFields) {
+        const lower = f.toLowerCase().trim();
+        if (lower.includes('general') || lower.includes('detail')) {
+          ['voltageLevel', 'city', 'locationType', 'equipmentType', 'substationName', 'landmark', 'gps', 'yearOfRegistration', 'assetNumber', 'adsNumber', 'assetValue', 'model', 'serialNumber', 'size', 'manufacturer', 'country', 'wbs'].forEach(k => fields.add(k));
+        } else if (lower.includes('engineering') || lower.includes('telemetry') || lower.includes('spec')) {
+          ['loadCurrent', 'sheathCurrent', 'surfaceTemperature', 'externalDischarge', 'pdResult', 'onlinePdAmplitude', 'insulationResistance', 'tanDelta', 'tanDeltaAmplitude'].forEach(k => fields.add(k));
+        } else if (lower.includes('visual') || lower.includes('thermal') || lower.includes('image') || lower.includes('photo')) {
+          fields.add('visualPictureUrl');
+          fields.add('thermalImageUrl');
+        } else {
+          fields.add(f);
+        }
+      }
+    }
+
+    // 3. Direct Diff against previous revision if available in history
+    if (selectedAssetHistory.length > 1) {
+      const idx = selectedAssetHistory.findIndex(h => h.timestamp === selectedAsset.timestamp && h.equipmentId === selectedAsset.equipmentId);
+      const prevRevision = idx > 0 ? selectedAssetHistory[idx - 1] : (idx === -1 ? selectedAssetHistory[selectedAssetHistory.length - 2] : null);
+
+      if (prevRevision && prevRevision !== selectedAsset) {
+        if (String(selectedAsset.voltageLevel || '') !== String(prevRevision.voltageLevel || '')) fields.add('voltageLevel');
+        if ((selectedAsset.city || '') !== (prevRevision.city || '')) fields.add('city');
+        if ((selectedAsset.locationType || '') !== (prevRevision.locationType || '')) fields.add('locationType');
+        if ((selectedAsset.equipmentType || '') !== (prevRevision.equipmentType || '')) fields.add('equipmentType');
+        if ((selectedAsset.substationName || '') !== (prevRevision.substationName || '')) fields.add('substationName');
+        if ((selectedAsset.landmark || '') !== (prevRevision.landmark || '')) fields.add('landmark');
+        if (String(selectedAsset.gps?.lat || '') !== String(prevRevision.gps?.lat || '') || String(selectedAsset.gps?.lng || '') !== String(prevRevision.gps?.lng || '')) fields.add('gps');
+        if (Number(selectedAsset.yearOfRegistration || 0) !== Number(prevRevision.yearOfRegistration || 0)) fields.add('yearOfRegistration');
+        if ((selectedAsset.assetNumber || '') !== (prevRevision.assetNumber || '')) fields.add('assetNumber');
+        if ((selectedAsset.adsNumber || '') !== (prevRevision.adsNumber || '')) fields.add('adsNumber');
+        if ((selectedAsset.manufacturer || '') !== (prevRevision.manufacturer || '')) fields.add('manufacturer');
+        if ((selectedAsset.country || '') !== (prevRevision.country || '')) fields.add('country');
+        if ((selectedAsset.model || '') !== (prevRevision.model || '')) fields.add('model');
+        if ((selectedAsset.serialNumber || '') !== (prevRevision.serialNumber || '')) fields.add('serialNumber');
+        if ((selectedAsset.size || '') !== (prevRevision.size || '')) fields.add('size');
+        if ((selectedAsset.assetValue || '') !== (prevRevision.assetValue || '')) fields.add('assetValue');
+        if ((selectedAsset.productionMonth || '') !== (prevRevision.productionMonth || '')) fields.add('productionMonth');
+        if ((selectedAsset.installationDate || '') !== (prevRevision.installationDate || '')) fields.add('installationDate');
+        if ((selectedAsset.wbs || '') !== (prevRevision.wbs || '')) fields.add('wbs');
+        if ((selectedAsset.businessType || '') !== (prevRevision.businessType || '')) fields.add('businessType');
+        if ((selectedAsset.costCenter || '') !== (prevRevision.costCenter || '')) fields.add('costCenter');
+        if ((selectedAsset.gistag || '') !== (prevRevision.gistag || '')) fields.add('gistag');
+        if ((selectedAsset.class || '') !== (prevRevision.class || '')) fields.add('class');
+        if ((selectedAsset.contractNumber || '') !== (prevRevision.contractNumber || '')) fields.add('contractNumber');
+        if ((selectedAsset.feeder || '') !== (prevRevision.feeder || '')) fields.add('feeder');
+        if ((selectedAsset.substationId || '') !== (prevRevision.substationId || '')) fields.add('substationId');
+        if ((selectedAsset.operateId || '') !== (prevRevision.operateId || '')) fields.add('operateId');
+        if ((selectedAsset.workOrder || '') !== (prevRevision.workOrder || '')) fields.add('workOrder');
+        if ((selectedAsset.qrDocument || '') !== (prevRevision.qrDocument || '')) fields.add('qrDocument');
+        if (Number(selectedAsset.loadCurrent || 0) !== Number(prevRevision.loadCurrent || 0)) fields.add('loadCurrent');
+        if (Number(selectedAsset.sheathCurrent || 0) !== Number(prevRevision.sheathCurrent || 0)) fields.add('sheathCurrent');
+        if (Number(selectedAsset.surfaceTemperature || 0) !== Number(prevRevision.surfaceTemperature || 0)) fields.add('surfaceTemperature');
+        if (Number(selectedAsset.externalDischarge || 0) !== Number(prevRevision.externalDischarge || 0)) fields.add('externalDischarge');
+        if ((selectedAsset.pdResult || '') !== (prevRevision.pdResult || '')) fields.add('pdResult');
+        if (Number(selectedAsset.onlinePdAmplitude || 0) !== Number(prevRevision.onlinePdAmplitude || 0)) fields.add('onlinePdAmplitude');
+        if (Number(selectedAsset.insulationResistance || 0) !== Number(prevRevision.insulationResistance || 0)) fields.add('insulationResistance');
+        if ((selectedAsset.tanDelta || '') !== (prevRevision.tanDelta || '')) fields.add('tanDelta');
+        if (Number(selectedAsset.tanDeltaAmplitude || 0) !== Number(prevRevision.tanDeltaAmplitude || 0)) fields.add('tanDeltaAmplitude');
+        if ((selectedAsset.visualPictureUrl || '') !== (prevRevision.visualPictureUrl || '')) fields.add('visualPictureUrl');
+        if ((selectedAsset.thermalImageUrl || '') !== (prevRevision.thermalImageUrl || '')) fields.add('thermalImageUrl');
+      }
+    }
+
+    // 4. If inspected log is an edit but no diff found yet, highlight primary fields
+    if (fields.size === 0 && (inspectedLogState?.type === 'edit' || (inspectedLogState?.details && inspectedLogState.details.toLowerCase().includes('edit')))) {
+      if (selectedAsset.voltageLevel) fields.add('voltageLevel');
+      if (selectedAsset.surfaceTemperature !== undefined) fields.add('surfaceTemperature');
+      if (selectedAsset.externalDischarge !== undefined) fields.add('externalDischarge');
+      if (selectedAsset.loadCurrent !== undefined) fields.add('loadCurrent');
+      if (selectedAsset.pdResult && selectedAsset.pdResult !== 'None') fields.add('pdResult');
+      if (selectedAsset.tanDelta && selectedAsset.tanDelta !== 'No record') fields.add('tanDelta');
+      if (selectedAsset.assetValue) fields.add('assetValue');
+      if (selectedAsset.visualPictureUrl) fields.add('visualPictureUrl');
+      if (selectedAsset.thermalImageUrl) fields.add('thermalImageUrl');
+    }
+
+    return fields;
+  }, [selectedAsset, selectedAssetHistory, inspectedLogState]);
+
+  // Style inputs based on editing state & inspected modified fields highlighting
+  const getInputClassName = (fieldKey?: string, isSelect = false) => {
+    const isHighlighted = fieldKey && highlightedFields.has(fieldKey);
+
+    if (isHighlighted) {
+      return `w-full border-2 rounded-lg py-1.5 ${isSelect ? 'px-2' : 'px-3'} text-xs font-bold transition-all bg-amber-50/95 text-amber-950 border-amber-500 shadow-md ring-2 ring-indigo-500/40 edited-data-box focus:outline-hidden`;
+    }
+
     return `w-full border rounded-lg py-1.5 ${isSelect ? 'px-2' : 'px-3'} text-xs font-semibold focus:outline-hidden transition-all ${
       isEditing 
         ? 'bg-white text-gray-800 border-purple-200 focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs' 
         : 'bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed select-none'
     }`;
+  };
+
+  const renderFieldLabel = (label: string, fieldKey: string, extraNote?: string) => {
+    const isHighlighted = highlightedFields.has(fieldKey);
+    return (
+      <div className="flex items-center justify-between gap-1 mb-0.5">
+        <label className={`text-[9px] font-bold uppercase ${isHighlighted ? 'text-indigo-900 font-black' : 'text-gray-400'}`}>
+          {label} {extraNote && <span className="text-[8px] font-normal lowercase">({extraNote})</span>}
+        </label>
+        {isHighlighted && (
+          <span className="px-1.5 py-0.2 bg-gradient-to-r from-amber-500 via-indigo-600 to-purple-600 text-white rounded text-[8px] font-black uppercase tracking-wider shadow-xs flex items-center gap-0.5 animate-pulse">
+            <Sparkles className="w-2 h-2" />
+            Edited
+          </span>
+        )}
+      </div>
+    );
   };
   
   // Edit variables mapping to the chosen asset
@@ -1940,6 +2080,48 @@ export default function AssetRecord({
 
             {/* Editing Work area */}
             <div className="p-6 space-y-6">
+              {/* Inspection Audit Highlight Banner */}
+              {(inspectedLogState || highlightedFields.size > 0) && (
+                <div className="bg-gradient-to-r from-amber-500 via-indigo-600 to-purple-700 p-0.5 rounded-2xl shadow-lg animate-fadeIn">
+                  <div className="bg-white/95 backdrop-blur-md p-4 rounded-[14px] flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0 shadow-inner">
+                        <Sparkles className="w-5 h-5 text-amber-600 animate-spin-slow" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-500 text-white shadow-xs">
+                            Audit Inspection Mode
+                          </span>
+                          <span className="text-xs font-bold text-gray-900 font-mono">
+                            {selectedAsset?.equipmentId}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-600 font-medium mt-0.5">
+                          {inspectedLogState?.details || `Inspecting modifications made by ${selectedAsset?.latestUpdatedBy || 'operator'}`}.
+                          <span className="ml-1 text-amber-700 font-bold">
+                            ({highlightedFields.size} edited parameter{highlightedFields.size === 1 ? '' : 's'} highlighted with glowing amber borders).
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInspectedLogState(null);
+                          if (onClearInspectMode) onClearInspectMode();
+                        }}
+                        className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Dismiss Inspection</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 
                 {/* COLUMN 1: GENERAL INFORMATION */}
@@ -1953,8 +2135,8 @@ export default function AssetRecord({
 
                   {/* PEA, Asset & ADS Numbers */}
                   <div className="space-y-3">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-500 uppercase">PEA Number (ID) [Read-Only]</label>
+                    <div className="flex flex-col">
+                      <label className="text-[9px] font-bold text-gray-500 uppercase mb-0.5">PEA Number (ID) [Read-Only]</label>
                       <input
                         type="text"
                         value={editPeaNumber}
@@ -1964,36 +2146,36 @@ export default function AssetRecord({
                       />
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Equipment Number ADS</label>
+                    <div className="flex flex-col">
+                      {renderFieldLabel('Equipment Number ADS', 'assetNumber')}
                       <input
                         type="text"
                         value={editAssetNumber}
                         onChange={e => setEditAssetNumber(e.target.value)}
                         disabled={!isEditing}
-                        className={getInputClassName()}
+                        className={getInputClassName('assetNumber')}
                       />
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Account Asset Number (AA)</label>
+                    <div className="flex flex-col">
+                      {renderFieldLabel('Account Asset Number (AA)', 'adsNumber')}
                       <input
                         type="text"
                         value={editAdsNumber}
                         onChange={e => setEditAdsNumber(e.target.value)}
                         disabled={!isEditing}
-                        className={getInputClassName()}
+                        className={getInputClassName('adsNumber')}
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Voltage Level (kV)</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Voltage Level (kV)', 'voltageLevel')}
                         <select
                           value={editVoltage}
                           onChange={e => setEditVoltage(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName(true)}
+                          className={getInputClassName('voltageLevel', true)}
                         >
                           <option value="115">115 kV</option>
                           <option value="33">33 kV</option>
@@ -2002,26 +2184,26 @@ export default function AssetRecord({
                         </select>
                       </div>
 
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Registration Year</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Registration Year', 'yearOfRegistration')}
                         <input
                           type="number"
                           value={editRegYear}
                           onChange={e => setEditRegYear(parseInt(e.target.value) || new Date().getFullYear())}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('yearOfRegistration')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">City</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('City', 'city')}
                         <select
                           value={editCity}
                           onChange={e => setEditCity(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName(true)}
+                          className={getInputClassName('city', true)}
                         >
                           {(PEA_AREA_CITIES[currentAssetArea] || []).map(c => (
                             <option key={c} value={c}>{c}</option>
@@ -2029,13 +2211,13 @@ export default function AssetRecord({
                         </select>
                       </div>
 
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Location Type</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Location Type', 'locationType')}
                         <select
                           value={editLocationType}
                           onChange={e => setEditLocationType(e.target.value as LocationType)}
                           disabled={!isEditing}
-                          className={getInputClassName(true)}
+                          className={getInputClassName('locationType', true)}
                         >
                           <option value="Substation">Substation</option>
                           <option value="Transmission Line">Transmission Line</option>
@@ -2044,13 +2226,13 @@ export default function AssetRecord({
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Equipment Type</label>
+                    <div className="flex flex-col">
+                      {renderFieldLabel('Equipment Type', 'equipmentType')}
                       <select
                         value={editEqType}
                         onChange={e => setEditEqType(e.target.value as EquipmentType)}
                         disabled={!isEditing}
-                        className={getInputClassName(true)}
+                        className={getInputClassName('equipmentType', true)}
                       >
                         {getAvailableEquipmentTypes(editVoltage || '115').map(t => (
                           <option key={t} value={t}>{t}</option>
@@ -2058,63 +2240,60 @@ export default function AssetRecord({
                       </select>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Substation Name / Section</label>
+                    <div className="flex flex-col">
+                      {renderFieldLabel('Substation Name / Section', 'substationName')}
                       <input
                         type="text"
                         value={editSubstation}
                         onChange={e => setEditSubstation(e.target.value)}
                         disabled={!isEditing}
-                        className={getInputClassName()}
+                        className={getInputClassName('substationName')}
                       />
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Landmark Location</label>
+                    <div className="flex flex-col">
+                      {renderFieldLabel('Landmark Location', 'landmark')}
                       <textarea
                         rows={2}
                         value={editLandmark}
                         onChange={e => setEditLandmark(e.target.value)}
                         disabled={!isEditing}
-                        className={getInputClassName()}
+                        className={getInputClassName('landmark')}
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">GPS Latitude</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('GPS Latitude', 'gps')}
                         <input
                           type="text"
                           value={editLat}
                           onChange={e => setEditLat(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('gps')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">GPS Longitude</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('GPS Longitude', 'gps')}
                         <input
                           type="text"
                           value={editLng}
                           onChange={e => setEditLng(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('gps')}
                         />
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1 pt-2 border-t border-gray-200/80">
-                      <label className="text-[9px] font-bold text-emerald-700 uppercase flex items-center justify-between">
-                        <span>Asset Value</span>
-                        <span className="text-[8px] text-emerald-600 font-normal">Col AF</span>
-                      </label>
+                    <div className="flex flex-col pt-2 border-t border-gray-200/80">
+                      {renderFieldLabel('Asset Value', 'assetValue', 'Col AF')}
                       <input
                         type="text"
                         placeholder="e.g. 2,500,000 THB"
                         value={editAssetValue}
                         onChange={e => setEditAssetValue(e.target.value)}
                         disabled={!isEditing}
-                        className="w-full bg-emerald-50/40 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-emerald-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white disabled:bg-emerald-50/30"
+                        className={highlightedFields.has('assetValue') ? getInputClassName('assetValue') : "w-full bg-emerald-50/40 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-emerald-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white disabled:bg-emerald-50/30"}
                       />
                     </div>
                   </div>
@@ -2136,24 +2315,24 @@ export default function AssetRecord({
                     </span>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Manufacturer</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Manufacturer', 'manufacturer')}
                         <select
                           value={editManufacturer}
                           onChange={e => setEditManufacturer(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName(true)}
+                          className={getInputClassName('manufacturer', true)}
                         >
                           {getManufacturersForEquipmentType(editEqType).map(m => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Country of Origin</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Country of Origin', 'country')}
                         <select
                           value={editCountry}
                           onChange={e => setEditCountry(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName(true)}
+                          className={getInputClassName('country', true)}
                         >
                           {COUNTRIES_OF_ORIGIN.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
@@ -2161,202 +2340,213 @@ export default function AssetRecord({
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Model</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Model', 'model')}
                         <input
                           type="text"
                           placeholder="Model..."
                           value={editModel}
                           onChange={e => setEditModel(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('model')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Serial Number</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Serial Number', 'serialNumber')}
                         <input
                           type="text"
                           placeholder="S/N..."
                           value={editSerialNumber}
                           onChange={e => setEditSerialNumber(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('serialNumber')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Size (Cross Section)</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Size (Cross Section)', 'size')}
                         <input
                           type="text"
                           placeholder="e.g. 1x400 sq.mm"
                           value={editSize}
                           onChange={e => setEditSize(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('size')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Production Month</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Production Month', 'productionMonth')}
                         <input
                           type="text"
                           placeholder="e.g. 07/2018"
                           value={editProductionMonth}
                           onChange={e => setEditProductionMonth(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('productionMonth')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Installation Date', 'installationDate')}
                         <input
                           type="date"
                           value={editInstallationDate}
                           onChange={e => setEditInstallationDate(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('installationDate')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">WBS Code</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('WBS Code', 'wbs')}
                         <input
                           type="text"
                           placeholder="WBS..."
                           value={editWbs}
                           onChange={e => setEditWbs(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('wbs')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Business Type</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Business Type', 'businessType')}
                         <input
                           type="text"
                           placeholder="e.g. Transmission or N/A"
                           value={editBusinessType}
                           onChange={e => setEditBusinessType(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('businessType')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Cost Center</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Cost Center', 'costCenter')}
                         <input
                           type="text"
                           placeholder="CC..."
                           value={editCostCenter}
                           onChange={e => setEditCostCenter(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('costCenter')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">GISTAG</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('GISTAG', 'gistag')}
                         <input
                           type="text"
                           placeholder="GIS..."
                           value={editGistag}
                           onChange={e => setEditGistag(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('gistag')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Class</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Class', 'class')}
                         <input
                           type="text"
                           placeholder="e.g. High Voltage or N/A"
                           value={editClass}
                           onChange={e => setEditClass(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('class')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Contract Number</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Contract Number', 'contractNumber')}
                         <input
                           type="text"
                           placeholder="CN-..."
                           value={editContractNumber}
                           onChange={e => setEditContractNumber(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('contractNumber')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Work Order</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Work Order', 'workOrder')}
                         <input
                           type="text"
                           placeholder="WO-..."
                           value={editWorkOrder}
                           onChange={e => setEditWorkOrder(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('workOrder')}
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-3 gap-1.5">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Feeder ID</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Feeder ID', 'feeder')}
                         <input
                           type="text"
                           placeholder="FDR..."
                           value={editFeeder}
                           onChange={e => setEditFeeder(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('feeder')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Substation ID</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Substation ID', 'substationId')}
                         <input
                           type="text"
                           placeholder="SUB..."
                           value={editSubstationId}
                           onChange={e => setEditSubstationId(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('substationId')}
                         />
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Operate ID</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Operate ID', 'operateId')}
                         <input
                           type="text"
                           placeholder="OP..."
                           value={editOperateId}
                           onChange={e => setEditOperateId(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('operateId')}
                         />
                       </div>
                     </div>
 
                     {/* Engineering Document QR Code (Column AH) */}
                     <div className="pt-2">
-                      <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                      <div className={`border rounded-xl p-3 space-y-2 transition-all ${
+                        highlightedFields.has('qrDocument')
+                          ? 'bg-amber-100/60 border-amber-400 ring-2 ring-indigo-500/40'
+                          : 'bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200'
+                      }`}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <div className="p-1.5 bg-amber-500 text-white rounded-lg shadow-2xs">
                               <QrCode className="w-4 h-4" />
                             </div>
                             <div>
-                              <h4 className="text-[11px] font-black text-amber-950 uppercase tracking-wider">
-                                QR Document Link
-                              </h4>
+                              <div className="flex items-center gap-1.5">
+                                <h4 className="text-[11px] font-black text-amber-950 uppercase tracking-wider">
+                                  QR Document Link
+                                </h4>
+                                {highlightedFields.has('qrDocument') && (
+                                  <span className="px-1.5 py-0.2 text-[8px] font-black bg-amber-500 text-white rounded-sm shadow-2xs uppercase">
+                                    Edited
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[9px] text-amber-800 font-medium">
                                 As-built drawings, catalogue, type test & routine test storage
                               </p>
@@ -2383,7 +2573,7 @@ export default function AssetRecord({
                               value={editQrDocument}
                               onChange={e => setEditQrDocument(e.target.value)}
                               placeholder="https://drive.google.com/... or cloud document link"
-                              className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
+                              className={getInputClassName('qrDocument')}
                             />
                           </div>
                         ) : selectedAsset.qrDocument ? (
@@ -2442,59 +2632,59 @@ export default function AssetRecord({
                       </span>
 
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Load Current (Amps)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Load Current (Amps)', 'loadCurrent')}
                           <input
                             type="number"
                             value={editLoadCurrent}
                             onChange={e => setEditLoadCurrent(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('loadCurrent')}
                           />
                         </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Sheath Current (Amps)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Sheath Current (Amps)', 'sheathCurrent')}
                           <input
                             type="number"
                             value={editSheathCurrent}
                             onChange={e => setEditSheathCurrent(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('sheathCurrent')}
                           />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Surface Temp (°C)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Surface Temp (°C)', 'surfaceTemperature')}
                           <input
                             type="number"
                             value={editTemp}
                             onChange={e => setEditTemp(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('surfaceTemperature')}
                           />
                         </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">External PD (pC)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('External PD (pC)', 'externalDischarge')}
                           <input
                             type="number"
                             value={editDischarge}
                             onChange={e => setEditDischarge(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('externalDischarge')}
                           />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD Pattern</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Online PD Pattern', 'pdResult')}
                           <select
                             value={editPdResult}
                             onChange={e => setEditPdResult(e.target.value as PDResultType)}
                             disabled={!isEditing}
-                            className={getInputClassName(true)}
+                            className={getInputClassName('pdResult', true)}
                           >
                             <option value="None">None (Stable)</option>
                             <option value="Corona">Corona</option>
@@ -2505,39 +2695,39 @@ export default function AssetRecord({
                             <option value="Treeing">Electrical Treeing</option>
                           </select>
                         </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Online PD Amplitude (pC)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Online PD Amplitude (pC)', 'onlinePdAmplitude')}
                           <input
                             type="number"
                             step="any"
                             value={editOnlinePdAmplitude}
                             onChange={e => setEditOnlinePdAmplitude(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('onlinePdAmplitude')}
                             placeholder="e.g. 150"
                           />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Insulation Resistance (GΩ)</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Insulation Resistance (GΩ)', 'insulationResistance')}
                           <input
                             type="number"
                             step="any"
                             value={editInsulation}
                             onChange={e => setEditInsulation(e.target.value)}
                             disabled={!isEditing}
-                            className={getInputClassName()}
+                            className={getInputClassName('insulationResistance')}
                           />
                         </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[9px] font-bold text-gray-400 uppercase">Tan Delta Loss Result</label>
+                        <div className="flex flex-col">
+                          {renderFieldLabel('Tan Delta Loss Result', 'tanDelta')}
                           <select
                             value={editTanDelta}
                             onChange={e => setEditTanDelta(e.target.value as TanDeltaResult)}
                             disabled={!isEditing}
-                            className={getInputClassName(true)}
+                            className={getInputClassName('tanDelta', true)}
                           >
                             <option value="No Action Required">No Action Required</option>
                             <option value="Action Required">Action Required</option>
@@ -2547,15 +2737,15 @@ export default function AssetRecord({
                         </div>
                       </div>
 
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Tan Delta Amplitude</label>
+                      <div className="flex flex-col">
+                        {renderFieldLabel('Tan Delta Amplitude', 'tanDeltaAmplitude')}
                         <input
                           type="number"
                           step="any"
                           value={editTanDeltaAmplitude}
                           onChange={e => setEditTanDeltaAmplitude(e.target.value)}
                           disabled={!isEditing}
-                          className={getInputClassName()}
+                          className={getInputClassName('tanDeltaAmplitude')}
                           placeholder="e.g. 0.0025"
                         />
                       </div>
@@ -2575,8 +2765,14 @@ export default function AssetRecord({
                   <div className="space-y-4">
                     {/* Visual Photo Block */}
                     <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase block">Visual Light Photograph</label>
-                      <div className="border border-gray-200 rounded-lg overflow-hidden bg-white p-1">
+                      <div className="flex items-center justify-between">
+                        {renderFieldLabel('Visual Light Photograph', 'visualPictureUrl')}
+                      </div>
+                      <div className={`rounded-lg overflow-hidden bg-white p-1 transition-all ${
+                        highlightedFields.has('visualPictureUrl')
+                          ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                          : 'border border-gray-200'
+                      }`}>
                         <img
                           src={visualPreview || editVisualUrl || 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'}
                           alt="Visual Light Capture"
@@ -2599,8 +2795,14 @@ export default function AssetRecord({
 
                     {/* Thermal Photo Block */}
                     <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase block">Thermal / Infrared Snapshot</label>
-                      <div className="border border-gray-200 rounded-lg overflow-hidden bg-white p-1">
+                      <div className="flex items-center justify-between">
+                        {renderFieldLabel('Thermal / Infrared Snapshot', 'thermalImageUrl')}
+                      </div>
+                      <div className={`rounded-lg overflow-hidden bg-white p-1 transition-all ${
+                        highlightedFields.has('thermalImageUrl')
+                          ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                          : 'border border-gray-200'
+                      }`}>
                         <img
                           src={thermalPreview || editThermalUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'}
                           alt="Thermography Diagnostic"
@@ -2628,7 +2830,9 @@ export default function AssetRecord({
                       return (
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
-                            <label className="text-[9px] font-bold text-gray-400 uppercase block">Equipment Satellite Location</label>
+                            <div className="flex items-center gap-1.5">
+                              {renderFieldLabel('Equipment Satellite Location', 'gps')}
+                            </div>
                             <a 
                               href={`https://www.google.com/maps/search/?api=1&query=${mapLat},${mapLng}`} 
                               target="_blank" 
@@ -2640,7 +2844,11 @@ export default function AssetRecord({
                               <span>Open Maps</span>
                             </a>
                           </div>
-                          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white p-1 relative group">
+                          <div className={`rounded-lg overflow-hidden bg-white p-1 relative group transition-all ${
+                            highlightedFields.has('gps')
+                              ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                              : 'border border-gray-200'
+                          }`}>
                             <img
                               src={`/api/map-image?lat=${mapLat}&lng=${mapLng}`}
                               alt="Equipment Satellite Location"

@@ -1,5 +1,31 @@
 @import "tailwindcss";
 
+/* Highlight & Blinking Animations for Edited Asset Fields in Inspect Mode */
+@keyframes editedBoxPulse {
+  0%, 100% {
+    border-color: #818cf8;
+    box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.4), 0 2px 5px rgba(99, 102, 241, 0.12);
+    background-color: #f5f3ff;
+  }
+  50% {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 3.5px rgba(245, 158, 11, 0.45), 0 4px 10px rgba(245, 158, 11, 0.2);
+    background-color: #fef3c7;
+  }
+}
+
+.edited-data-box {
+  animation: editedBoxPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important;
+  border-width: 2px !important;
+  color: #1e1b4b !important;
+  font-weight: 700 !important;
+}
+
+.edited-photo-box {
+  animation: editedBoxPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important;
+  border-width: 2.5px !important;
+}
+
 /* Leaflet Custom Popup Styling */
 .custom-leaflet-popup .leaflet-popup-content-wrapper {
   border-radius: 14px !important;
