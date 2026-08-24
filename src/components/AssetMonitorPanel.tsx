@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import { CableAsset, PEAUser } from '../types';
 import { PEA_AREAS, PEA_AREA_NAMES } from '../utils/peaData';
 import { deriveAllActivityLogs, AssetActivityLog } from '../utils/auditLogger';
+import AssetValueOverview from './AssetValueOverview';
 import { 
   ShieldAlert, 
   Activity, 
@@ -27,7 +28,8 @@ import {
   Building2,
   ChevronRight,
   Database,
-  Check
+  Check,
+  Coins
 } from 'lucide-react';
 
 interface AssetMonitorPanelProps {
@@ -83,8 +85,8 @@ export default function AssetMonitorPanel({
     );
   }
 
-  // Active View Tab: Part 1 ('registrations') or Part 2 ('edits')
-  const [activeTab, setActiveTab] = useState<'registrations' | 'edits'>('registrations');
+  // Active View Tab: Part 1 ('registrations'), Part 2 ('edits'), or Part 3 ('valuation')
+  const [activeTab, setActiveTab] = useState<'registrations' | 'edits' | 'valuation'>('registrations');
 
   // Filter States
   const [timeRange, setTimeRange] = useState<TimeRangeOption>('30d');
@@ -388,12 +390,12 @@ export default function AssetMonitorPanel({
           </div>
         </div>
 
-        {/* Part 1 vs Part 2 Main Switcher Bar */}
-        <div className="mt-6 pt-5 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex bg-slate-900/90 p-1 rounded-xl border border-slate-800 w-full sm:w-auto">
+        {/* Part 1 vs Part 2 vs Part 3 Main Switcher Bar */}
+        <div className="mt-6 pt-5 border-t border-slate-800/80 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          <div className="flex flex-wrap bg-slate-900/90 p-1 rounded-xl border border-slate-800 gap-1">
             <button
               onClick={() => setActiveTab('registrations')}
-              className={`flex-1 sm:flex-none px-5 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`px-4 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 activeTab === 'registrations'
                   ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/30'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
@@ -405,7 +407,7 @@ export default function AssetMonitorPanel({
 
             <button
               onClick={() => setActiveTab('edits')}
-              className={`flex-1 sm:flex-none px-5 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`px-4 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 activeTab === 'edits'
                   ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
@@ -414,16 +416,44 @@ export default function AssetMonitorPanel({
               <FileEdit className="w-4 h-4" />
               <span>Part 2: Asset Changes & Edits ({editLogs.length})</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('valuation')}
+              className={`px-4 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                activeTab === 'valuation'
+                  ? 'bg-gradient-to-r from-indigo-600 via-indigo-500 to-blue-600 text-white shadow-md shadow-indigo-900/40 ring-1 ring-indigo-400'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+              }`}
+            >
+              <Coins className="w-4 h-4 text-yellow-400" />
+              <span>Part 3: Asset Value Overview (12 Regions CapEx)</span>
+            </button>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+          <div className="flex items-center gap-2 text-xs text-slate-400 font-mono self-end lg:self-auto">
             <Clock className="w-3.5 h-3.5 text-yellow-400" />
-            <span>Active Filtered Records: <strong>{currentLogs.length}</strong></span>
+            <span>
+              {activeTab === 'valuation' ? (
+                <>National Asset Base: <strong>{assets.length}</strong></>
+              ) : (
+                <>Active Filtered Records: <strong>{currentLogs.length}</strong></>
+              )}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* 4 Metric Summary Cards */}
+      {/* RENDER VIEW: PART 3 VALUATION OVERVIEW vs PART 1 & 2 ACTIVITY AUDIT */}
+      {activeTab === 'valuation' ? (
+        <AssetValueOverview
+          user={user}
+          assets={assets}
+          onSelectAsset={onSelectAsset}
+          onRefresh={onRefresh}
+        />
+      ) : (
+        <>
+          {/* 4 Metric Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div className="space-y-1">
@@ -1060,6 +1090,8 @@ export default function AssetMonitorPanel({
           </table>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
