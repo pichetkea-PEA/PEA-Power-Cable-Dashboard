@@ -932,6 +932,7 @@ export default function AdminRegistrationSuite({
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
         const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
+        const qrDocument = (cols[31] || '').trim(); // Col AF (QR Document)
 
         // Smart Normalizations
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
@@ -1000,7 +1001,8 @@ export default function AdminRegistrationSuite({
           model,
           workOrder,
           yearOfRegistration,
-          assetValue
+          assetValue,
+          qrDocument
         });
       }
 
@@ -1576,7 +1578,8 @@ export default function AdminRegistrationSuite({
             rec.workOrder,
             rec.size,
             rec.assetValue || '',
-            rec.equipmentId
+            rec.equipmentId,
+            rec.qrDocument || ''
           ];
           generalRowsBatch.push(genRow);
 
@@ -1630,6 +1633,7 @@ export default function AdminRegistrationSuite({
             workOrder: rec.workOrder,
             size: rec.size,
             equipmentId: rec.equipmentId,
+            qrDocument: rec.qrDocument || '',
             healthScore: 100,
             healthStatus: 'Green'
           };
@@ -1797,6 +1801,7 @@ export default function AdminRegistrationSuite({
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
         const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
+        const qrDocument = (cols[31] || '').trim(); // Col AF (QR Document)
 
         // Smart Normalizations
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
@@ -1860,7 +1865,8 @@ export default function AdminRegistrationSuite({
           model,
           workOrder,
           yearOfRegistration,
-          assetValue
+          assetValue,
+          qrDocument
         });
       }
 
@@ -1915,6 +1921,7 @@ export default function AdminRegistrationSuite({
         const peaNumber = cols[9] || '';
         const yearOfRegistration = cols[16] || String(new Date().getFullYear());
         const inputEqId = cols[30] || '';
+        const qrDocument = cols[31] || '';
 
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
         const eqType = normalizeEquipmentType(rawEqType, '', '', volt);
@@ -1951,7 +1958,8 @@ export default function AdminRegistrationSuite({
           inputEquipmentId: inputEqId,
           voltageLevel: rawVolt,
           equipmentType: rawEqType,
-          manufacturer: cols[12] || ''
+          manufacturer: cols[12] || '',
+          qrDocument
         };
       });
 
@@ -1979,12 +1987,13 @@ export default function AdminRegistrationSuite({
 
       // Phase 1: Validate all items in memory and group them by spreadsheetId
       const batchUpdatesBySheet: { [spreadsheetId: string]: { range: string; values: any[][] }[] } = {};
-      const assetsToUpdateInMemory: { targetEqId: string; targetPea: string; newAds: string; newAa: string }[] = [];
+      const assetsToUpdateInMemory: { targetEqId: string; targetPea: string; newAds: string; newAa: string; newQr: string }[] = [];
 
       for (let i = 0; i < listToProcess.length; i++) {
         const item = listToProcess[i];
         const newAds = item.adsNumber || '';
         const newAa = item.assetNumber || '';
+        const newQr = item.qrDocument !== undefined ? item.qrDocument : '';
         const targetPea = (item.peaNumber || '').trim();
         // Only use explicit inputEquipmentId / Column AE from uploaded CSV when searching by Equipment ID!
         const targetEqId = (item.inputEquipmentId || '').trim();
@@ -2071,6 +2080,7 @@ export default function AdminRegistrationSuite({
         if (activeToken && match.spreadsheetId !== 'local') {
           const updatedAds = newAds ? newAds : (existing.assetNumber || '');
           const updatedAa = newAa ? newAa : (existing.adsNumber || '');
+          const updatedQr = newQr ? newQr : (existing.qrDocument || '');
 
           const fullRowValues = [
             existing.number,
@@ -2105,19 +2115,20 @@ export default function AdminRegistrationSuite({
             existing.workOrder || '',
             existing.size || '',
             existing.assetValue || '',
-            existing.equipmentId || ''
+            existing.equipmentId || '',
+            updatedQr
           ];
 
           if (!batchUpdatesBySheet[match.spreadsheetId]) {
             batchUpdatesBySheet[match.spreadsheetId] = [];
           }
           batchUpdatesBySheet[match.spreadsheetId].push({
-            range: `'General Information'!A${match.rowIndex}:AG${match.rowIndex}`,
+            range: `'General Information'!A${match.rowIndex}:AH${match.rowIndex}`,
             values: [fullRowValues]
           });
         }
 
-        assetsToUpdateInMemory.push({ targetEqId, targetPea, newAds, newAa });
+        assetsToUpdateInMemory.push({ targetEqId, targetPea, newAds, newAa, newQr });
       }
 
       // Phase 2: Execute batch updates grouped by spreadsheetId
@@ -2141,7 +2152,7 @@ export default function AdminRegistrationSuite({
       const bangkokEditTime = getBangkokTimestamp();
       const editorName = user?.name || user?.email || operatorName || 'Option 2 Update';
 
-      assetsToUpdateInMemory.forEach(({ targetEqId, targetPea, newAds, newAa }) => {
+      assetsToUpdateInMemory.forEach(({ targetEqId, targetPea, newAds, newAa, newQr }) => {
         if (assets && assets.length > 0) {
           const targetIndex = assets.findIndex(ast => {
             if (targetPea) {
@@ -2155,10 +2166,14 @@ export default function AdminRegistrationSuite({
             const targetAsset = assets[targetIndex];
             if (newAds) targetAsset.assetNumber = newAds;
             if (newAa) targetAsset.adsNumber = newAa;
+            if (newQr) targetAsset.qrDocument = newQr;
             targetAsset.latestUpdatedAt = bangkokEditTime;
             targetAsset.latestUpdatedBy = editorName;
             targetAsset.isEdited = true;
             targetAsset.lastEditSource = 'option2_update';
+
+            const changedList = ['Equipment Number ADS', 'Account Asset Number (AA)'];
+            if (newQr) changedList.push('QR Document');
 
             // Log activity as Part 2: Asset Change & Edit for existing asset
             logAssetActivity({
@@ -2172,7 +2187,7 @@ export default function AdminRegistrationSuite({
               userEmail: user?.email,
               timestamp: bangkokEditTime,
               details: `Option 2: Updated ADS (${newAds || targetAsset.assetNumber || 'N/A'}) & AA (${newAa || targetAsset.adsNumber || 'N/A'}) for existing asset ${targetAsset.peaNumber || targetAsset.equipmentId}`,
-              changedFields: ['Equipment Number ADS', 'Account Asset Number (AA)'],
+              changedFields: changedList,
               gps: targetAsset.gps,
               substationName: targetAsset.substationName,
               landmark: targetAsset.landmark,
@@ -2404,10 +2419,11 @@ export default function AdminRegistrationSuite({
             editingAsset.workOrder || 'N/A',
             editingAsset.size || 'N/A',
             editingAsset.assetValue || 'N/A',
-            updatedEquipmentId
+            updatedEquipmentId,
+            editingAsset.qrDocument || ''
           ];
 
-          await updateSheetRow(activeToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AG');
+          await updateSheetRow(activeToken, targetSheetId, 'General Information', mappings.genRowIndex, generalRow, 'A:AH');
           
           // Update engineering row if present
           if (mappings.engRowIndex > 0) {
@@ -2703,7 +2719,7 @@ export default function AdminRegistrationSuite({
               <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
                 <div className="flex justify-between items-center">
                   <div>
-                    <h4 className="text-xs font-black text-gray-900 uppercase">Option 1: New Asset Data Review Panel (30 Data Details)</h4>
+                    <h4 className="text-xs font-black text-gray-900 uppercase">Option 1: New Asset Data Review Panel (31 Data Details)</h4>
                     <p className="text-[10px] text-gray-400">Verify extracted attributes & generated PEA numbers from uploaded file. Click "Check & Edit" to adjust any field.</p>
                   </div>
                   <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
@@ -2778,6 +2794,7 @@ export default function AdminRegistrationSuite({
                             <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
                             <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
                             <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                            <div className="col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
                           </div>
                         </div>
                       ))}
@@ -2894,6 +2911,7 @@ export default function AdminRegistrationSuite({
                             <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
                             <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
                             <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                            <div className="col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
                           </div>
                         </div>
                       ))}
@@ -3610,6 +3628,17 @@ export default function AdminRegistrationSuite({
                   className="w-full bg-emerald-50/50 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
                 />
               </div>
+
+              <div className="flex flex-col gap-1 col-span-1 sm:col-span-2">
+                <label className="text-[9px] font-bold text-blue-600 uppercase">32. QR Document URL (Col AF)</label>
+                <input
+                  type="text"
+                  value={editingOption1Item.data.qrDocument || ''}
+                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, qrDocument: e.target.value } })}
+                  placeholder="e.g. https://drive.google.com/..."
+                  className="w-full bg-blue-50/50 border border-blue-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-blue-600 focus:bg-white"
+                />
+              </div>
             </div>
 
             <div className="flex gap-2 pt-2 border-t border-gray-100">
@@ -3629,7 +3658,7 @@ export default function AdminRegistrationSuite({
                 className="flex-1 bg-purple-900 hover:bg-purple-800 text-white text-[11px] font-bold py-2.5 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
               >
                 <Save className="w-3.5 h-3.5 text-yellow-400" />
-                Save All 30 Fields
+                Save All Fields
               </button>
             </div>
           </div>
@@ -3766,6 +3795,17 @@ export default function AdminRegistrationSuite({
                   onChange={e => setEditingOption2Item({ ...editingOption2Item, data: { ...editingOption2Item.data, assetValue: e.target.value } })}
                   placeholder="e.g. 2,500,000 THB"
                   className="w-full bg-emerald-50/50 border border-emerald-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1 col-span-1 sm:col-span-2">
+                <label className="text-[9px] font-bold text-blue-600 uppercase">12. QR Document URL (Col AF)</label>
+                <input
+                  type="text"
+                  value={editingOption2Item.data.qrDocument || ''}
+                  onChange={e => setEditingOption2Item({ ...editingOption2Item, data: { ...editingOption2Item.data, qrDocument: e.target.value } })}
+                  placeholder="e.g. https://drive.google.com/..."
+                  className="w-full bg-blue-50/50 border border-blue-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-blue-600 focus:bg-white"
                 />
               </div>
             </div>

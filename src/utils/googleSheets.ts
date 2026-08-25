@@ -289,7 +289,7 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
     valueInputOption: 'USER_ENTERED',
     data: [
       {
-        range: "'General Information'!A1:AG1",
+        range: "'General Information'!A1:AH1",
         values: [[
           'Number', 'Timestamp', 'Name of user or admin', 'Voltage Level (kV)', 'City', 
           'Equipment type', 'Product Manufacturer', 'Country of Origin', 'Location type', 
@@ -297,7 +297,7 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
           'Equipment Number ADS', 'Account Asset Number (AA)', 'Production Month', 'Installation Date', 
           'WBS', 'Business Type', 'Cost Center', 'GISTAG', 'Class', 'Contract Number', 
           'Feeder', 'Substation ID', 'Operate ID', 'Serial Number', 'Model', 'Work Order', 
-          'Size', 'Asset Value', 'Equipment ID'
+          'Size', 'Asset Value', 'Equipment ID', 'QR Document'
         ]]
       },
       {
