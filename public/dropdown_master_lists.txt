@@ -1,0 +1,287 @@
+================================================================================
+PEA CABLE ASSET MONITORING SYSTEM - MASTER DROPDOWN LISTS DICTIONARY
+================================================================================
+
+1. VOLTAGE LEVELS (VOLTAGE_LEVELS)
+--------------------------------------------------------------------------------
+• 115   (115 kV High Voltage Transmission / Substation)
+• 33    (33 kV Medium Voltage Distribution)
+• 22    (22 kV Medium Voltage Distribution)
+• 0.4   (0.4 kV Low Voltage / 400V)
+
+
+2. LOCATION TYPES (LOCATION_TYPES)
+--------------------------------------------------------------------------------
+• Substation
+• Distribution Line
+• Transmission Line
+
+
+3. PEA REGIONAL AREAS & PROVINCIAL JURISDICTIONS (12 REGIONS)
+--------------------------------------------------------------------------------
+• N1  : Northern Area 1 (Chiang Mai)
+        [Chiang Mai, Chiang Rai, Lampang, Lamphun, Mae Hong Son, Phayao]
+• N2  : Northern Area 2 (Phitsanulok)
+        [Phitsanulok, Kamphaeng Phet, Nan, Phichit, Phrae, Sukhothai, Tak, Uttaradit]
+• N3  : Northern Area 3 (Lop Buri)
+        [Lop Buri, Chai Nat, Nakhon Sawan, Phetchabun, Sing Buri, Uthai Thani]
+• NE1 : Northeastern Area 1 (Udon Thani)
+        [Udon Thani, Bueng Kan, Khon Kaen, Loei, Nakhon Phanom, Nong Bua Lamphu, Nong Khai, Sakon Nakhon]
+• NE2 : Northeastern Area 2 (Ubon Ratchathani)
+        [Ubon Ratchathani, Amnat Charoen, Kalasin, Maha Sarakham, Mukdahan, Roi Et, Sisaket, Yasothon]
+• NE3 : Northeastern Area 3 (Nakhon Ratchasima)
+        [Nakhon Ratchasima, Buri Ram, Chaiyaphum, Surin]
+• C1  : Central Area 1 (Phra Nakhon Si Ayutthaya)
+        [Phra Nakhon Si Ayutthaya, Ang Thong, Nakhon Nayok, Pathum Thani, Prachin Buri, Sa Kaeo, Saraburi]
+• C2  : Central Area 2 (Chon Buri)
+        [Chon Buri, Chachoengsao, Chanthaburi, Rayong, Trat]
+• C3  : Central Area 3 (Nakhon Pathom)
+        [Nakhon Pathom, Kanchanaburi, Samut Sakhon, Suphan Buri]
+• S1  : Southern Area 1 (Phetchaburi)
+        [Phetchaburi, Chumphon, Prachuap Khiri Khan, Ranong, Ratchaburi, Samut Songkhram]
+• S2  : Southern Area 2 (Nakhon Si Thammarat)
+        [Nakhon Si Thammarat, Krabi, Phang Nga, Phuket, Surat Thani, Trang]
+• S3  : Southern Area 3 (Yala)
+        [Yala, Narathiwat, Pattani, Phatthalung, Satun, Songkhla]
+
+
+4. EQUIPMENT TYPES (EQUIPMENT_TYPES)
+--------------------------------------------------------------------------------
+[Standard 115 kV Available Types]:
+• Underground Cable
+• Oil Insulated Termination
+• Joint
+• GND Link box
+• Lightning Arrester
+• Plug in Termination
+• Air Break Switch
+• Dry Type Termination
+• HV ATS
+
+[Additional Medium Voltage 22/33 kV Types]:
+• Heat Shrink Termination
+• Ring Main Unit
+• Unit Substation
+• LV ATS
+• Distribution Circuit
+
+
+5. MANUFACTURERS SORTED BY EQUIPMENT TYPE (MANUFACTURERS_BY_EQUIPMENT_TYPE)
+--------------------------------------------------------------------------------
+[Underground Cable]
+  - Bangkok Cable (BCC)
+  - Phelps Dodge (PHD)
+  - Venine (V9)
+  - Charoong Thai Wire and Cable (CTW)
+  - Thai Yazaki (TYZ)
+  - Erawan (ERW)
+  - NKT
+  - Others
+  - Unknown
+
+[Oil Insulated Termination]
+  - PFISTERER
+  - Tyco Raychem
+  - G&W
+  - Arkasil
+  - NKT
+  - Brugg
+  - Changlan
+  - Sudkabel
+  - Centuray
+  - Joslyn
+  - ABB Kabeldon
+  - BICC
+  - Pirelli
+  - ATPIAS
+  - CCC
+  - Fujian
+  - Nexans
+  - Sumitomo
+  - Others
+  - Unknown
+
+[Joint]
+  - Tyco Raychem
+  - ELASTIMOLD
+  - Arkasil
+  - G&W
+  - Furukawa
+  - Nexans
+  - CYG
+  - NKT
+  - Others
+  - Unknown
+
+[GND Link box]
+  - Emeleg
+  - U-Electric
+  - Ormazabal
+  - Others
+  - Unknown
+
+[Lightning Arrester]
+  - Siemens
+  - Gunkul
+  - TRIDELTA
+  - Tyco Raychem
+  - ABB
+  - ELPRO
+  - Others
+  - Unknown
+
+[Heat Shrink Termination]
+  - Tyco Raychem
+  - NKT
+  - Nexans
+  - Ikebana
+  - ABB
+  - Others
+  - Unknown
+
+[Plug in Termination]
+  - Arkasil
+  - Euromold
+  - NKT
+  - ABB
+  - Nexans
+  - Tyco Raychem
+  - Others
+  - Unknown
+
+[Air Break Switch]
+  - COELME
+  - Hapam
+  - S&C
+  - Others
+  - Unknown
+
+[Dry Type Termination]
+  - CENTURAY
+  - Tyco Raychem
+  - Arkasil
+  - G&W
+  - NKT
+  - CYG
+  - Centuray
+  - Changlan
+  - Others
+  - Unknown
+
+[Ring Main Unit]
+  - Schneider Electric
+  - U-Tah
+  - ABB
+  - U-ELECTRIC
+  - Siemens
+  - Lahmeyer
+  - LUCY
+  - PMK
+  - Ormazabal
+  - Others
+  - Unknown
+
+[Unit Substation]
+  - Schneider Electric
+  - U-Tah
+  - ABB
+  - U-ELECTRIC
+  - Siemens
+  - Lahmeyer
+  - LUCY
+  - PMK
+  - Ormazabal
+  - Others
+  - Unknown
+
+[HV ATS]
+  - Schneider Electric
+  - AVATAR
+  - Others
+  - Unknown
+
+[LV ATS]
+  - Schneider Electric
+  - AVATAR
+  - Others
+  - Unknown
+
+[Distribution Circuit]
+  - Combine Product
+  - Others
+  - Unknown
+
+
+6. COUNTRIES OF ORIGIN (COUNTRIES_OF_ORIGIN)
+--------------------------------------------------------------------------------
+[Primary / Frequently Used]:
+• Thailand
+• China
+• Germany
+• United State of America
+• United States
+• Switzerland
+• Russia
+• Sweden
+• Denmark
+• India
+• France
+• United Kingdom
+• Japan
+
+[International Reference Catalog]:
+• Australia, Austria, Belgium, Brazil, Canada, Czech Republic, Finland, Indonesia,
+  Italy, Malaysia, Netherlands, Norway, Poland, Singapore, South Korea, Spain,
+  Taiwan, Vietnam, Others, Unknown
+
+
+7. TAN DELTA DIAGNOSTIC RESULTS (TAN_DELTA_OPTIONS)
+--------------------------------------------------------------------------------
+• No Action Required
+• Action Required
+• Further Study Advised
+• No record
+
+
+8. PARTIAL DISCHARGE (PD) RESULT TYPES (PD_RESULTS)
+--------------------------------------------------------------------------------
+• None
+• Corona
+• Surface
+• Internal
+• Floating
+• Void
+• Treeing
+
+
+9. PRPD PHASE & CHANNEL TELEMETRY
+--------------------------------------------------------------------------------
+[Phases]:
+• Phase A
+• Phase B
+• Phase C
+• 3-Phase
+
+[Channels]:
+• Channel 1
+• Channel 2
+• Channel 3
+• Channel 4
+• Channel 5
+• Channel 6
+
+
+10. HEALTH STATUS CLASSIFICATIONS
+--------------------------------------------------------------------------------
+• Green   (Score 85 - 100) : Good / Normal Operating Condition
+• Yellow  (Score 70 - 84)  : Moderate / Regular Monitoring
+• Orange  (Score 50 - 69)  : Warning / Corrective Action Advised
+• Red     (Score < 50)     : Critical / Immediate Maintenance
+
+
+11. USER ACCESS ROLES
+--------------------------------------------------------------------------------
+• Local Operator
+• Manager
+• Admin
+• User

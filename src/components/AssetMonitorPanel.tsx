@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import { CableAsset, PEAUser } from '../types';
 import { PEA_AREAS, PEA_AREA_NAMES } from '../utils/peaData';
 import { deriveAllActivityLogs, AssetActivityLog } from '../utils/auditLogger';
+import { getBangkokTimestamp } from '../utils/dateUtils';
 import AssetValueOverview from './AssetValueOverview';
 import { 
   ShieldAlert, 
@@ -44,9 +45,15 @@ type TimeRangeOption = '7d' | '30d' | '90d' | 'all';
 function extractDateKey(timestamp?: string): string {
   if (!timestamp) return '';
   const s = String(timestamp).trim();
+  const match = s.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (match) {
+    const year = match[1];
+    const month = match[2].padStart(2, '0');
+    const day = match[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
   if (s.includes('T')) return s.split('T')[0];
   if (s.includes(' ')) return s.split(' ')[0];
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   try {
     const d = new Date(s);
     if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
@@ -54,10 +61,14 @@ function extractDateKey(timestamp?: string): string {
   return s.slice(0, 10);
 }
 
+function getTodayBangkokDateKey(): string {
+  return extractDateKey(getBangkokTimestamp());
+}
+
 function isTodayDate(timestamp?: string): boolean {
   if (!timestamp) return false;
   const dateKey = extractDateKey(timestamp);
-  const todayKey = extractDateKey(new Date().toISOString());
+  const todayKey = getTodayBangkokDateKey();
   return !!dateKey && dateKey === todayKey;
 }
 
@@ -200,14 +211,15 @@ export default function AssetMonitorPanel({
     const entries = Object.entries(dayCounts).sort((a, b) => a[0].localeCompare(b[0]));
     const maxCount = Math.max(...entries.map(e => e[1]), 1);
 
-    // Calculate Day-over-Day metric
-    const todayKey = extractDateKey(now.toISOString());
-    const yesterdayDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayKey = extractDateKey(yesterdayDate.toISOString());
+    // Calculate Day-over-Day metric using Bangkok calendar days
+    const todayKey = getTodayBangkokDateKey();
+    const todayDate = new Date();
+    const yesterdayDate = new Date(todayDate.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayKey = extractDateKey(getBangkokTimestamp(yesterdayDate));
 
     const todayCount = dayCounts[todayKey] || 0;
     const yesterdayCount = dayCounts[yesterdayKey] || 0;
-    // If there is no activity in the present day, it must show 0 for day-over-day comparison
+    // If there is no activity/change in the present day, DoD metric MUST show 0 (never a minus or negative value)
     const dodDiff = todayCount === 0 ? 0 : todayCount - yesterdayCount;
 
     return { entries, maxCount, todayCount, yesterdayCount, dodDiff, totalPeriodCount };
@@ -479,7 +491,7 @@ export default function AssetMonitorPanel({
               {activeTab === 'registrations' ? 'DoD: Part 1 New Registrations' : 'DoD: Part 2 Asset Edits'}
             </span>
             <div className="text-2xl font-black text-slate-900 font-mono flex items-center gap-1">
-              <span>{dayByDayComparison.dodDiff >= 0 ? `+${dayByDayComparison.dodDiff}` : dayByDayComparison.dodDiff}</span>
+              <span>{dayByDayComparison.todayCount === 0 ? '0' : (dayByDayComparison.dodDiff > 0 ? `+${dayByDayComparison.dodDiff}` : `${dayByDayComparison.dodDiff}`)}</span>
               <span className="text-xs font-normal text-slate-500">vs Yesterday</span>
             </div>
             <p className="text-[10px] text-slate-500">

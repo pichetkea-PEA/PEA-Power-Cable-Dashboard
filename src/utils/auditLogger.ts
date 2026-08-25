@@ -81,6 +81,10 @@ export function deriveAssetArea(asset: CableAsset): string {
 /**
  * Derive activity logs (both registrations and edits) from the current list of CableAssets,
  * merged with any explicitly stored logs.
+ *
+ * Rules:
+ * - Option 1 / InputForm new asset registrations strictly count towards Part 1 (New Asset Registrations).
+ * - Part 2 (Asset Changes & Edits) counts modifications to existing assets ONLY (assets with PEA Number, Equipment ID, ADS, AA).
  */
 export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
   registrationLogs: AssetActivityLog[];
@@ -93,13 +97,26 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
 
   // 1. Process stored explicit logs first
   for (const log of storedLogs) {
-    if (log.type === 'registration') {
+    // Sanitize any log that might have been marked with incorrect type
+    const isExplicitNewReg = log.source === 'registration_suite' || 
+      log.source === 'csv_upload' ||
+      log.details?.toLowerCase().includes('option 1') ||
+      log.details?.toLowerCase().includes('new asset registration') ||
+      log.details?.toLowerCase().includes('registered');
+
+    if (log.type === 'registration' || isExplicitNewReg) {
       if (!registrationMap.has(log.equipmentId)) {
-        registrationMap.set(log.equipmentId, log);
+        registrationMap.set(log.equipmentId, {
+          ...log,
+          type: 'registration',
+          source: log.source || 'registration_suite'
+        });
       }
     } else if (log.type === 'edit') {
+      // Part 2 requires existing asset edit
       editLogsList.push({
         ...log,
+        type: 'edit',
         source: log.source || 'asset_record'
       });
     }
@@ -110,35 +127,11 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
     const eqId = asset.equipmentId || `ASSET-${asset.number}`;
     const area = deriveAssetArea(asset);
 
-    // Detect if this asset has been edited from the Asset Record panel or updated recently
-    const hasExplicitEdit = !!(asset.latestUpdatedAt && asset.latestUpdatedBy);
-    const isMarkedEdited = !!asset.isEdited || asset.lastEditSource === 'asset_record';
-    
-    // Check if timestamp in asset is from today while year of registration is older (e.g. 2025 vs today)
-    const rawAssetTs = asset.timestamp ? String(asset.timestamp).trim() : '';
-    const tsYear = rawAssetTs ? new Date(rawAssetTs).getFullYear() : 0;
-    const assetRegYear = asset.yearOfRegistration || 0;
-    const isTimestampFromRecentEdit = !!(
-      (hasExplicitEdit || isMarkedEdited) ||
-      (assetRegYear > 0 && tsYear > 0 && assetRegYear < tsYear) ||
-      (assetRegYear > 0 && assetRegYear < 2026 && rawAssetTs.includes('2026-08-20'))
+    // Initial Registration is ALWAYS placed in Part 1 (New Asset Registrations)
+    const originalRegTimestamp = asset.registrationDate || asset.timestamp || (
+      asset.yearOfRegistration ? `${asset.yearOfRegistration}-01-01T00:00:00.000Z` : getBangkokTimestamp()
     );
 
-    // Determine initial registration timestamp vs edit timestamp
-    let originalRegTimestamp = '';
-    if (asset.registrationDate) {
-      originalRegTimestamp = asset.registrationDate;
-    } else if (isTimestampFromRecentEdit && assetRegYear > 0) {
-      originalRegTimestamp = `${assetRegYear}-01-01T00:00:00.000Z`;
-    } else if (asset.timestamp) {
-      originalRegTimestamp = asset.timestamp;
-    } else if (assetRegYear > 0) {
-      originalRegTimestamp = `${assetRegYear}-01-01T00:00:00.000Z`;
-    } else {
-      originalRegTimestamp = '2024-01-01T00:00:00.000Z';
-    }
-
-    // Add to registration map if not already present from storedLogs
     if (!registrationMap.has(eqId)) {
       registrationMap.set(eqId, {
         id: `reg_${eqId}`,
@@ -150,7 +143,7 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
         area,
         operatorName: asset.operatorName || 'PEA Operator',
         timestamp: originalRegTimestamp,
-        details: `Registered ${asset.equipmentType || 'Equipment'} in ${area} (${asset.substationName || 'Substation'})`,
+        details: `Option 1: New Asset Registration (${asset.peaNumber || eqId})`,
         gps: asset.gps,
         substationName: asset.substationName,
         landmark: asset.landmark,
@@ -158,12 +151,23 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
       });
     }
 
-    // Check if asset has edit records (latestUpdatedAt, isEdited, or recent timestamp modification)
-    if (hasExplicitEdit || isTimestampFromRecentEdit) {
-      const editTimestamp = asset.latestUpdatedAt || asset.timestamp || getBangkokTimestamp();
-      const editorName = asset.latestUpdatedBy || asset.operatorName || 'PEA Operator';
+    // Part 2: Asset Change & Edit (Existing assets only: PEA number, Equipment ID, ADS, AA)
+    // Only synthesize an edit log if this existing asset was explicitly edited AFTER creation
+    const hasExplicitEditMetadata = !!(
+      (asset.latestUpdatedAt && asset.latestUpdatedBy && (asset.isEdited || asset.latestUpdatedAt !== asset.timestamp)) ||
+      (asset.isEdited && (asset.lastEditSource === 'asset_record' || asset.lastEditSource === 'option2_update' || asset.lastEditSource === 'manual_edit'))
+    );
+
+    const hasExistingAssetIdentifiers = !!(
+      asset.equipmentId && 
+      (asset.peaNumber || asset.assetNumber || asset.adsNumber)
+    );
+
+    if (hasExplicitEditMetadata && hasExistingAssetIdentifiers) {
+      const editTimestamp = asset.latestUpdatedAt || getBangkokTimestamp();
+      const editorName = asset.latestUpdatedBy || asset.operatorName || 'PEA Editor';
       
-      // Ensure we don't duplicate if already in storedLogs
+      // Avoid duplicate edit entries if already captured in storedLogs
       const existsInStored = editLogsList.some(
         l => l.type === 'edit' && l.equipmentId === eqId && (l.timestamp === editTimestamp || l.timestamp.slice(0, 16) === editTimestamp.slice(0, 16))
       );
@@ -172,15 +176,19 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
         editLogsList.push({
           id: `edit_${eqId}_${editTimestamp.replace(/[^a-zA-Z0-9]/g, '')}`,
           type: 'edit',
-          source: 'asset_record',
+          source: (asset.lastEditSource as any) || 'asset_record',
           equipmentId: eqId,
           equipmentType: asset.equipmentType || 'Underground Cable',
           voltageLevel: asset.voltageLevel ? `${asset.voltageLevel} kV` : '115 kV',
           area,
           operatorName: editorName,
           timestamp: editTimestamp,
-          details: `Edited asset data in Asset Record panel by ${editorName}`,
-          changedFields: ['General Information', 'Engineering Specs', 'Visual/Thermal Images'],
+          details: asset.lastEditSource === 'option2_update' 
+            ? `Option 2: Updated ADS (${asset.assetNumber || 'N/A'}) & AA (${asset.adsNumber || 'N/A'}) for existing asset`
+            : `Edited existing asset record in Asset Record panel by ${editorName}`,
+          changedFields: asset.lastEditSource === 'option2_update'
+            ? ['Equipment Number ADS', 'Account Asset Number (AA)']
+            : ['General Information', 'Engineering Specs', 'Visual/Thermal Images'],
           gps: asset.gps,
           substationName: asset.substationName,
           landmark: asset.landmark,
@@ -189,8 +197,8 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
       }
     }
 
-    // Process history if present
-    if (Array.isArray(asset.history)) {
+    // Process explicit history revisions of existing assets
+    if (Array.isArray(asset.history) && asset.history.length > 0 && hasExistingAssetIdentifiers) {
       for (let i = 0; i < asset.history.length; i++) {
         const hist = asset.history[i];
         if (hist.timestamp && hist.operatorName) {
@@ -207,7 +215,7 @@ export async function deriveAllActivityLogs(assets: CableAsset[]): Promise<{
               area: deriveAssetArea(hist),
               operatorName: hist.operatorName,
               timestamp: hist.timestamp,
-              details: `Edited asset telemetry & inspection data in Asset Record panel`,
+              details: `Edited existing asset telemetry & inspection record in Asset Record panel`,
               gps: hist.gps || asset.gps,
               substationName: hist.substationName || asset.substationName,
               landmark: hist.landmark || asset.landmark,

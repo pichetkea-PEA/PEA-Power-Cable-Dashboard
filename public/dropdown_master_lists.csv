@@ -1,0 +1,210 @@
+Category,Subcategory_Or_Type,Item_Value,Description_Or_Mapping
+Voltage Level,,115,115 kV High Voltage Transmission / Substation
+Voltage Level,,33,33 kV Medium Voltage Distribution
+Voltage Level,,22,22 kV Medium Voltage Distribution
+Voltage Level,,0.4,0.4 kV Low Voltage (400V)
+Location Type,,Substation,Substation Indoor/Outdoor Bay
+Location Type,,Distribution Line,Distribution Feeder Circuit / Underground Distribution
+Location Type,,Transmission Line,High Voltage Transmission Feeder
+PEA Regional Area,,N1,"Northern Area 1 (Chiang Mai, Chiang Rai, Lampang, Lamphun, Mae Hong Son, Phayao)"
+PEA Regional Area,,N2,"Northern Area 2 (Phitsanulok, Kamphaeng Phet, Nan, Phichit, Phrae, Sukhothai, Tak, Uttaradit)"
+PEA Regional Area,,N3,"Northern Area 3 (Lop Buri, Chai Nat, Nakhon Sawan, Phetchabun, Sing Buri, Uthai Thani)"
+PEA Regional Area,,NE1,"Northeastern Area 1 (Udon Thani, Bueng Kan, Khon Kaen, Loei, Nakhon Phanom, Nong Bua Lamphu, Nong Khai, Sakon Nakhon)"
+PEA Regional Area,,NE2,"Northeastern Area 2 (Ubon Ratchathani, Amnat Charoen, Kalasin, Maha Sarakham, Mukdahan, Roi Et, Sisaket, Yasothon)"
+PEA Regional Area,,NE3,"Northeastern Area 3 (Nakhon Ratchasima, Buri Ram, Chaiyaphum, Surin)"
+PEA Regional Area,,C1,"Central Area 1 (Phra Nakhon Si Ayutthaya, Ang Thong, Nakhon Nayok, Pathum Thani, Prachin Buri, Sa Kaeo, Saraburi)"
+PEA Regional Area,,C2,"Central Area 2 (Chon Buri, Chachoengsao, Chanthaburi, Rayong, Trat)"
+PEA Regional Area,,C3,"Central Area 3 (Nakhon Pathom, Kanchanaburi, Samut Sakhon, Suphan Buri)"
+PEA Regional Area,,S1,"Southern Area 1 (Phetchaburi, Chumphon, Prachuap Khiri Khan, Ranong, Ratchaburi, Samut Songkhram)"
+PEA Regional Area,,S2,"Southern Area 2 (Nakhon Si Thammarat, Krabi, Phang Nga, Phuket, Surat Thani, Trang)"
+PEA Regional Area,,S3,"Southern Area 3 (Yala, Narathiwat, Pattani, Phatthalung, Satun, Songkhla)"
+Equipment Type,,Underground Cable,Primary High/Medium Voltage Power Cable
+Equipment Type,,Oil Insulated Termination,Fluid/Oil-filled Outdoor Cable Termination
+Equipment Type,,Joint,Straight / Transition Cable Joint
+Equipment Type,,GND Link box,Grounding Link / Sheath Cross-Bonding Box
+Equipment Type,,Lightning Arrester,Surge & Lightning Protection Arrester
+Equipment Type,,Heat Shrink Termination,Medium Voltage Heat Shrink Cable Termination (22/33kV)
+Equipment Type,,Plug in Termination,Separable Connector / Plug-in Cable Termination
+Equipment Type,,Air Break Switch,Overhead / Substation Disconnecting Switch
+Equipment Type,,Dry Type Termination,Dry Self-Supporting / Polymer Termination
+Equipment Type,,Ring Main Unit,Compact Secondary Distribution Switchgear (RMU)
+Equipment Type,,Unit Substation,Prefabricated Compact Unit Substation (CSS)
+Equipment Type,,HV ATS,High Voltage Automatic Transfer Switch
+Equipment Type,,LV ATS,Low Voltage Automatic Transfer Switch
+Equipment Type,,Distribution Circuit,Power Distribution Circuit Line
+Manufacturer,Underground Cable,Bangkok Cable (BCC),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,Phelps Dodge (PHD),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,Venine (V9),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,Charoong Thai Wire and Cable (CTW),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,Thai Yazaki (TYZ),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,Erawan (ERW),Cable Manufacturer (Thailand)
+Manufacturer,Underground Cable,NKT,Cable Manufacturer (Denmark/Germany)
+Manufacturer,Underground Cable,Others,Other Approved Cable Manufacturer
+Manufacturer,Underground Cable,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Oil Insulated Termination,PFISTERER,Termination Manufacturer (Germany/Switzerland)
+Manufacturer,Oil Insulated Termination,Tyco Raychem,Termination Manufacturer (USA/Germany)
+Manufacturer,Oil Insulated Termination,G&W,Termination Manufacturer (USA)
+Manufacturer,Oil Insulated Termination,Arkasil,Termination Manufacturer (Russia/Switzerland)
+Manufacturer,Oil Insulated Termination,NKT,Termination Manufacturer (Germany/Denmark)
+Manufacturer,Oil Insulated Termination,Brugg,Termination Manufacturer (Switzerland)
+Manufacturer,Oil Insulated Termination,Changlan,Termination Manufacturer (China)
+Manufacturer,Oil Insulated Termination,Sudkabel,Termination Manufacturer (Germany)
+Manufacturer,Oil Insulated Termination,Centuray,Termination Manufacturer (China)
+Manufacturer,Oil Insulated Termination,Joslyn,Termination Manufacturer (USA)
+Manufacturer,Oil Insulated Termination,ABB Kabeldon,Termination Manufacturer (Sweden/Switzerland)
+Manufacturer,Oil Insulated Termination,BICC,Termination Manufacturer (UK)
+Manufacturer,Oil Insulated Termination,Pirelli,Termination Manufacturer (Italy)
+Manufacturer,Oil Insulated Termination,ATPIAS,Termination Manufacturer (International)
+Manufacturer,Oil Insulated Termination,CCC,Termination Manufacturer (International)
+Manufacturer,Oil Insulated Termination,Fujian,Termination Manufacturer (China)
+Manufacturer,Oil Insulated Termination,Nexans,Termination Manufacturer (France)
+Manufacturer,Oil Insulated Termination,Sumitomo,Termination Manufacturer (Japan)
+Manufacturer,Oil Insulated Termination,Others,Other Termination Manufacturer
+Manufacturer,Oil Insulated Termination,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Joint,Tyco Raychem,Joint Manufacturer (USA/Germany)
+Manufacturer,Joint,ELASTIMOLD,Joint Manufacturer (USA)
+Manufacturer,Joint,Arkasil,Joint Manufacturer (Russia/Switzerland)
+Manufacturer,Joint,G&W,Joint Manufacturer (USA)
+Manufacturer,Joint,Furukawa,Joint Manufacturer (Japan)
+Manufacturer,Joint,Nexans,Joint Manufacturer (France)
+Manufacturer,Joint,CYG,Joint Manufacturer (China)
+Manufacturer,Joint,NKT,Joint Manufacturer (Germany/Denmark)
+Manufacturer,Joint,Others,Other Joint Manufacturer
+Manufacturer,Joint,Unknown,Unidentified / Missing Nameplate
+Manufacturer,GND Link box,Emeleg,Link Box Manufacturer
+Manufacturer,GND Link box,U-Electric,Link Box Manufacturer (Thailand)
+Manufacturer,GND Link box,Ormazabal,Link Box Manufacturer (Spain)
+Manufacturer,GND Link box,Others,Other Link Box Manufacturer
+Manufacturer,GND Link box,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Lightning Arrester,Siemens,Surge Arrester Manufacturer (Germany)
+Manufacturer,Lightning Arrester,Gunkul,Surge Arrester Manufacturer (Thailand)
+Manufacturer,Lightning Arrester,TRIDELTA,Surge Arrester Manufacturer (Germany)
+Manufacturer,Lightning Arrester,Tyco Raychem,Surge Arrester Manufacturer (USA/Germany)
+Manufacturer,Lightning Arrester,ABB,Surge Arrester Manufacturer (Switzerland/Sweden)
+Manufacturer,Lightning Arrester,ELPRO,Surge Arrester Manufacturer (Germany)
+Manufacturer,Lightning Arrester,Others,Other Arrester Manufacturer
+Manufacturer,Lightning Arrester,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Heat Shrink Termination,Tyco Raychem,Heat Shrink Termination (USA/Germany)
+Manufacturer,Heat Shrink Termination,NKT,Heat Shrink Termination (Germany/Denmark)
+Manufacturer,Heat Shrink Termination,Nexans,Heat Shrink Termination (France)
+Manufacturer,Heat Shrink Termination,Ikebana,Heat Shrink Termination (Japan/India)
+Manufacturer,Heat Shrink Termination,ABB,Heat Shrink Termination (Switzerland/Sweden)
+Manufacturer,Heat Shrink Termination,Others,Other Heat Shrink Manufacturer
+Manufacturer,Heat Shrink Termination,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Plug in Termination,Arkasil,Separable Connector / Plug-in (Russia/Switzerland)
+Manufacturer,Plug in Termination,Euromold,Separable Connector / Plug-in (Belgium/Nexans)
+Manufacturer,Plug in Termination,NKT,Separable Connector / Plug-in (Germany/Denmark)
+Manufacturer,Plug in Termination,ABB,Separable Connector / Plug-in (Switzerland/Sweden)
+Manufacturer,Plug in Termination,Nexans,Separable Connector / Plug-in (France)
+Manufacturer,Plug in Termination,Tyco Raychem,Separable Connector / Plug-in (USA/Germany)
+Manufacturer,Plug in Termination,Others,Other Plug-in Manufacturer
+Manufacturer,Plug in Termination,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Air Break Switch,COELME,Disconnector Switch Manufacturer (Italy)
+Manufacturer,Air Break Switch,Hapam,Disconnector Switch Manufacturer (Netherlands)
+Manufacturer,Air Break Switch,S&C,Switchgear Manufacturer (USA)
+Manufacturer,Air Break Switch,Others,Other Switch Manufacturer
+Manufacturer,Air Break Switch,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Dry Type Termination,CENTURAY,Dry Termination Manufacturer (China)
+Manufacturer,Dry Type Termination,Tyco Raychem,Dry Termination Manufacturer (USA/Germany)
+Manufacturer,Dry Type Termination,Arkasil,Dry Termination Manufacturer (Russia/Switzerland)
+Manufacturer,Dry Type Termination,G&W,Dry Termination Manufacturer (USA)
+Manufacturer,Dry Type Termination,NKT,Dry Termination Manufacturer (Germany/Denmark)
+Manufacturer,Dry Type Termination,CYG,Dry Termination Manufacturer (China)
+Manufacturer,Dry Type Termination,Changlan,Dry Termination Manufacturer (China)
+Manufacturer,Dry Type Termination,Others,Other Dry Termination Manufacturer
+Manufacturer,Dry Type Termination,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Ring Main Unit,Schneider Electric,RMU Switchgear Manufacturer (France)
+Manufacturer,Ring Main Unit,U-Tah,RMU Switchgear Manufacturer (Thailand)
+Manufacturer,Ring Main Unit,ABB,RMU Switchgear Manufacturer (Switzerland/Sweden)
+Manufacturer,Ring Main Unit,U-ELECTRIC,RMU Switchgear Manufacturer (Thailand)
+Manufacturer,Ring Main Unit,Siemens,RMU Switchgear Manufacturer (Germany)
+Manufacturer,Ring Main Unit,Lahmeyer,RMU Switchgear Manufacturer (Germany)
+Manufacturer,Ring Main Unit,LUCY,RMU Switchgear Manufacturer (UK)
+Manufacturer,Ring Main Unit,PMK,RMU Switchgear Manufacturer (Thailand)
+Manufacturer,Ring Main Unit,Ormazabal,RMU Switchgear Manufacturer (Spain)
+Manufacturer,Ring Main Unit,Others,Other RMU Manufacturer
+Manufacturer,Ring Main Unit,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Unit Substation,Schneider Electric,Unit Substation Manufacturer (France)
+Manufacturer,Unit Substation,U-Tah,Unit Substation Manufacturer (Thailand)
+Manufacturer,Unit Substation,ABB,Unit Substation Manufacturer (Switzerland/Sweden)
+Manufacturer,Unit Substation,U-ELECTRIC,Unit Substation Manufacturer (Thailand)
+Manufacturer,Unit Substation,Siemens,Unit Substation Manufacturer (Germany)
+Manufacturer,Unit Substation,Lahmeyer,Unit Substation Manufacturer (Germany)
+Manufacturer,Unit Substation,LUCY,Unit Substation Manufacturer (UK)
+Manufacturer,Unit Substation,PMK,Unit Substation Manufacturer (Thailand)
+Manufacturer,Unit Substation,Ormazabal,Unit Substation Manufacturer (Spain)
+Manufacturer,Unit Substation,Others,Other Substation Manufacturer
+Manufacturer,Unit Substation,Unknown,Unidentified / Missing Nameplate
+Manufacturer,HV ATS,Schneider Electric,HV ATS Manufacturer (France)
+Manufacturer,HV ATS,AVATAR,HV ATS Manufacturer
+Manufacturer,HV ATS,Others,Other HV ATS Manufacturer
+Manufacturer,HV ATS,Unknown,Unidentified / Missing Nameplate
+Manufacturer,LV ATS,Schneider Electric,LV ATS Manufacturer (France)
+Manufacturer,LV ATS,AVATAR,LV ATS Manufacturer
+Manufacturer,LV ATS,Others,Other LV ATS Manufacturer
+Manufacturer,LV ATS,Unknown,Unidentified / Missing Nameplate
+Manufacturer,Distribution Circuit,Combine Product,Distribution Circuit Manufacturer
+Manufacturer,Distribution Circuit,Others,Other Distribution Manufacturer
+Manufacturer,Distribution Circuit,Unknown,Unidentified / Missing Nameplate
+Country of Origin,Primary,Thailand,Primary Southeast Asia Origin
+Country of Origin,Primary,China,Primary Asian Manufacturing Origin
+Country of Origin,Primary,Germany,Primary European Engineering Origin
+Country of Origin,Primary,United State of America,North American Manufacturing Origin
+Country of Origin,Primary,United States,North American Manufacturing Origin
+Country of Origin,Primary,Switzerland,European Precision Engineering Origin
+Country of Origin,Primary,Russia,Eurasian Manufacturing Origin
+Country of Origin,Primary,Sweden,Nordic Engineering Origin
+Country of Origin,Primary,Denmark,Nordic Engineering Origin
+Country of Origin,Primary,India,South Asian Manufacturing Origin
+Country of Origin,Primary,France,European Manufacturing Origin
+Country of Origin,Primary,United Kingdom,European Manufacturing Origin
+Country of Origin,Primary,Japan,East Asian Precision Engineering Origin
+Country of Origin,International,Australia,Oceania
+Country of Origin,International,Austria,Europe
+Country of Origin,International,Belgium,Europe
+Country of Origin,International,Brazil,South America
+Country of Origin,International,Canada,North America
+Country of Origin,International,Czech Republic,Europe
+Country of Origin,International,Finland,Europe
+Country of Origin,International,Indonesia,Southeast Asia
+Country of Origin,International,Italy,Europe
+Country of Origin,International,Malaysia,Southeast Asia
+Country of Origin,International,Netherlands,Europe
+Country of Origin,International,Norway,Europe
+Country of Origin,International,Poland,Europe
+Country of Origin,International,Singapore,Southeast Asia
+Country of Origin,International,South Korea,East Asia
+Country of Origin,International,Spain,Europe
+Country of Origin,International,Taiwan,East Asia
+Country of Origin,International,Vietnam,Southeast Asia
+Country of Origin,Fallback,Others,Other International Country
+Country of Origin,Fallback,Unknown,Unidentified Country
+Tan Delta Result,,No Action Required,Normal dielectric loss characteristics
+Tan Delta Result,,Action Required,Elevated dielectric loss requiring maintenance
+Tan Delta Result,,Further Study Advised,Borderline dielectric degradation observed
+Tan Delta Result,,No record,No Tan Delta measurement recorded
+Partial Discharge (PD) Result,,None,No Partial Discharge activity detected
+Partial Discharge (PD) Result,,Corona,Discharge into surrounding air/gas
+Partial Discharge (PD) Result,,Surface,Surface tracking across insulation boundary
+Partial Discharge (PD) Result,,Internal,Internal insulation void/cavity discharge
+Partial Discharge (PD) Result,,Floating,Floating metal electrode discharge
+Partial Discharge (PD) Result,,Void,Gas cavity discharge within solid dielectric
+Partial Discharge (PD) Result,,Treeing,Electrical tree growth prior to breakdown
+PRPD Phase,,Phase A,Phase A (Red)
+PRPD Phase,,Phase B,Phase B (Yellow)
+PRPD Phase,,Phase C,Phase C (Blue)
+PRPD Phase,,3-Phase,All Three Phases Combined
+PRPD Channel,,Channel 1,HFCT Sensor Channel 1
+PRPD Channel,,Channel 2,HFCT Sensor Channel 2
+PRPD Channel,,Channel 3,HFCT Sensor Channel 3
+PRPD Channel,,Channel 4,HFCT Sensor Channel 4
+PRPD Channel,,Channel 5,HFCT Sensor Channel 5
+PRPD Channel,,Channel 6,HFCT Sensor Channel 6
+Health Status Grade,,Green,Score 85 - 100: Normal Condition
+Health Status Grade,,Yellow,Score 70 - 84: Moderate Aging / Monitor
+Health Status Grade,,Orange,Score 50 - 69: Warning / Schedule Maintenance
+Health Status Grade,,Red,Score < 50: Critical / Immediate Action
+User Role,,Local Operator,Field engineer / Data registrar
+User Role,,Manager,Regional manager / Approver
+User Role,,Admin,System administrator
+User Role,,User,General view-only user

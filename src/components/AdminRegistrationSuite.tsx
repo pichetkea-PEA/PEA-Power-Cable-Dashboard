@@ -49,6 +49,7 @@ import { saveCentralAssetsCache } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
+import { logAssetActivity } from '../utils/auditLogger';
 
 interface AdminRegistrationSuiteProps {
   assets: CableAsset[];
@@ -1353,6 +1354,30 @@ export default function AdminRegistrationSuite({
         await saveCentralAssetsCache(updatedList, true).catch(e => {
           console.warn("Background cache save warning during sync:", e);
         });
+
+        // Explicitly record each newly registered asset as Part 1 New Registration
+        for (const newAst of newlyCreatedAssets) {
+          try {
+            await logAssetActivity({
+              type: 'registration',
+              source: 'registration_suite',
+              equipmentId: newAst.equipmentId,
+              equipmentType: newAst.equipmentType || 'Underground Cable',
+              voltageLevel: newAst.voltageLevel ? `${newAst.voltageLevel} kV` : '115 kV',
+              area: getAssetArea(newAst) || 'N1',
+              operatorName: newAst.operatorName || user?.name || user?.email || operatorName || 'PEA Admin',
+              userEmail: user?.email,
+              timestamp: newAst.timestamp || getBangkokTimestamp(),
+              details: `Option 1: New Asset Registration (${newAst.peaNumber || newAst.equipmentId})`,
+              gps: newAst.gps,
+              substationName: newAst.substationName,
+              landmark: newAst.landmark,
+              city: newAst.city
+            });
+          } catch (logErr) {
+            console.warn("Error recording new registration activity:", logErr);
+          }
+        }
       } catch (e) {
         console.warn("Error updating local assets cache during sync:", e);
       }
@@ -2113,6 +2138,9 @@ export default function AdminRegistrationSuite({
       }
 
       // Also update assets in memory and central cache
+      const bangkokEditTime = getBangkokTimestamp();
+      const editorName = user?.name || user?.email || operatorName || 'Option 2 Update';
+
       assetsToUpdateInMemory.forEach(({ targetEqId, targetPea, newAds, newAa }) => {
         if (assets && assets.length > 0) {
           const targetIndex = assets.findIndex(ast => {
@@ -2124,8 +2152,32 @@ export default function AdminRegistrationSuite({
             return false;
           });
           if (targetIndex !== -1) {
-            if (newAds) assets[targetIndex].assetNumber = newAds;
-            if (newAa) assets[targetIndex].adsNumber = newAa;
+            const targetAsset = assets[targetIndex];
+            if (newAds) targetAsset.assetNumber = newAds;
+            if (newAa) targetAsset.adsNumber = newAa;
+            targetAsset.latestUpdatedAt = bangkokEditTime;
+            targetAsset.latestUpdatedBy = editorName;
+            targetAsset.isEdited = true;
+            targetAsset.lastEditSource = 'option2_update';
+
+            // Log activity as Part 2: Asset Change & Edit for existing asset
+            logAssetActivity({
+              type: 'edit',
+              source: 'option2_update',
+              equipmentId: targetAsset.equipmentId || targetEqId,
+              equipmentType: targetAsset.equipmentType || 'Underground Cable',
+              voltageLevel: targetAsset.voltageLevel ? `${targetAsset.voltageLevel} kV` : '115 kV',
+              area: getAssetArea(targetAsset) || 'N1',
+              operatorName: editorName,
+              userEmail: user?.email,
+              timestamp: bangkokEditTime,
+              details: `Option 2: Updated ADS (${newAds || targetAsset.assetNumber || 'N/A'}) & AA (${newAa || targetAsset.adsNumber || 'N/A'}) for existing asset ${targetAsset.peaNumber || targetAsset.equipmentId}`,
+              changedFields: ['Equipment Number ADS', 'Account Asset Number (AA)'],
+              gps: targetAsset.gps,
+              substationName: targetAsset.substationName,
+              landmark: targetAsset.landmark,
+              city: targetAsset.city
+            }).catch(e => console.warn("Failed logging Option 2 edit activity:", e));
           }
         }
       });
