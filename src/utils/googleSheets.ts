@@ -2081,8 +2081,9 @@ export async function batchUpdateSheetRows(
       });
 
       if (res.ok) return;
+      console.warn('Direct batch update returned non-200 status, falling back to server proxy / per-row update...');
     } catch (e) {
-      console.warn('Direct batch update error, falling back to proxy:', e);
+      console.warn('Direct batch update network error, falling back to proxy:', e);
     }
   }
 
@@ -2101,9 +2102,39 @@ export async function batchUpdateSheetRows(
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    throw new Error(proxyData.error || 'Failed to batch update spreadsheet');
+    console.warn(`[Batch Update Proxy Notice] Server proxy returned: ${proxyData.error}. Executing robust row-by-row update fallback...`);
   } catch (proxyErr: any) {
-    throw new Error(`Failed to batch update spreadsheet ${spreadsheetId}: ${proxyErr.message}`);
+    console.warn(`[Batch Update Exception] Proxy call error: ${proxyErr.message}. Executing row-by-row fallback...`);
+  }
+
+  // 3. Robust Per-Row Fallback: update each range individually with auto-retry
+  let failCount = 0;
+  let lastError = '';
+  for (const upd of updates) {
+    try {
+      // Parse sheetName and rowIndex from range like "'General Information'!A2:AH2"
+      const match = upd.range.match(/^(?:'([^']+)'|([^!]+))!A(\d+):([A-Z]+)(\d+)?/i);
+      const sheetName = match ? (match[1] || match[2] || 'General Information') : 'General Information';
+      const rowIndex = match ? parseInt(match[3], 10) : 2;
+      const maxCol = match ? (match[4] || 'AH') : 'AH';
+
+      await executeUniversalSheetUpdate(
+        accessToken,
+        spreadsheetId,
+        sheetName,
+        rowIndex,
+        upd.values,
+        maxCol
+      );
+    } catch (rowErr: any) {
+      failCount++;
+      lastError = rowErr.message || 'Row update failed';
+      console.warn(`[Per-Row Fallback Notice] Failed on range ${upd.range}:`, rowErr);
+    }
+  }
+
+  if (failCount === updates.length && updates.length > 0) {
+    throw new Error(`Failed to batch update spreadsheet ${spreadsheetId}: ${lastError}`);
   }
 }
 

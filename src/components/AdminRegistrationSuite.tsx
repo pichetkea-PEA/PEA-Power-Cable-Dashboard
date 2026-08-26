@@ -2011,7 +2011,7 @@ export default function AdminRegistrationSuite({
         
         for (const sId of sheetsToCheck) {
           const sheetRowsData = cachedSheetsData[sId] || [];
-          sheetRowsData.forEach((asset) => {
+          sheetRowsData.forEach((asset, assetIndex) => {
             let isMatch = false;
             // Condition 1: If uploaded file has a valid PEA number, search by PEA number
             if (targetPea) {
@@ -2029,7 +2029,7 @@ export default function AdminRegistrationSuite({
             if (isMatch) {
               foundLocations.push({
                 spreadsheetId: sId,
-                rowIndex: asset.number + 1,
+                rowIndex: assetIndex + 2, // Row 1 is header, data rows start at row 2
                 rowData: asset
               });
             }

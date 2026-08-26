@@ -813,6 +813,68 @@ app.get('/api/sheets/token', (req, res) => {
   });
 });
 
+// Helper to ensure spreadsheet sheet has enough columns and valid tab name
+async function autoHealSheetGrid(spreadsheetId: string, token: string, minCols: number = 36): Promise<{ titleMap: Record<string, string> }> {
+  const titleMap: Record<string, string> = {};
+  try {
+    const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!metaRes.ok) return { titleMap };
+    const meta = await metaRes.json();
+    const sheets = meta.sheets || [];
+    const expandRequests: any[] = [];
+
+    sheets.forEach((s: any) => {
+      const p = s.properties || {};
+      const title = p.title || '';
+      const lower = title.toLowerCase().trim();
+      if (lower.includes('general') || lower === 'sheet1') {
+        titleMap['General Information'] = title;
+        titleMap['General'] = title;
+      } else if (lower.includes('engineering') || lower === 'sheet2') {
+        titleMap['Engineering Information'] = title;
+        titleMap['Engineering'] = title;
+      } else if (lower.includes('visual') || lower === 'sheet3') {
+        titleMap['Visual & Thermal Images'] = title;
+        titleMap['Visual & Thermal'] = title;
+      } else if (lower.includes('pd') || lower.includes('diagnostic') || lower === 'sheet4') {
+        titleMap['PD & Diagnostic Data'] = title;
+      }
+
+      const colCount = p.gridProperties?.columnCount || 26;
+      if (colCount < minCols) {
+        expandRequests.push({
+          updateSheetProperties: {
+            properties: {
+              sheetId: p.sheetId,
+              gridProperties: {
+                columnCount: minCols + 10,
+                rowCount: p.gridProperties?.rowCount || 1000
+              }
+            },
+            fields: 'gridProperties.columnCount'
+          }
+        });
+      }
+    });
+
+    if (expandRequests.length > 0) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ requests: expandRequests })
+      }).catch(err => console.warn('[Auto-Heal Sheet Grid Notice] Could not expand columns:', err));
+    }
+  } catch (err) {
+    console.warn('[Auto-Heal Sheet Grid Notice] Error checking sheet metadata:', err);
+  }
+  return { titleMap };
+}
+
 // Google Sheets Write/Update Row Proxy
 app.post('/api/sheets/update-row', async (req, res) => {
   const { spreadsheetId, range, values, token: clientToken } = req.body;
@@ -830,21 +892,43 @@ app.post('/api/sheets/update-row', async (req, res) => {
   }
 
   try {
-    const encodedRange = encodeURIComponent(range);
-    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${effectiveToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        range,
-        majorDimension: 'ROWS',
-        values: Array.isArray(values[0]) ? values : [values]
-      })
-    });
+    let targetRange = range;
+    const sendUpdate = async (rng: string) => {
+      const encodedRange = encodeURIComponent(rng);
+      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${effectiveToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range: rng,
+          majorDimension: 'ROWS',
+          values: Array.isArray(values[0]) ? values : [values]
+        })
+      });
+    };
 
-    const data = await googleRes.json();
+    let googleRes = await sendUpdate(targetRange);
+    let data = await googleRes.json();
+
+    // If failed due to grid limit or tab name, auto-heal and retry
+    if (!googleRes.ok) {
+      console.warn('[Sheets Update Proxy Notice] Initial update failed, auto-healing grid...', data?.error?.message);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+      
+      // Attempt with mapped title
+      for (const [standardTitle, realTitle] of Object.entries(titleMap)) {
+        if (targetRange.includes(`'${standardTitle}'`) || targetRange.startsWith(standardTitle)) {
+          targetRange = targetRange.replace(standardTitle, realTitle);
+          break;
+        }
+      }
+
+      googleRes = await sendUpdate(targetRange);
+      data = await googleRes.json();
+    }
+
     if (!googleRes.ok) {
       console.error('[Sheets Update Proxy Error]:', data);
       res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to update sheet row' });
@@ -875,22 +959,37 @@ app.post('/api/sheets/append-row', async (req, res) => {
   }
 
   try {
-    const range = `'${sheetName}'!A1`;
-    const encodedRange = encodeURIComponent(range);
-    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${effectiveToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        range,
-        majorDimension: 'ROWS',
-        values: Array.isArray(values[0]) ? values : [values]
-      })
-    });
+    let targetSheetName = sheetName;
+    const sendAppend = async (sName: string) => {
+      const range = `'${sName}'!A1`;
+      const encodedRange = encodeURIComponent(range);
+      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${effectiveToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range,
+          majorDimension: 'ROWS',
+          values: Array.isArray(values[0]) ? values : [values]
+        })
+      });
+    };
 
-    const data = await googleRes.json();
+    let googleRes = await sendAppend(targetSheetName);
+    let data = await googleRes.json();
+
+    if (!googleRes.ok) {
+      console.warn('[Sheets Append Proxy Notice] Initial append failed, auto-healing grid...', data?.error?.message);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+      if (titleMap[targetSheetName]) {
+        targetSheetName = titleMap[targetSheetName];
+      }
+      googleRes = await sendAppend(targetSheetName);
+      data = await googleRes.json();
+    }
+
     if (!googleRes.ok) {
       console.error('[Sheets Append Proxy Error]:', data);
       res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to append sheet row' });
@@ -921,25 +1020,49 @@ app.post('/api/sheets/batch-update', async (req, res) => {
   }
 
   try {
-    const body = {
-      valueInputOption: 'USER_ENTERED',
-      data: updates.map((u: any) => ({
-        range: u.range,
-        majorDimension: 'ROWS',
-        values: u.values
-      }))
+    let currentUpdates = updates;
+    const sendBatch = async (upds: any[]) => {
+      const body = {
+        valueInputOption: 'USER_ENTERED',
+        data: upds.map((u: any) => ({
+          range: u.range,
+          majorDimension: 'ROWS',
+          values: u.values
+        }))
+      };
+
+      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${effectiveToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
     };
 
-    const googleRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${effectiveToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
+    let googleRes = await sendBatch(currentUpdates);
+    let data = await googleRes.json();
 
-    const data = await googleRes.json();
+    // Auto-heal grid dimensions and tab names if failed
+    if (!googleRes.ok) {
+      console.warn('[Sheets Batch Update Notice] Initial batchUpdate failed, attempting auto-heal...', data?.error?.message);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+
+      currentUpdates = updates.map((u: any) => {
+        let rng = u.range;
+        for (const [stdTitle, realTitle] of Object.entries(titleMap)) {
+          if (rng.includes(stdTitle)) {
+            rng = rng.replace(stdTitle, realTitle);
+          }
+        }
+        return { ...u, range: rng };
+      });
+
+      googleRes = await sendBatch(currentUpdates);
+      data = await googleRes.json();
+    }
+
     if (!googleRes.ok) {
       console.error('[Sheets Batch Update Proxy Error]:', data);
       res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to batch update sheet' });
