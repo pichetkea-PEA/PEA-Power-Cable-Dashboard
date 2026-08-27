@@ -62,11 +62,10 @@ export default function MapChart({
       // Add zoom control in top-right to avoid clashing with bottom legend
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Clean, light-themed Voyager tile layer
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
+      // 100% Free OpenStreetMap tile layer (No API key required, no watermarks)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+        maxZoom: 19
       }).addTo(map);
 
       markerGroupRef.current = L.layerGroup().addTo(map);

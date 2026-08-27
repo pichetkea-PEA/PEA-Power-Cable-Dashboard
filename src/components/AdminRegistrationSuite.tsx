@@ -49,6 +49,7 @@ import { saveCentralAssetsCache } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
+import { CsvDuplicateConflictModal, CsvDuplicateConflict } from './CsvDuplicateConflictModal';
 import { logAssetActivity } from '../utils/auditLogger';
 
 interface AdminRegistrationSuiteProps {
@@ -167,6 +168,10 @@ export default function AdminRegistrationSuite({
     mismatches: string[];
     onResolve: (overwrite: boolean) => void;
   } | null>(null);
+
+  // CSV Upload Duplicate Conflict Prevention State
+  const [csvDuplicateConflicts, setCsvDuplicateConflicts] = useState<CsvDuplicateConflict[]>([]);
+  const [showDuplicateConflictModal, setShowDuplicateConflictModal] = useState<boolean>(false);
 
   // Integrity checks duplicates state
   const [integrityFilterType, setIntegrityFilterType] = useState<'all' | 'pea' | 'sap' | 'aa'>('all');
@@ -498,6 +503,205 @@ export default function AdminRegistrationSuite({
     }
   };
 
+  const normalizeIdentifier = (val?: string | null): string => {
+    if (!val) return '';
+    const trimmed = String(val).trim();
+    const lower = trimmed.toLowerCase();
+    if (['', '-', '--', 'n/a', 'na', 'null', 'undefined', 'none', '[blank]', 'blank', '0'].includes(lower)) {
+      return '';
+    }
+    return trimmed.toUpperCase();
+  };
+
+  const findCsvDuplicateConflicts = (
+    dataRows: string[][],
+    existingAssetsList: CableAsset[],
+    calculatedPeas?: string[]
+  ): CsvDuplicateConflict[] => {
+    const conflicts: CsvDuplicateConflict[] = [];
+
+    // Map existing system assets across PEA Number, ADS Number, and AA Number
+    const existingPeaMap = new Map<string, { asset: CableAsset; source: string }>();
+    const existingAdsMap = new Map<string, { asset: CableAsset; source: string }>();
+    const existingAaMap = new Map<string, { asset: CableAsset; source: string }>();
+
+    existingAssetsList.forEach(asset => {
+      const areaStr = asset.city || (asset as any).area || 'Central Database';
+      const pea = normalizeIdentifier(asset.peaNumber);
+      const ads = normalizeIdentifier(asset.adsNumber) || normalizeIdentifier(asset.assetNumber);
+      const aa = normalizeIdentifier(asset.assetNumber) || normalizeIdentifier(asset.adsNumber);
+
+      if (pea && !existingPeaMap.has(pea)) {
+        existingPeaMap.set(pea, { asset, source: areaStr });
+      }
+      if (ads && !existingAdsMap.has(ads)) {
+        existingAdsMap.set(ads, { asset, source: areaStr });
+      }
+      if (aa && !existingAaMap.has(aa)) {
+        existingAaMap.set(aa, { asset, source: areaStr });
+      }
+    });
+
+    // Track internal CSV duplicates to prevent multiple rows in the same file from using the same ID
+    const seenCsvAds = new Map<string, number>();
+    const seenCsvAa = new Map<string, number>();
+    const seenCsvPea = new Map<string, number>();
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const cols = dataRows[i];
+      const rowNum = i + 2; // Row 1 is header
+
+      if (cols.every(cell => !cell || cell.trim() === '') || (!cols[0] || cols[0].trim() === '')) {
+        break; // Stop at empty row
+      }
+
+      const rawVolt = (cols[0] || '').trim();
+      const rawArea = (cols[1] || '').trim();
+      const rawAdsNumber = normalizeIdentifier(cols[5]); // Col F: Equipment Number ADS
+      const rawAssetNumber = normalizeIdentifier(cols[6]); // Col G: Account Asset Number AA
+      const rawEqType = (cols[7] || '').trim();
+      const rawPeaInCsv = normalizeIdentifier(cols[9]); // Col J: PEA Number (if present in CSV)
+      const rawSubstation = (cols[17] || '').trim();
+      const rawLandmark = (cols[20] || '').trim();
+
+      const autoAssignedPea = calculatedPeas && calculatedPeas[i]
+        ? normalizeIdentifier(calculatedPeas[i])
+        : '';
+
+      const rowDetails = {
+        equipmentType: rawEqType,
+        voltageLevel: rawVolt,
+        substationName: rawSubstation,
+        area: rawArea,
+        landmark: rawLandmark
+      };
+
+      // 1. Cross-Check PEA Number against Existing Assets
+      const peaToCheck = rawPeaInCsv || autoAssignedPea;
+      if (peaToCheck) {
+        if (existingPeaMap.has(peaToCheck)) {
+          const existing = existingPeaMap.get(peaToCheck)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'PEA Number',
+            conflictValue: peaToCheck,
+            source: 'Existing System Asset',
+            existingAssetInfo: {
+              equipmentId: existing.asset.equipmentId,
+              peaNumber: existing.asset.peaNumber,
+              adsNumber: existing.asset.adsNumber,
+              assetNumber: existing.asset.assetNumber,
+              substationName: existing.asset.substationName,
+              area: existing.source,
+              voltageLevel: existing.asset.voltageLevel,
+              equipmentType: existing.asset.equipmentType
+            },
+            rowDetails
+          });
+        }
+      }
+
+      // 2. Cross-Check Equipment Number (ADS) against Existing Assets
+      if (rawAdsNumber) {
+        if (existingAdsMap.has(rawAdsNumber)) {
+          const existing = existingAdsMap.get(rawAdsNumber)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'Equipment Number (ADS)',
+            conflictValue: rawAdsNumber,
+            source: 'Existing System Asset',
+            existingAssetInfo: {
+              equipmentId: existing.asset.equipmentId,
+              peaNumber: existing.asset.peaNumber,
+              adsNumber: existing.asset.adsNumber,
+              assetNumber: existing.asset.assetNumber,
+              substationName: existing.asset.substationName,
+              area: existing.source,
+              voltageLevel: existing.asset.voltageLevel,
+              equipmentType: existing.asset.equipmentType
+            },
+            rowDetails
+          });
+        }
+      }
+
+      // 3. Cross-Check Account Asset Number (AA) against Existing Assets
+      if (rawAssetNumber) {
+        if (existingAaMap.has(rawAssetNumber)) {
+          const existing = existingAaMap.get(rawAssetNumber)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'Account Asset Number (AA)',
+            conflictValue: rawAssetNumber,
+            source: 'Existing System Asset',
+            existingAssetInfo: {
+              equipmentId: existing.asset.equipmentId,
+              peaNumber: existing.asset.peaNumber,
+              adsNumber: existing.asset.adsNumber,
+              assetNumber: existing.asset.assetNumber,
+              substationName: existing.asset.substationName,
+              area: existing.source,
+              voltageLevel: existing.asset.voltageLevel,
+              equipmentType: existing.asset.equipmentType
+            },
+            rowDetails
+          });
+        }
+      }
+
+      // 4. Internal CSV Duplicate Cross-Checks
+      if (rawAdsNumber) {
+        if (seenCsvAds.has(rawAdsNumber)) {
+          const prevRow = seenCsvAds.get(rawAdsNumber)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'Equipment Number (ADS)',
+            conflictValue: rawAdsNumber,
+            source: 'Internal CSV Duplicate',
+            conflictingRowIndex: prevRow,
+            rowDetails
+          });
+        } else {
+          seenCsvAds.set(rawAdsNumber, rowNum);
+        }
+      }
+
+      if (rawAssetNumber) {
+        if (seenCsvAa.has(rawAssetNumber)) {
+          const prevRow = seenCsvAa.get(rawAssetNumber)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'Account Asset Number (AA)',
+            conflictValue: rawAssetNumber,
+            source: 'Internal CSV Duplicate',
+            conflictingRowIndex: prevRow,
+            rowDetails
+          });
+        } else {
+          seenCsvAa.set(rawAssetNumber, rowNum);
+        }
+      }
+
+      if (peaToCheck) {
+        if (seenCsvPea.has(peaToCheck)) {
+          const prevRow = seenCsvPea.get(peaToCheck)!;
+          conflicts.push({
+            rowNum,
+            conflictType: 'PEA Number',
+            conflictValue: peaToCheck,
+            source: 'Internal CSV Duplicate',
+            conflictingRowIndex: prevRow,
+            rowDetails
+          });
+        } else {
+          seenCsvPea.set(peaToCheck, rowNum);
+        }
+      }
+    }
+
+    return conflicts;
+  };
+
   const parseCsvLine = (line: string, delimiter: string = ','): string[] => {
     const result: string[] = [];
     let current = '';
@@ -635,6 +839,21 @@ export default function AdminRegistrationSuite({
       if (validDataRows.length === 0) {
         setValidationErrors(["No valid asset data rows found below header (first data row is empty or missing required values)."]);
         setCsvParsedRows([]);
+        return;
+      }
+
+      // Pre-flight duplicate integrity check against loaded system assets and internal CSV duplicate rows
+      const immediateConflicts = findCsvDuplicateConflicts(validDataRows, assets);
+      if (immediateConflicts.length > 0) {
+        setCsvDuplicateConflicts(immediateConflicts);
+        setShowDuplicateConflictModal(true);
+        setCsvParsedRows([]);
+        setCsvFileObj(null);
+        setSelectedCsvOption(null);
+        setOption1ReviewList([]);
+        setOption2ReviewList([]);
+        const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
         return;
       }
 
@@ -835,6 +1054,7 @@ export default function AdminRegistrationSuite({
 
     try {
       const allCollectedAssets: { pea: string; area: string }[] = [];
+      const allCollectedFullAssets: CableAsset[] = [];
 
       if (activeToken) {
         const { spreadsheets } = await autoDiscoverAndSync(activeToken);
@@ -844,6 +1064,7 @@ export default function AdminRegistrationSuite({
             try {
               const sheetAssets = await fetchSheetsData(activeToken, sheetId);
               sheetAssets.forEach(asset => {
+                allCollectedFullAssets.push(asset);
                 const pea = (asset.peaNumber || '').trim();
                 if (pea && pea !== 'N/A') {
                   allCollectedAssets.push({ pea, area });
@@ -857,6 +1078,7 @@ export default function AdminRegistrationSuite({
       }
 
       assets.forEach(asset => {
+        allCollectedFullAssets.push(asset);
         const pea = (asset.peaNumber || '').trim();
         if (pea && pea !== 'N/A') {
           allCollectedAssets.push({ pea, area: asset.city || 'Regional' });
@@ -1004,6 +1226,24 @@ export default function AdminRegistrationSuite({
           assetValue,
           qrDocument
         });
+      }
+
+      // Comprehensive duplicate integrity check: Cross check PEA number, ADS equipment number, and AA asset number against all 12 regional sheets
+      const generatedPeas = parsedReview.map(r => r.peaNumber);
+      const conflicts = findCsvDuplicateConflicts(dataRows, allCollectedFullAssets, generatedPeas);
+
+      if (conflicts.length > 0) {
+        setCsvDuplicateConflicts(conflicts);
+        setShowDuplicateConflictModal(true);
+        setOption1ReviewList([]);
+        setCsvParsedRows([]);
+        setCsvFileObj(null);
+        setSelectedCsvOption(null);
+        setIsLoadingOption1Review(false);
+        setIsProcessingOption1(false);
+        const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        return;
       }
 
       setOption1ReviewList(parsedReview);
@@ -4017,6 +4257,16 @@ export default function AdminRegistrationSuite({
           </div>
         </div>
       )}
+
+      {/* CSV Upload Duplicate Conflict Modal */}
+      <CsvDuplicateConflictModal
+        isOpen={showDuplicateConflictModal}
+        conflicts={csvDuplicateConflicts}
+        onClose={() => {
+          setShowDuplicateConflictModal(false);
+          setCsvDuplicateConflicts([]);
+        }}
+      />
 
       {/* Registration Progress Percent Modal */}
       <RegistrationProgressModal
