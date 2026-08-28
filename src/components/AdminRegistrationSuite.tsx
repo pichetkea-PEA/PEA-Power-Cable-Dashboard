@@ -44,7 +44,24 @@ import {
   Download,
   Loader2
 } from 'lucide-react';
-import { updateSheetRow, fetchSheetsRowIndices, autoDiscoverAndSync, fetchSheetsData, appendGeneralRow, appendEngineeringRow, appendVisualRow, appendGeneralRowsBatch, appendEngineeringRowsBatch, appendVisualRowsBatch, fetchLastSheetNumber, getMasterSpreadsheetsMap, batchUpdateSheetRows, getEffectiveGoogleToken } from '../utils/googleSheets';
+import { 
+  updateSheetRow, 
+  fetchSheetsRowIndices, 
+  autoDiscoverAndSync, 
+  fetchSheetsData, 
+  fetchFastRegionalIdentifiers,
+  invalidateFastRegionalIdentifierCache,
+  appendGeneralRow, 
+  appendEngineeringRow, 
+  appendVisualRow, 
+  appendGeneralRowsBatch, 
+  appendEngineeringRowsBatch, 
+  appendVisualRowsBatch, 
+  fetchLastSheetNumber, 
+  getMasterSpreadsheetsMap, 
+  batchUpdateSheetRows, 
+  getEffectiveGoogleToken 
+} from '../utils/googleSheets';
 import { saveCentralAssetsCache } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
@@ -412,30 +429,12 @@ export default function AdminRegistrationSuite({
 
       const allCollectedAssets: { pea: string; area: string }[] = [];
 
-      if (activeToken) {
-        const { spreadsheets } = await getMasterSpreadsheetsMap(activeToken);
-        const entries = Object.entries(spreadsheets);
-        await Promise.all(
-          entries.map(async ([area, sheetId]) => {
-            try {
-              const sheetAssets = await fetchSheetsData(activeToken, sheetId);
-              sheetAssets.forEach(asset => {
-                const pea = (asset.peaNumber || '').trim();
-                if (pea && pea !== 'N/A') {
-                  allCollectedAssets.push({ pea, area });
-                }
-              });
-            } catch (e) {
-              console.warn(`Failed scanning area ${area}:`, e);
-            }
-          })
-        );
-      }
-
-      assets.forEach(asset => {
+      // High-speed regional asset lookup using fast identifier cache & lightweight General Information rows
+      const allRegionalAssets = await fetchFastRegionalIdentifiers(activeToken, assets);
+      allRegionalAssets.forEach(asset => {
         const pea = (asset.peaNumber || '').trim();
         if (pea && pea !== 'N/A') {
-          allCollectedAssets.push({ pea, area: asset.city || 'Regional' });
+          allCollectedAssets.push({ pea, area: asset.city || (asset as any).area || 'Regional' });
         }
       });
 
@@ -503,11 +502,11 @@ export default function AdminRegistrationSuite({
     }
   };
 
+  const BLANK_IDENTIFIERS_SET = new Set(['', '-', '--', 'n/a', 'na', 'null', 'undefined', 'none', '[blank]', 'blank', '0']);
   const normalizeIdentifier = (val?: string | null): string => {
     if (!val) return '';
     const trimmed = String(val).trim();
-    const lower = trimmed.toLowerCase();
-    if (['', '-', '--', 'n/a', 'na', 'null', 'undefined', 'none', '[blank]', 'blank', '0'].includes(lower)) {
+    if (BLANK_IDENTIFIERS_SET.has(trimmed.toLowerCase())) {
       return '';
     }
     return trimmed.toUpperCase();
@@ -520,12 +519,14 @@ export default function AdminRegistrationSuite({
   ): CsvDuplicateConflict[] => {
     const conflicts: CsvDuplicateConflict[] = [];
 
-    // Map existing system assets across PEA Number, ADS Number, and AA Number
+    // Pre-allocate Map structures for O(1) instant duplicate checks
     const existingPeaMap = new Map<string, { asset: CableAsset; source: string }>();
     const existingAdsMap = new Map<string, { asset: CableAsset; source: string }>();
     const existingAaMap = new Map<string, { asset: CableAsset; source: string }>();
 
-    existingAssetsList.forEach(asset => {
+    // Single-pass indexing of all system assets
+    for (let aIdx = 0; aIdx < existingAssetsList.length; aIdx++) {
+      const asset = existingAssetsList[aIdx];
       const areaStr = asset.city || (asset as any).area || 'Central Database';
       const pea = normalizeIdentifier(asset.peaNumber);
       const ads = normalizeIdentifier(asset.adsNumber) || normalizeIdentifier(asset.assetNumber);
@@ -540,7 +541,7 @@ export default function AdminRegistrationSuite({
       if (aa && !existingAaMap.has(aa)) {
         existingAaMap.set(aa, { asset, source: areaStr });
       }
-    });
+    }
 
     // Track internal CSV duplicates to prevent multiple rows in the same file from using the same ID
     const seenCsvAds = new Map<string, number>();
@@ -876,7 +877,8 @@ export default function AdminRegistrationSuite({
     sz: string, 
     allCollectedAssets: { pea: string; area: string }[], 
     installationDate?: string,
-    regYear?: string
+    regYear?: string,
+    usedSeqMap?: Map<string, Set<number>>
   ) => {
     // Distribution Circuit assets do not generate a new PEA number
     const eqLower = (eqType || '').toLowerCase();
@@ -993,25 +995,35 @@ export default function AdminRegistrationSuite({
     }
 
     const patternPrefix = `${prefix}${yy}-${x1}${x2}`;
-    const usedSeqNumbers = new Set<number>();
-
-    allCollectedAssets.forEach(item => {
-      const peaStr = (item.pea || '').trim().toUpperCase();
-      if (peaStr.startsWith(patternPrefix.toUpperCase())) {
-        const remainder = peaStr.slice(patternPrefix.length);
-        const num = parseInt(remainder, 10);
-        if (!isNaN(num) && num >= 0 && num <= 9999 && remainder.length <= 4) {
-          usedSeqNumbers.add(num);
-        } else if (!isNaN(num) && remainder.length > 4) {
-          // If an existing number in the sheet has > 4 digits after patternPrefix (e.g., manual typo like 5010000),
-          // extract the last 4 digits if valid <= 9999, ignoring corrupted values >= 10000.
-          const last4 = parseInt(remainder.slice(-4), 10);
-          if (!isNaN(last4) && last4 >= 0 && last4 <= 9999) {
-            usedSeqNumbers.add(last4);
+    
+    // Fast O(1) sequence number resolution if map provided
+    let usedSeqNumbers: Set<number>;
+    if (usedSeqMap) {
+      const existingSet = usedSeqMap.get(patternPrefix.toUpperCase());
+      if (existingSet) {
+        usedSeqNumbers = existingSet;
+      } else {
+        usedSeqNumbers = new Set<number>();
+        usedSeqMap.set(patternPrefix.toUpperCase(), usedSeqNumbers);
+      }
+    } else {
+      usedSeqNumbers = new Set<number>();
+      allCollectedAssets.forEach(item => {
+        const peaStr = (item.pea || '').trim().toUpperCase();
+        if (peaStr.startsWith(patternPrefix.toUpperCase())) {
+          const remainder = peaStr.slice(patternPrefix.length);
+          const num = parseInt(remainder, 10);
+          if (!isNaN(num) && num >= 0 && num <= 9999 && remainder.length <= 4) {
+            usedSeqNumbers.add(num);
+          } else if (!isNaN(num) && remainder.length > 4) {
+            const last4 = parseInt(remainder.slice(-4), 10);
+            if (!isNaN(last4) && last4 >= 0 && last4 <= 9999) {
+              usedSeqNumbers.add(last4);
+            }
           }
         }
-      }
-    });
+      });
+    }
 
     // Find the first unused sequence number starting from 1 up to 9999
     let nextSeq = 1;
@@ -1033,6 +1045,7 @@ export default function AdminRegistrationSuite({
       }
     }
 
+    usedSeqNumbers.add(nextSeq);
     const seqStr = String(nextSeq).padStart(4, '0');
     return `${patternPrefix}${seqStr}`;
   };
@@ -1054,34 +1067,31 @@ export default function AdminRegistrationSuite({
 
     try {
       const allCollectedAssets: { pea: string; area: string }[] = [];
-      const allCollectedFullAssets: CableAsset[] = [];
+      
+      // High-speed regional asset lookup using fast identifier cache & lightweight General Information rows
+      const allCollectedFullAssets: CableAsset[] = await fetchFastRegionalIdentifiers(activeToken, assets);
+      const usedSeqMap = new Map<string, Set<number>>();
 
-      if (activeToken) {
-        const { spreadsheets } = await autoDiscoverAndSync(activeToken);
-        const entries = Object.entries(spreadsheets);
-        await Promise.all(
-          entries.map(async ([area, sheetId]) => {
-            try {
-              const sheetAssets = await fetchSheetsData(activeToken, sheetId);
-              sheetAssets.forEach(asset => {
-                allCollectedFullAssets.push(asset);
-                const pea = (asset.peaNumber || '').trim();
-                if (pea && pea !== 'N/A') {
-                  allCollectedAssets.push({ pea, area });
-                }
-              });
-            } catch (e) {
-              console.warn(`Failed scanning area ${area}:`, e);
-            }
-          })
-        );
-      }
-
-      assets.forEach(asset => {
-        allCollectedFullAssets.push(asset);
+      // Single-pass indexing of existing PEA numbers and sequence numbers by prefix
+      allCollectedFullAssets.forEach(asset => {
         const pea = (asset.peaNumber || '').trim();
         if (pea && pea !== 'N/A') {
-          allCollectedAssets.push({ pea, area: asset.city || 'Regional' });
+          allCollectedAssets.push({ pea, area: asset.city || (asset as any).area || 'Regional' });
+          const peaUpper = pea.toUpperCase();
+          const dashIdx = peaUpper.indexOf('-');
+          if (dashIdx !== -1 && peaUpper.length >= dashIdx + 3) {
+            const prefixKey = peaUpper.substring(0, dashIdx + 3);
+            const remainder = peaUpper.substring(dashIdx + 3);
+            const num = parseInt(remainder, 10);
+            if (!isNaN(num) && num >= 0 && num <= 9999) {
+              let set = usedSeqMap.get(prefixKey);
+              if (!set) {
+                set = new Set<number>();
+                usedSeqMap.set(prefixKey, set);
+              }
+              set.add(num);
+            }
+          }
         }
       });
 
@@ -1165,7 +1175,7 @@ export default function AdminRegistrationSuite({
         const installationDate = normalizeInstallationDate(rawInstDate);
 
         // Automatically assign latest PEA number searching sheet data using Col B, A, H, I and Installation Date (Col R)
-        const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration);
+        const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration, usedSeqMap);
         if (autoPea) {
           allCollectedAssets.push({ pea: autoPea, area });
         }
@@ -2457,6 +2467,7 @@ export default function AdminRegistrationSuite({
       setOption2ReviewList([]);
       setCsvParsedRows([]);
       setSelectedCsvOption(null);
+      invalidateFastRegionalIdentifierCache();
       onRefresh();
     } catch (err: any) {
       alert(`Option 2 error: ${err.message}`);
@@ -2592,6 +2603,7 @@ export default function AdminRegistrationSuite({
           }
         }
         alert(`Duplicate code resolved! Cleared ${duplicatesToEliminate.length} secondary entries.`);
+        invalidateFastRegionalIdentifierCache();
         onRefresh();
       } else {
         alert("Action queued for SAP manual override.");
@@ -2724,6 +2736,7 @@ export default function AdminRegistrationSuite({
 
       alert('Asset updated successfully to resolve duplicate conflict.');
       setEditingAsset(null);
+      invalidateFastRegionalIdentifierCache();
       onRefresh();
     } catch (err: any) {
       alert(`Error updating asset: ${err.message}`);

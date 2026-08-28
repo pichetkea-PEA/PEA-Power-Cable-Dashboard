@@ -88,6 +88,155 @@ export async function getMasterSpreadsheetsMap(accessToken?: string | null): Pro
   return { spreadsheets, folders };
 }
 
+// Session cache for ultra-fast regional identifier cross-checks (TTL: 60 seconds)
+let fastRegionalIdentifierCache: {
+  timestamp: number;
+  assets: CableAsset[];
+} | null = null;
+
+export function invalidateFastRegionalIdentifierCache(): void {
+  fastRegionalIdentifierCache = null;
+}
+
+// High-speed lightweight regional identifier fetcher for Triple-Identifier Cross-Check Engine
+export async function fetchFastRegionalIdentifiers(
+  accessToken: string | null | undefined,
+  fallbackAssets: CableAsset[] = []
+): Promise<CableAsset[]> {
+  const now = Date.now();
+  if (
+    fastRegionalIdentifierCache &&
+    now - fastRegionalIdentifierCache.timestamp < 60000 &&
+    fastRegionalIdentifierCache.assets.length > 0
+  ) {
+    return fastRegionalIdentifierCache.assets;
+  }
+
+  const collected: CableAsset[] = [];
+  const seenKeys = new Set<string>();
+
+  // 1. Immediately absorb in-memory assets (0ms latency)
+  if (fallbackAssets && fallbackAssets.length > 0) {
+    fallbackAssets.forEach(a => {
+      const pea = (a.peaNumber || '').trim().toUpperCase();
+      const ads = (a.assetNumber || a.adsNumber || '').trim().toUpperCase();
+      const aa = (a.adsNumber || a.assetNumber || '').trim().toUpperCase();
+      const key = a.equipmentId || `${pea}_${ads}_${aa}_${a.number}`;
+      if (key && !seenKeys.has(key)) {
+        seenKeys.add(key);
+        collected.push(a);
+      }
+    });
+  }
+
+  // 2. Fetch Tab 1 'General Information'!A2:AG in parallel across all 12 regional sheets if token is available
+  const token = getEffectiveGoogleToken(accessToken);
+  if (token) {
+    try {
+      const { spreadsheets } = await getMasterSpreadsheetsMap(token);
+      const entries = Object.entries(spreadsheets);
+
+      if (entries.length > 0) {
+        const results = await Promise.all(
+          entries.map(async ([area, sheetId]) => {
+            try {
+              // Fetch only Tab 1 General Information rows (skips images, PRPD, and engineering for maximum speed)
+              const range = encodeURIComponent("'General Information'!A2:AG");
+              const res = await fetchWithRetry(
+                `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`,
+                { headers: { Authorization: `Bearer ${token}` } },
+                2,
+                600
+              );
+
+              if (res.ok) {
+                const data = await res.json();
+                const rows: any[][] = data.values || [];
+                const parsed: CableAsset[] = [];
+
+                rows.forEach((row, idx) => {
+                  if (!row || row.length === 0 || !row.some(c => c && String(c).trim() !== '')) return;
+
+                  const peaNumber = (row[13] || '').toString().trim();
+                  const assetNumber = (row[14] || '').toString().trim(); // Equipment Number ADS
+                  const adsNumber = (row[15] || '').toString().trim();   // Account Asset Number AA
+                  const equipmentId = (row[32] || row[30] || '').toString().trim();
+
+                  parsed.push({
+                    number: parseInt(row[0], 10) || idx + 1,
+                    timestamp: (row[1] || '').toString().trim(),
+                    operatorName: (row[2] || '').toString().trim(),
+                    voltageLevel: (row[3] || '115').toString().trim(),
+                    city: (row[4] || area).toString().trim(),
+                    equipmentType: (row[5] || 'Underground Cable') as EquipmentType,
+                    manufacturer: (row[6] || '').toString().trim(),
+                    country: (row[7] || '').toString().trim(),
+                    locationType: (row[8] || 'Substation') as LocationType,
+                    substationName: (row[9] || '').toString().trim(),
+                    landmark: (row[10] || '').toString().trim(),
+                    gps: { lat: 0, lng: 0 },
+                    yearOfRegistration: parseInt(row[12], 10) || new Date().getFullYear(),
+                    peaNumber,
+                    assetNumber,
+                    adsNumber,
+                    equipmentId: equipmentId || `PEA-${area}-${idx + 1}`
+                  });
+                });
+                return parsed;
+              }
+            } catch (sheetErr) {
+              console.warn(`Fast regional identifier query for ${area} fallback:`, sheetErr);
+            }
+            return [];
+          })
+        );
+
+        results.flat().forEach(a => {
+          const pea = (a.peaNumber || '').trim().toUpperCase();
+          const ads = (a.assetNumber || a.adsNumber || '').trim().toUpperCase();
+          const aa = (a.adsNumber || a.assetNumber || '').trim().toUpperCase();
+          const key = a.equipmentId || `${pea}_${ads}_${aa}_${a.number}`;
+          if (key && !seenKeys.has(key)) {
+            seenKeys.add(key);
+            collected.push(a);
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("Failed fast regional identifier scan:", err);
+    }
+  }
+
+  // 3. Absorbed local storage backup if empty
+  if (collected.length === 0) {
+    try {
+      const local = localStorage.getItem('local_cable_assets') || localStorage.getItem('pea_central_assets_backup');
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(a => {
+            const pea = (a.peaNumber || '').trim().toUpperCase();
+            const ads = (a.assetNumber || a.adsNumber || '').trim().toUpperCase();
+            const aa = (a.adsNumber || a.assetNumber || '').trim().toUpperCase();
+            const key = a.equipmentId || `${pea}_${ads}_${aa}_${a.number}`;
+            if (key && !seenKeys.has(key)) {
+              seenKeys.add(key);
+              collected.push(a);
+            }
+          });
+        }
+      }
+    } catch (e) {}
+  }
+
+  fastRegionalIdentifierCache = {
+    timestamp: now,
+    assets: collected
+  };
+
+  return collected;
+}
+
 // Helper to list existing spreadsheets matching our pattern
 export async function listSpreadsheets(accessToken: string): Promise<{ name: string; id: string }[]> {
   const query = encodeURIComponent("name contains 'PEA Cable Asset Database -' and mimeType = 'application/vnd.google-apps.spreadsheet'");
