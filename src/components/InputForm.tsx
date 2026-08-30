@@ -37,7 +37,7 @@ import {
   getEffectiveGoogleToken
 } from '../utils/googleSheets';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
-import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
+import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, sendAdminNotification } from '../utils/firestore';
 import { 
   analyzePrpdImage, 
   analyzeOfflinePdPdf, 
@@ -717,6 +717,19 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
           substationName: combinedAsset.substationName,
           landmark: combinedAsset.landmark,
           city: combinedAsset.city
+        });
+
+        // Send real-time notification to Firestore for Admin notification bar
+        await sendAdminNotification({
+          type: 'submit_log',
+          title: 'New Diagnostic Log Submitted',
+          message: `Local operator ${user.name} submitted a new diagnostic log for asset ${computedEquipmentId} (${selectedArea}).`,
+          equipmentId: computedEquipmentId,
+          operatorName: user.name,
+          userEmail: user.email,
+          timestamp: getBangkokTimestamp(),
+          details: `Submitted diagnostic log with visual photo, thermogram scan, PRPD picture, and offline PDF report. Severity classification: ${combinedAsset.pdDiagnostics?.onlinePrpdSeverity || 'Critical'}.`,
+          area: selectedArea
         });
       } catch (e) {
         console.warn("Failed updating central assets cache:", e);

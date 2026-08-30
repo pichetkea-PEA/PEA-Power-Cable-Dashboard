@@ -62,7 +62,7 @@ import {
   batchUpdateSheetRows, 
   getEffectiveGoogleToken 
 } from '../utils/googleSheets';
-import { saveCentralAssetsCache } from '../utils/firestore';
+import { saveCentralAssetsCache, sendAdminNotification } from '../utils/firestore';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
@@ -1894,6 +1894,19 @@ export default function AdminRegistrationSuite({
               landmark: newAst.landmark,
               city: newAst.city
             });
+
+            // Send real-time notification to Firestore for Admin notification bar
+            await sendAdminNotification({
+              type: 'registration',
+              title: 'New Asset Registered',
+              message: `User ${user?.name || 'Admin'} registered a new asset: ${newAst.equipmentId} (${getAssetArea(newAst) || 'N1'}).`,
+              equipmentId: newAst.equipmentId,
+              operatorName: user?.name || 'Admin',
+              userEmail: user?.email || '',
+              timestamp: getBangkokTimestamp(),
+              details: `Option 1: Registered a new asset (${newAst.peaNumber || newAst.equipmentId}) via CSV Import/Suite.`,
+              area: getAssetArea(newAst) || 'N1'
+            });
           } catch (logErr) {
             console.warn("Error recording new registration activity:", logErr);
           }
@@ -2711,6 +2724,19 @@ export default function AdminRegistrationSuite({
               landmark: targetAsset.landmark,
               city: targetAsset.city
             }).catch(e => console.warn("Failed logging Option 2 edit activity:", e));
+
+            // Send real-time notification to Firestore for Admin notification bar
+            sendAdminNotification({
+              type: 'edit',
+              title: 'Asset Record Edited (CSV Update)',
+              message: `User ${user?.name || 'Admin'} updated ADS/AA values for asset ${targetAsset.equipmentId || targetEqId}.`,
+              equipmentId: targetAsset.equipmentId || targetEqId,
+              operatorName: user?.name || 'Admin',
+              userEmail: user?.email || '',
+              timestamp: bangkokEditTime,
+              details: `Option 2: Updated ADS (${newAds || targetAsset.assetNumber || 'N/A'}) & AA (${newAa || targetAsset.adsNumber || 'N/A'}) via CSV updates.`,
+              area: getAssetArea(targetAsset) || 'N1'
+            }).catch(e => console.warn("Failed sending notification for CSV update:", e));
           }
         }
       });

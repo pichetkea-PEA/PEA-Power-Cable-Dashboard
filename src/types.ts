@@ -216,6 +216,28 @@ export interface CableAsset extends GeneralInformation {
   changedFields?: string[];
 }
 
+export interface AdminNotification {
+  id: string;
+  type: 'registration' | 'edit' | 'submit_log';
+  title: string;
+  message: string;
+  equipmentId: string;
+  operatorName: string;
+  userEmail: string;
+  timestamp: string;
+  readBy: string[];
+  details?: string;
+  area?: string;
+}
+
+export interface UserOnlineStatus {
+  email: string;
+  name: string;
+  role: string;
+  lastActive: string;
+  status: 'online' | 'offline';
+}
+
 export interface DashboardFilters {
   area: string; // "All" or area name
   city: string; // "All" or city name

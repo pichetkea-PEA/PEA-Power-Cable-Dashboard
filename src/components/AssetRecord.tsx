@@ -51,7 +51,7 @@ import {
   getMasterSpreadsheetsMap,
   getEffectiveGoogleToken
 } from '../utils/googleSheets';
-import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache } from '../utils/firestore';
+import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, sendAdminNotification } from '../utils/firestore';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { logAssetActivity, deriveAssetArea, AssetActivityLog } from '../utils/auditLogger';
 
@@ -1406,6 +1406,19 @@ export default function AssetRecord({
           substationName: updatedAsset.substationName,
           landmark: updatedAsset.landmark,
           city: updatedAsset.city
+        });
+
+        // Send real-time notification to Firestore for Admin notification bar
+        await sendAdminNotification({
+          type: 'edit',
+          title: 'Asset Record Edited',
+          message: `User ${user.name} edited the existing asset ${updatedAsset.equipmentId} (${deriveAssetArea(updatedAsset)}).`,
+          equipmentId: updatedAsset.equipmentId,
+          operatorName: user.name,
+          userEmail: user.email,
+          timestamp: timestamp,
+          details: `Edited general information, engineering specs, or visual/thermal images.`,
+          area: deriveAssetArea(updatedAsset)
         });
       } catch (logErr) {
         console.warn("Audit activity log recording note:", logErr);

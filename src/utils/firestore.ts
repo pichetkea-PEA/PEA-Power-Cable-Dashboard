@@ -1,6 +1,7 @@
 import { db, auth } from './firebaseAuth';
 import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { setLocalIndexedDBItem, getLocalIndexedDBItem, generateAssetsHash } from './localCache';
+import { AdminNotification, UserOnlineStatus } from '../types';
 
 export enum OperationType {
   CREATE = 'create',
@@ -437,5 +438,78 @@ export async function getDelegatedGoogleToken(): Promise<string | null> {
   }
 
   return null;
+}
+
+export async function sendAdminNotification(notification: Omit<AdminNotification, 'id' | 'readBy'>): Promise<void> {
+  if ((window as any).firestoreQuotaExceeded) return;
+  try {
+    const id = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const docRef = doc(db, 'notifications', id);
+    const newNotif: AdminNotification = {
+      ...notification,
+      id,
+      readBy: []
+    };
+    await setDoc(docRef, newNotif);
+    console.log('Admin notification sent successfully:', newNotif);
+  } catch (error) {
+    console.warn('Failed to send admin notification to Firestore:', error);
+  }
+}
+
+export async function markNotificationAsRead(id: string, userEmail: string): Promise<void> {
+  if (!userEmail || (window as any).firestoreQuotaExceeded) return;
+  try {
+    const docRef = doc(db, 'notifications', id);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data() as AdminNotification;
+      const readBy = Array.isArray(data.readBy) ? [...data.readBy] : [];
+      if (!readBy.includes(userEmail)) {
+        readBy.push(userEmail);
+        await setDoc(docRef, { readBy }, { merge: true });
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to mark notification as read in Firestore:', error);
+  }
+}
+
+export async function clearAllNotifications(userEmail: string, allNotifIds: string[]): Promise<void> {
+  if (!userEmail || (window as any).firestoreQuotaExceeded) return;
+  try {
+    for (const id of allNotifIds) {
+      const docRef = doc(db, 'notifications', id);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data() as AdminNotification;
+        const readBy = Array.isArray(data.readBy) ? [...data.readBy] : [];
+        if (!readBy.includes(userEmail)) {
+          readBy.push(userEmail);
+          await setDoc(docRef, { readBy }, { merge: true });
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to clear notifications in Firestore:', error);
+  }
+}
+
+export async function updateOnlineStatus(email: string, name: string, role: string, isOnline: boolean = true): Promise<void> {
+  if (!email || (window as any).firestoreQuotaExceeded) return;
+  try {
+    const safeDocId = email.toLowerCase().trim().replace(/[^a-z0-9]/gi, '_');
+    const docRef = doc(db, 'online_users', safeDocId);
+    const status: UserOnlineStatus = {
+      email: email.toLowerCase().trim(),
+      name,
+      role,
+      lastActive: new Date().toISOString(),
+      status: isOnline ? 'online' : 'offline'
+    };
+    await setDoc(docRef, status, { merge: true });
+  } catch (error) {
+    console.warn('Failed to update online presence in Firestore:', error);
+  }
 }
 

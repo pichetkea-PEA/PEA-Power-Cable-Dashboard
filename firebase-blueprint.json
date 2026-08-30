@@ -15,12 +15,47 @@
         }
       },
       "required": ["spreadsheetId", "folderId"]
+    },
+    "AdminNotification": {
+      "title": "Admin Notification",
+      "description": "Administrative alerts generated when assets are registered, edited, or when diagnostics logs are submitted.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "equipmentId": { "type": "string" },
+        "operatorName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "timestamp": { "type": "string" }
+      }
+    },
+    "UserOnlineStatus": {
+      "title": "User Online Status",
+      "description": "Online presence tracker for signed-in users.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "lastActive": { "type": "string" },
+        "status": { "type": "string" }
+      }
     }
   },
   "firestore": {
     "sector_spreadsheets/{sectorId}": {
       "schema": "SectorSpreadsheet",
       "description": "A collection containing Google Sheet and Drive folder connections mapped per PEA Area Sector (e.g., N1, N2, ALL)."
+    },
+    "notifications/{notificationId}": {
+      "schema": "AdminNotification",
+      "description": "A collection containing administrative push notifications for real-time synchronization."
+    },
+    "online_users/{userId}": {
+      "schema": "UserOnlineStatus",
+      "description": "Real-time presence mapping of active operator and admin sessions."
     }
   }
 }

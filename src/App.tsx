@@ -1,8 +1,20 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { PEAUser, CableAsset, UserRole } from './types';
+import { PEAUser, CableAsset, UserRole, AdminNotification, UserOnlineStatus } from './types';
 import { PEA_AREAS, PEA_AREA_NAMES, getMockAssets, PEA_TARGET_REGIONAL_COUNTS, ensureComplete12Areas, getAssetArea } from './utils/peaData';
-import { initAuth, googleSignIn, googleSignInWithRedirect, logout } from './utils/firebaseAuth';
-import { saveSectorSpreadsheet, getAllSectorSpreadsheets, saveCentralAdminDatabaseConfig, getCentralAdminDatabaseConfig, saveCentralAssetsCache, getCentralAssetsCache, clearCentralAssetsCache } from "./utils/firestore";
+import { initAuth, googleSignIn, googleSignInWithRedirect, logout, db } from './utils/firebaseAuth';
+import { 
+  saveSectorSpreadsheet, 
+  getAllSectorSpreadsheets, 
+  saveCentralAdminDatabaseConfig, 
+  getCentralAdminDatabaseConfig, 
+  saveCentralAssetsCache, 
+  getCentralAssetsCache, 
+  clearCentralAssetsCache,
+  updateOnlineStatus,
+  markNotificationAsRead,
+  clearAllNotifications
+} from "./utils/firestore";
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1, getEffectiveGoogleToken } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
@@ -38,7 +50,9 @@ import {
   AlertTriangle,
   ChevronRight,
   Clock,
-  Lock
+  Lock,
+  Bell,
+  Users
 } from 'lucide-react';
 
 export default function App() {
@@ -68,6 +82,7 @@ export default function App() {
       setActiveTab('records');
     }
   }, [urlEquipmentId]);
+
   const [assets, setAssets] = useState<CableAsset[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSyncingCentralDb, setIsSyncingCentralDb] = useState<boolean>(false);
@@ -87,6 +102,95 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [firestoreQuotaExceeded, setFirestoreQuotaExceeded] = useState<boolean>(false);
   const [lastFetchedTime, setLastFetchedTime] = useState<string | null>(() => localStorage.getItem('pea_last_fetched_time'));
+
+  // Real-time notifications and presence tracking for Admin
+  const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<UserOnlineStatus[]>([]);
+  const [showNotifDropdown, setShowNotifDropdown] = useState<boolean>(false);
+  const [showOnlineDropdown, setShowOnlineDropdown] = useState<boolean>(false);
+
+  // Subscribe to real-time notifications from Firestore for Admin
+  useEffect(() => {
+    if (!user || user.role !== 'Admin' || firestoreQuotaExceeded) return;
+
+    try {
+      const q = query(
+        collection(db, 'notifications'),
+        orderBy('timestamp', 'desc'),
+        limit(50)
+      );
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const notifs: AdminNotification[] = [];
+        snapshot.forEach((doc) => {
+          notifs.push(doc.data() as AdminNotification);
+        });
+        setNotifications(notifs);
+      }, (err) => {
+        console.warn('Real-time notifications subscription failed:', err);
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Failed setting up notifications onSnapshot:', e);
+    }
+  }, [user, firestoreQuotaExceeded]);
+
+  // Subscribe to real-time online presence from Firestore for Admin
+  useEffect(() => {
+    if (!user || user.role !== 'Admin' || firestoreQuotaExceeded) return;
+
+    try {
+      const q = query(collection(db, 'online_users'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const statuses: UserOnlineStatus[] = [];
+        snapshot.forEach((doc) => {
+          const uStatus = doc.data() as UserOnlineStatus;
+          // Filter out users who haven't heartbeat in 5 minutes to keep it robust
+          const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+          const lastActiveMs = new Date(uStatus.lastActive).getTime();
+          if (uStatus.status === 'online' && lastActiveMs > fiveMinAgo) {
+            statuses.push(uStatus);
+          }
+        });
+        setOnlineUsers(statuses);
+      }, (err) => {
+        console.warn('Real-time presence subscription failed:', err);
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Failed setting up online presence onSnapshot:', e);
+    }
+  }, [user, firestoreQuotaExceeded]);
+
+  // Periodic heartbeat presence logger for all signed-in users
+  useEffect(() => {
+    if (!user?.email || firestoreQuotaExceeded) return;
+
+    // Immediately log online status
+    updateOnlineStatus(user.email, user.name, user.role, true).catch(err => {
+      console.warn('Heartbeat init error:', err);
+    });
+
+    // Send heartbeat every 30 seconds
+    const interval = setInterval(() => {
+      updateOnlineStatus(user.email, user.name, user.role, true).catch(err => {
+        console.warn('Heartbeat periodic error:', err);
+      });
+    }, 30000);
+
+    const handleUnload = () => {
+      updateOnlineStatus(user.email, user.name, user.role, false).catch(e => {});
+    };
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', handleUnload);
+      updateOnlineStatus(user.email, user.name, user.role, false).catch(e => {});
+    };
+  }, [user, firestoreQuotaExceeded]);
 
   // Auto-dismiss sync success notification after 5 seconds
   useEffect(() => {
@@ -2023,6 +2127,185 @@ export default function App() {
                     <div className="text-[10px] text-slate-500 font-semibold bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
                       Local Offline Mode
                     </div>
+                  )}
+
+                  {/* Real-time Admin Tools */}
+                  {user && user.role === 'Admin' && (
+                    <>
+                      {/* Live Accounts Online Tool */}
+                      <div className="relative">
+                        <button
+                          onClick={() => {
+                            setShowOnlineDropdown(!showOnlineDropdown);
+                            setShowNotifDropdown(false);
+                          }}
+                          className={`flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-colors cursor-pointer ${
+                            showOnlineDropdown
+                              ? 'bg-purple-50 border-purple-300 text-purple-950'
+                              : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                          }`}
+                          title="View currently logged-in and active users"
+                        >
+                          <Users className="w-3.5 h-3.5 text-purple-700" />
+                          <span>Online</span>
+                          <span className="flex h-2 w-2 relative shrink-0">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                          </span>
+                          <span className="bg-slate-100 text-slate-800 rounded px-1 text-[9px]">
+                            {onlineUsers.length}
+                          </span>
+                        </button>
+
+                        {showOnlineDropdown && (
+                          <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl border border-slate-200 shadow-xl z-[10000] p-4 text-left animate-fade-in">
+                            <div className="flex items-center justify-between pb-2.5 border-b border-slate-100 mb-2.5">
+                              <h3 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                <Users className="w-3.5 h-3.5 text-purple-700" />
+                                Active Accounts ({onlineUsers.length})
+                              </h3>
+                              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded-full">
+                                Real-time
+                              </span>
+                            </div>
+
+                            {onlineUsers.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 py-3 text-center">No other active accounts detected.</p>
+                            ) : (
+                              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                                {onlineUsers.map((u) => {
+                                  const isSelf = u.email === user.email;
+                                  return (
+                                    <div key={u.email} className="flex items-start justify-between gap-2 p-1.5 hover:bg-slate-50 rounded-lg transition-colors text-xs">
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-slate-900 truncate flex items-center gap-1">
+                                          {u.name}
+                                          {isSelf && <span className="text-[9px] bg-slate-100 text-slate-500 font-normal px-1 rounded">You</span>}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400 truncate font-medium">{u.email}</div>
+                                        <div className="text-[9px] text-slate-400 mt-0.5">
+                                          Active: {u.lastActive ? new Date(u.lastActive).toLocaleTimeString() : 'Just now'}
+                                        </div>
+                                      </div>
+                                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded-full border shrink-0 ${
+                                        u.role === 'Admin'
+                                          ? 'bg-purple-50 text-purple-700 border-purple-100'
+                                          : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                      }`}>
+                                        {u.role}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Admin Notification Bar Tool */}
+                      <div className="relative">
+                        <button
+                          onClick={() => {
+                            setShowNotifDropdown(!showNotifDropdown);
+                            setShowOnlineDropdown(false);
+                          }}
+                          className={`relative p-1.5 rounded-xl border transition-colors cursor-pointer ${
+                            showNotifDropdown
+                              ? 'bg-purple-50 border-purple-300 text-purple-950'
+                              : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                          }`}
+                          title="Admin push notifications console"
+                        >
+                          <Bell className={`w-3.5 h-3.5 ${notifications.filter(n => !n.readBy?.includes(user.email)).length > 0 ? 'animate-bounce text-red-500' : 'text-slate-600'}`} />
+                          {notifications.filter(n => !n.readBy?.includes(user.email)).length > 0 && (
+                            <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[8px] font-black text-white px-0.5">
+                              {notifications.filter(n => !n.readBy?.includes(user.email)).length}
+                            </span>
+                          )}
+                        </button>
+
+                        {showNotifDropdown && (
+                          <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl border border-slate-200 shadow-xl z-[10000] p-4 text-left animate-fade-in">
+                            <div className="flex items-center justify-between pb-2.5 border-b border-slate-100 mb-2.5">
+                              <div>
+                                <h3 className="text-xs font-bold text-slate-900">Admin Alerts Panel</h3>
+                                <p className="text-[9px] text-slate-400 font-medium">Real-time database sync activity</p>
+                              </div>
+                              {notifications.filter(n => !n.readBy?.includes(user.email)).length > 0 && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const unreadIds = notifications
+                                      .filter(n => !n.readBy?.includes(user.email))
+                                      .map(n => n.id);
+                                    await clearAllNotifications(user.email, unreadIds);
+                                  }}
+                                  className="text-[10px] text-purple-700 hover:text-purple-900 font-bold hover:underline cursor-pointer bg-transparent border-0"
+                                >
+                                  Mark all read
+                                </button>
+                              )}
+                            </div>
+
+                            {notifications.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 py-6 text-center">No recent administrative alerts.</p>
+                            ) : (
+                              <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                                {notifications.map((n) => {
+                                  const isUnread = !n.readBy?.includes(user.email);
+                                  return (
+                                    <div
+                                      key={n.id}
+                                      onClick={async () => {
+                                        await markNotificationAsRead(n.id, user.email);
+                                        setShowNotifDropdown(false);
+                                        if (n.equipmentId) {
+                                          setInspectedEquipmentId(n.equipmentId);
+                                          setActiveTab('records');
+                                        }
+                                      }}
+                                      className={`p-2 rounded-lg text-left text-xs transition-all cursor-pointer border ${
+                                        isUnread 
+                                          ? 'bg-purple-50/50 hover:bg-purple-50 border-purple-100/80 font-medium' 
+                                          : 'bg-white hover:bg-slate-50 border-slate-100'
+                                      } ${
+                                        n.type === 'submit_log'
+                                          ? 'border-l-4 border-l-indigo-500'
+                                          : n.type === 'registration'
+                                          ? 'border-l-4 border-l-emerald-500'
+                                          : 'border-l-4 border-l-amber-500'
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between mb-1">
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${
+                                          n.type === 'submit_log'
+                                            ? 'bg-indigo-50 text-indigo-700'
+                                            : n.type === 'registration'
+                                            ? 'bg-emerald-50 text-emerald-700'
+                                            : 'bg-amber-50 text-amber-700'
+                                        }`}>
+                                          {n.type === 'submit_log' ? 'LOG SUBMISSION' : n.type === 'registration' ? 'REGISTRATION' : 'ASSET EDIT'}
+                                        </span>
+                                        <span className="text-[9px] text-slate-400 font-medium">{n.timestamp}</span>
+                                      </div>
+                                      <h4 className="font-bold text-slate-800 leading-tight">{n.title}</h4>
+                                      <p className="text-[10px] text-slate-600 mt-0.5 leading-snug">{n.message}</p>
+                                      {n.equipmentId && (
+                                        <div className="mt-1.5 flex items-center justify-between pt-1 border-t border-slate-100/60 text-[9px] text-purple-900/90 font-bold uppercase">
+                                          <span>Asset ID: {n.equipmentId}</span>
+                                          <span className="text-slate-400 font-medium normal-case">Click to view &rarr;</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </>
                   )}
 
                   <button

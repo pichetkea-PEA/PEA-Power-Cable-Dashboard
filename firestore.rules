@@ -16,6 +16,16 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // 4. Rules for notifications
+    match /notifications/{id} {
+      allow read, write: if true;
+    }
+
+    // 5. Rules for online users tracking
+    match /online_users/{id} {
+      allow read, write: if true;
+    }
+
     // Global Fallback
     match /{document=**} {
       allow read, write: if false;
