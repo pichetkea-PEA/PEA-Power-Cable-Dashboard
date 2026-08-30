@@ -686,38 +686,16 @@ export default function App() {
 
     let successfulSectors = 0;
     let failedSectors = 0;
+    let finishedSectorsCount = 0;
 
     try {
-      for (let i = 0; i < uniqueIds.length; i++) {
-        if (currentSession !== fetchSessionCounterRef.current) {
-          console.log(`Sheet fetch session ${currentSession} superseded by newer session ${fetchSessionCounterRef.current}`);
-          return;
-        }
-        const id = uniqueIds[i];
-
+      // Define concurrent loader per regional sheet
+      const fetchSectorPromise = async (id: string, i: number) => {
         // Mark current sheet as loading
         setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? { ...s, status: 'loading' } : s));
 
-        const progressVal = Math.min(98, Math.round(18 + ((i + 1) / uniqueIds.length) * 80));
-        setLoadProgressPercent(progressVal);
-        setCurrentStepText(
-          isRegionalOnly && targetArea
-            ? `Synchronizing Google Sheet for ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea})... (${assetMap.size.toLocaleString()} active assets loaded)`
-            : `Synchronizing Google Sheet ${i + 1} of ${uniqueIds.length}... (${assetMap.size.toLocaleString()} active assets loaded)`
-        );
-
-        setSyncProgress({
-          current: i + 1,
-          total: uniqueIds.length,
-          statusText: isRegionalOnly && targetArea
-            ? `Fetching ${targetArea} sector data from Google Sheets... (${assetMap.size.toLocaleString()} assets active)`
-            : `Fetching sector ${i + 1} of ${uniqueIds.length} from Admin Central Drive... (${assetMap.size.toLocaleString()} assets active)`
-        });
-
-        if (i > 0) {
-          // Add 350ms delay between consecutive spreadsheet batch gets to avoid HTTP 429 rate limit
-          await new Promise(resolve => setTimeout(resolve, 350));
-        }
+        // Stagger initiation slightly (80ms) to ensure smooth browser thread execution and play nice with API limits
+        await new Promise(resolve => setTimeout(resolve, i * 80));
 
         if (currentSession !== fetchSessionCounterRef.current) return;
 
@@ -736,18 +714,21 @@ export default function App() {
             }
             console.warn(`Attempt ${attempts}/${maxAttempts} failed for sheet ${id}:`, err);
             if (attempts < maxAttempts) {
-              await new Promise(r => setTimeout(r, 800 * attempts));
+              await new Promise(r => setTimeout(r, 600 * attempts));
             }
           }
         }
 
         if (currentSession !== fetchSessionCounterRef.current) return;
 
+        finishedSectorsCount++;
+        const progressVal = Math.min(98, Math.round(18 + (finishedSectorsCount / uniqueIds.length) * 80));
+        setLoadProgressPercent(progressVal);
+
         if (sectorData && Array.isArray(sectorData)) {
           successfulSectors++;
 
           // STALE CACHE EVICTION FOR THIS SPREADSHEET / SECTOR:
-          // Determine the sector area prefix from live sheet data
           let targetSectorArea = isRegionalOnly && targetArea ? targetArea : '';
           if (!targetSectorArea && sectorData.length > 0) {
             const first = sectorData[0];
@@ -759,7 +740,7 @@ export default function App() {
             }
           }
 
-          // Delete all previously cached entries in assetMap originating from this spreadsheetId or sector area
+          // Delete previously cached items from this sheet or area
           for (const [key, existingAsset] of Array.from(assetMap.entries())) {
             const matchSheet = existingAsset.spreadsheetId === id;
             const matchArea = targetSectorArea && (
@@ -771,7 +752,7 @@ export default function App() {
             }
           }
 
-          // Insert fresh live rows from Google Sheets
+          // Insert fresh rows
           sectorData.forEach((a, idx) => {
             if (isRegionalOnly && targetArea) {
               if (getAssetArea(a) !== targetArea) return;
@@ -780,10 +761,24 @@ export default function App() {
             assetMap.set(key, a);
           });
 
-          // Progressive update so dashboard updates live
+          // Progressive UI update
           const currentProgressAssets = Array.from(assetMap.values());
           setAssets(currentProgressAssets);
           setTotalLoadedAssets(assetMap.size);
+
+          setCurrentStepText(
+            isRegionalOnly && targetArea
+              ? `Synchronized Google Sheet for ${targetArea} (${PEA_AREA_NAMES[targetArea] || targetArea})! (${assetMap.size.toLocaleString()} active assets loaded)`
+              : `Synchronizing Google Sheet ${finishedSectorsCount} of ${uniqueIds.length}... (${assetMap.size.toLocaleString()} active assets loaded)`
+          );
+
+          setSyncProgress({
+            current: finishedSectorsCount,
+            total: uniqueIds.length,
+            statusText: isRegionalOnly && targetArea
+              ? `Fetched ${targetArea} sector data from Google Sheets! (${assetMap.size.toLocaleString()} assets active)`
+              : `Fetching sector ${finishedSectorsCount} of ${uniqueIds.length} from Admin Central Drive... (${assetMap.size.toLocaleString()} assets active)`
+          });
 
           setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? {
             ...s,
@@ -796,7 +791,10 @@ export default function App() {
           setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === id ? { ...s, status: 'error' } : s));
           console.warn(`Sector sheet ${id} returned 0 records or failed after ${maxAttempts} attempts.`);
         }
-      }
+      };
+
+      // Execute all sheet fetches in parallel concurrently
+      await Promise.all(uniqueIds.map((id, index) => fetchSectorPromise(id, index)));
 
       if (currentSession !== fetchSessionCounterRef.current) return;
 
@@ -2085,7 +2083,7 @@ export default function App() {
                   <div className="flex items-center gap-2 flex-wrap">
                     {regionalSheetStatuses.filter(s => s.status === 'error').map(sheet => (
                       <button
-                        key={sheet.area}
+                        key={`${sheet.area}-${sheet.spreadsheetId}`}
                         type="button"
                         onClick={() => handleReloadSingleSheet(sheet.spreadsheetId, sheet.area)}
                         className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-bold px-2.5 py-1 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer text-[11px] hover:scale-105 active:scale-95"

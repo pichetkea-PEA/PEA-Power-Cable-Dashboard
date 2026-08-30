@@ -218,7 +218,7 @@ export default function AssetLoadingModal({
               
               return (
                 <div
-                  key={sheet.area}
+                  key={`${sheet.area}-${sheet.spreadsheetId}`}
                   className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-2 ${
                     isDone
                       ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950'
