@@ -190,6 +190,16 @@ export default function AdminRegistrationSuite({
   const [csvDuplicateConflicts, setCsvDuplicateConflicts] = useState<CsvDuplicateConflict[]>([]);
   const [showDuplicateConflictModal, setShowDuplicateConflictModal] = useState<boolean>(false);
 
+  // New Interactive Registration Check States
+  const [exactMatchConflict, setExactMatchConflict] = useState<any | null>(null);
+  const [peaDuplicateConflicts, setPeaDuplicateConflicts] = useState<any[]>([]);
+  const [otherDuplicateConflicts, setOtherDuplicateConflicts] = useState<any[]>([]);
+  const [showExactMatchModal, setShowExactMatchModal] = useState<boolean>(false);
+  const [showPeaDuplicateModal, setShowPeaDuplicateModal] = useState<boolean>(false);
+  const [showOtherDuplicateModal, setShowOtherDuplicateModal] = useState<boolean>(false);
+  const [savedDataRowsForAutoResolve, setSavedDataRowsForAutoResolve] = useState<string[][]>([]);
+  const [savedHeaderRowForAutoResolve, setSavedHeaderRowForAutoResolve] = useState<string[]>([]);
+
   // Integrity checks duplicates state
   const [integrityFilterType, setIntegrityFilterType] = useState<'all' | 'pea' | 'sap' | 'aa'>('all');
   const [resolvingId, setResolvingId] = useState<string | null>(null);
@@ -510,6 +520,234 @@ export default function AdminRegistrationSuite({
       return '';
     }
     return trimmed.toUpperCase();
+  };
+
+  const runNewAssetRegistrationCheck = (
+    dataRows: string[][]
+  ): {
+    exactMatch: any | null;
+    peaDuplicates: any[];
+    otherDuplicates: any[];
+  } => {
+    // Index existing database assets
+    const existingPeaMap = new Map<string, CableAsset>();
+    const existingAdsMap = new Map<string, CableAsset>();
+    const existingAaMap = new Map<string, CableAsset>();
+
+    assets.forEach(asset => {
+      const p = normalizeIdentifier(asset.peaNumber);
+      const ads = normalizeIdentifier(asset.adsNumber);
+      const aa = normalizeIdentifier(asset.assetNumber);
+
+      if (p) existingPeaMap.set(p, asset);
+      if (ads) existingAdsMap.set(ads, asset);
+      if (aa) existingAaMap.set(aa, asset);
+    });
+
+    let exactMatch: any | null = null;
+    const peaDuplicates: any[] = [];
+    const otherDuplicates: any[] = [];
+
+    // Track duplicates inside the uploaded CSV to detect internal CSV duplicates too
+    const seenCsvPea = new Map<string, number>();
+    const seenCsvAds = new Map<string, number>();
+    const seenCsvAa = new Map<string, number>();
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const cols = dataRows[i];
+      const rowNum = i + 2;
+
+      const rawAds = normalizeIdentifier(cols[5]);
+      const rawAa = normalizeIdentifier(cols[6]);
+      const rawPea = normalizeIdentifier(cols[9]);
+
+      // 1. Check EXACT MATCH (Same all 3 numbers condition with an existing asset)
+      if (rawPea && rawAds && rawAa) {
+        // Find existing asset that has matching PEA
+        const matchAsset = assets.find(asset => 
+          normalizeIdentifier(asset.peaNumber) === rawPea &&
+          normalizeIdentifier(asset.adsNumber) === rawAds &&
+          normalizeIdentifier(asset.assetNumber) === rawAa
+        );
+        if (matchAsset) {
+          exactMatch = {
+            type: 'EXACT_MATCH',
+            value: `PEA: ${rawPea}, ADS: ${rawAds}, AA: ${rawAa}`,
+            rowNum,
+            existingAsset: matchAsset,
+            csvRowIndex: i
+          };
+          break; // Exact match is a fatal stopper immediately
+        }
+      }
+
+      // 2. Check PEA Number duplicate
+      if (rawPea) {
+        // database check
+        if (existingPeaMap.has(rawPea)) {
+          const matchAsset = existingPeaMap.get(rawPea)!;
+          // check that it's not the exact match we handled above
+          const isExact = exactMatch || (
+            normalizeIdentifier(matchAsset.adsNumber) === rawAds &&
+            normalizeIdentifier(matchAsset.assetNumber) === rawAa
+          );
+          if (!isExact) {
+            peaDuplicates.push({
+              type: 'PEA_DUPLICATE',
+              value: rawPea,
+              rowNum,
+              existingAsset: matchAsset,
+              csvRowIndex: i
+            });
+          }
+        }
+        // internal CSV duplicate check
+        else if (seenCsvPea.has(rawPea)) {
+          peaDuplicates.push({
+            type: 'PEA_DUPLICATE',
+            value: rawPea,
+            rowNum,
+            csvRowIndex: i
+          });
+        } else {
+          seenCsvPea.set(rawPea, rowNum);
+        }
+      }
+
+      // 3. Check Equipment Number (ADS) duplicate
+      if (rawAds) {
+        // database check
+        if (existingAdsMap.has(rawAds)) {
+          const matchAsset = existingAdsMap.get(rawAds)!;
+          const isExact = exactMatch || (
+            normalizeIdentifier(matchAsset.peaNumber) === rawPea &&
+            normalizeIdentifier(matchAsset.assetNumber) === rawAa
+          );
+          if (!isExact) {
+            otherDuplicates.push({
+              type: 'ADS_DUPLICATE',
+              value: rawAds,
+              rowNum,
+              existingAsset: matchAsset,
+              csvRowIndex: i
+            });
+          }
+        }
+        // internal CSV duplicate check
+        else if (seenCsvAds.has(rawAds)) {
+          otherDuplicates.push({
+            type: 'ADS_DUPLICATE',
+            value: rawAds,
+            rowNum,
+            csvRowIndex: i
+          });
+        } else {
+          seenCsvAds.set(rawAds, rowNum);
+        }
+      }
+
+      // 4. Check Account Asset Number (AA) duplicate
+      if (rawAa) {
+        // database check
+        if (existingAaMap.has(rawAa)) {
+          const matchAsset = existingAaMap.get(rawAa)!;
+          const isExact = exactMatch || (
+            normalizeIdentifier(matchAsset.peaNumber) === rawPea &&
+            normalizeIdentifier(matchAsset.adsNumber) === rawAds
+          );
+          if (!isExact) {
+            otherDuplicates.push({
+              type: 'AA_DUPLICATE',
+              value: rawAa,
+              rowNum,
+              existingAsset: matchAsset,
+              csvRowIndex: i
+            });
+          }
+        }
+        // internal CSV duplicate check
+        else if (seenCsvAa.has(rawAa)) {
+          otherDuplicates.push({
+            type: 'AA_DUPLICATE',
+            value: rawAa,
+            rowNum,
+            csvRowIndex: i
+          });
+        } else {
+          seenCsvAa.set(rawAa, rowNum);
+        }
+      }
+    }
+
+    return { exactMatch, peaDuplicates, otherDuplicates };
+  };
+
+  const handleResolvePeaStop = () => {
+    setShowPeaDuplicateModal(false);
+    setPeaDuplicateConflicts([]);
+    setSavedDataRowsForAutoResolve([]);
+    setSavedHeaderRowForAutoResolve([]);
+    setCsvFileObj(null);
+    setSelectedCsvOption(null);
+    setOption1ReviewList([]);
+    setOption2ReviewList([]);
+    const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+    if (fileInput) fileInput.value = '';
+  };
+
+  const handleResolvePeaAutoGenerate = () => {
+    // Collect all existing PEA numbers to feed the sequence checker and prevent any duplicate generations
+    const allCollectedAssets: { pea: string; area: string }[] = [];
+    assets.forEach(asset => {
+      const pea = (asset.peaNumber || '').trim();
+      allCollectedAssets.push({ pea, area: asset.city || (asset as any).area || 'Regional' });
+    });
+
+    const usedSeqMap = new Map<string, Set<number>>();
+    const resolvedRows = savedDataRowsForAutoResolve.map((row, idx) => {
+      // Check if this row had a PEA duplicate
+      const isDuplicateRow = peaDuplicateConflicts.some(conflict => conflict.csvRowIndex === idx);
+      if (!isDuplicateRow) {
+        return row; // Keep row as-is
+      }
+
+      // Generate a brand new unique PEA number for this row
+      const rawVolt = (row[0] || '115').trim();
+      const rawArea = (row[1] || 'N1').trim();
+      const rawCity = (row[2] || rawArea).trim();
+      const rawLoc = (row[4] || '').trim();
+      const rawEqType = (row[7] || 'Underground Cable').trim();
+      const size = (row[8] || '').trim();
+      const yearOfRegistration = (row[16] || String(new Date().getFullYear())).trim();
+      const rawInstDate = (row[21] || new Date().toISOString().split('T')[0]).trim();
+
+      const volt = normalizeVoltageLevel(rawVolt, rawEqType);
+      const eqType = normalizeEquipmentType(rawEqType, '', '', volt);
+      const locationType = normalizeLocationType(rawLoc, volt);
+      const installationDate = normalizeInstallationDate(rawInstDate);
+
+      const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration, usedSeqMap);
+      if (autoPea) {
+        allCollectedAssets.push({ pea: autoPea, area: rawArea });
+        
+        // Return updated row with new unique PEA number (index 9)
+        const updatedRow = [...row];
+        updatedRow[9] = autoPea;
+        return updatedRow;
+      }
+      return row;
+    });
+
+    // Reconstruct the csvParsedRows with header and the resolved rows!
+    const finalRows = [savedHeaderRowForAutoResolve, ...resolvedRows];
+    setCsvParsedRows(finalRows);
+    setValidationErrors([]);
+    setShowPeaDuplicateModal(false);
+    setPeaDuplicateConflicts([]);
+    setSavedDataRowsForAutoResolve([]);
+    setSavedHeaderRowForAutoResolve([]);
+    setSelectedCsvOption(null);
+    setOption1ReviewList([]);
   };
 
   const findCsvDuplicateConflicts = (
@@ -843,11 +1081,14 @@ export default function AdminRegistrationSuite({
         return;
       }
 
-      // Pre-flight duplicate integrity check against loaded system assets and internal CSV duplicate rows
-      const immediateConflicts = findCsvDuplicateConflicts(validDataRows, assets);
-      if (immediateConflicts.length > 0) {
-        setCsvDuplicateConflicts(immediateConflicts);
-        setShowDuplicateConflictModal(true);
+      // Pre-flight 3-tier duplicate checks for Exact match, PEA duplicate, and ADS/AA duplicate
+      const checkResults = runNewAssetRegistrationCheck(validDataRows);
+
+      // Condition A: EXACT REGISTERED MATCH (All 3 match)
+      if (checkResults.exactMatch) {
+        setExactMatchConflict(checkResults.exactMatch);
+        setShowExactMatchModal(true);
+        
         setCsvParsedRows([]);
         setCsvFileObj(null);
         setSelectedCsvOption(null);
@@ -855,6 +1096,33 @@ export default function AdminRegistrationSuite({
         setOption2ReviewList([]);
         const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
         if (fileInput) fileInput.value = '';
+        return;
+      }
+
+      // Condition C: Other duplicates (ADS or AA duplicate) - Tell user and stop uploading
+      if (checkResults.otherDuplicates.length > 0) {
+        setOtherDuplicateConflicts(checkResults.otherDuplicates);
+        setShowOtherDuplicateModal(true);
+
+        setCsvParsedRows([]);
+        setCsvFileObj(null);
+        setSelectedCsvOption(null);
+        setOption1ReviewList([]);
+        setOption2ReviewList([]);
+        const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        return;
+      }
+
+      // Condition B: Duplicate PEA numbers - Offer User decision "Stop" or "Auto Assigned PEA"
+      if (checkResults.peaDuplicates.length > 0) {
+        setSavedHeaderRowForAutoResolve(headerRow);
+        setSavedDataRowsForAutoResolve(validDataRows);
+        setPeaDuplicateConflicts(checkResults.peaDuplicates);
+        setShowPeaDuplicateModal(true);
+        
+        // Wait on setting csvParsedRows until choice is made
+        setCsvParsedRows([]);
         return;
       }
 
@@ -4303,6 +4571,176 @@ export default function AdminRegistrationSuite({
           }
         }}
       />
+
+      {/* 1. EXACT REGISTERED MATCH MODAL */}
+      {showExactMatchModal && exactMatchConflict && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-red-100 shadow-2xl space-y-6 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-red-50 text-red-600 rounded-2xl shrink-0">
+                <XCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-gray-900">The asset already registered</h3>
+                <p className="text-xs text-gray-500">
+                  An uploaded record has matching identifiers for PEA, ADS, and AA numbers with an asset currently registered in the database.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4.5 space-y-3.5 text-xs">
+              <div className="grid grid-cols-2 gap-y-3 gap-x-4">
+                <div>
+                  <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Duplicate PEA Number</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.peaNumber || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Equipment ID</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.equipmentId || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Equipment Number (ADS)</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.adsNumber || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Account Asset Number (AA)</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.assetNumber || 'N/A'}</span>
+                </div>
+              </div>
+
+              <div className="border-t border-red-100 pt-3 flex flex-col gap-1.5">
+                <span className="text-[10px] font-bold text-red-700 uppercase tracking-wider">Current Database Location</span>
+                <p className="font-semibold text-gray-700 leading-relaxed">
+                  Located in <strong className="text-red-900 font-extrabold">{exactMatchConflict.existingAsset?.city || 'Regional'} ({getAssetArea(exactMatchConflict.existingAsset)})</strong> at <strong className="text-gray-900">{exactMatchConflict.existingAsset?.substationName || 'Unknown Substation'}</strong> (Row #{exactMatchConflict.rowNum} in CSV).
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setShowExactMatchModal(false);
+                setExactMatchConflict(null);
+              }}
+              className="w-full bg-gray-900 hover:bg-gray-800 text-white text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer shadow-md shadow-gray-900/10"
+            >
+              Close and Stop Uploading
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 2. PEA DUPLICATE OPTIONS CHOICE MODAL */}
+      {showPeaDuplicateModal && peaDuplicateConflicts.length > 0 && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-xl w-full border border-amber-100 shadow-2xl space-y-6 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-gray-900">Duplicate PEA Number Detected</h3>
+                <p className="text-xs text-gray-500">
+                  The system found {peaDuplicateConflicts.length} {peaDuplicateConflicts.length === 1 ? 'row' : 'rows'} with a PEA Number that already exists in the system database. Please select how to resolve this conflict.
+                </p>
+              </div>
+            </div>
+
+            <div className="max-h-48 overflow-y-auto border border-gray-100 rounded-2xl p-4 space-y-3 bg-slate-50/50">
+              <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider pb-1.5 border-b border-gray-100">Conflict Details</span>
+              {peaDuplicateConflicts.slice(0, 5).map((conflict, idx) => (
+                <div key={idx} className="flex justify-between items-center text-xs">
+                  <div>
+                    <span className="font-semibold text-gray-700">CSV Row #{conflict.rowNum}:</span>{' '}
+                    <span className="font-mono font-bold text-amber-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md">{conflict.value}</span>
+                  </div>
+                  {conflict.existingAsset && (
+                    <span className="text-[10px] text-gray-500 italic">
+                      Matches asset in {conflict.existingAsset.city || 'Regional'} ({conflict.existingAsset.substationName})
+                    </span>
+                  )}
+                </div>
+              ))}
+              {peaDuplicateConflicts.length > 5 && (
+                <p className="text-[11px] text-gray-400 italic text-center pt-1">
+                  ...and {peaDuplicateConflicts.length - 5} other rows
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <button
+                onClick={handleResolvePeaStop}
+                className="w-full border-2 border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1"
+              >
+                <span className="font-extrabold">Stop Uploading</span>
+                <span className="text-[10px] font-normal text-gray-500">Change PEA number manually</span>
+              </button>
+
+              <button
+                onClick={handleResolvePeaAutoGenerate}
+                className="w-full bg-purple-900 hover:bg-purple-800 text-white text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-md shadow-purple-900/10 border-2 border-purple-900 hover:border-purple-800"
+              >
+                <span className="font-extrabold text-yellow-400">Automated PEA Number</span>
+                <span className="text-[10px] font-normal text-purple-200">Automatically generate unique PEAs</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. OTHER DUPLICATES STOPPED MODAL */}
+      {showOtherDuplicateModal && otherDuplicateConflicts.length > 0 && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-red-100 shadow-2xl space-y-6 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-red-50 text-red-600 rounded-2xl shrink-0">
+                <XCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-gray-900">Duplicate Registered Identifiers Found</h3>
+                <p className="text-xs text-gray-500">
+                  The uploaded file contains duplicate Equipment Number (ADS) or Account Asset Number (AA) values. To maintain database integrity, uploading has been stopped.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4.5 space-y-3 text-xs">
+              <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider border-b border-red-100 pb-1.5">Duplicate Identifier Details</span>
+              {otherDuplicateConflicts.slice(0, 5).map((conflict, idx) => (
+                <div key={idx} className="space-y-1 leading-relaxed">
+                  <p className="font-semibold text-gray-800">
+                    Row #{conflict.rowNum} in CSV:
+                  </p>
+                  <p className="text-[11px] text-gray-600">
+                    Value <strong className="font-mono font-extrabold text-red-700">{conflict.value}</strong> matches an existing{' '}
+                    <strong className="text-gray-900">{conflict.type === 'ADS_DUPLICATE' ? 'Equipment Number (ADS)' : 'Account Asset Number (AA)'}</strong>.
+                  </p>
+                  {conflict.existingAsset && (
+                    <p className="text-[10px] text-gray-500 italic pl-3 border-l-2 border-red-200">
+                      Matches asset at: {conflict.existingAsset.city || 'Regional'} ({conflict.existingAsset.substationName || 'Unknown Substation'})
+                    </p>
+                  )}
+                </div>
+              ))}
+              {otherDuplicateConflicts.length > 5 && (
+                <p className="text-[11px] text-red-600 italic text-center pt-1">
+                  ...and {otherDuplicateConflicts.length - 5} other duplicate identifiers
+                </p>
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                setShowOtherDuplicateModal(false);
+                setOtherDuplicateConflicts([]);
+              }}
+              className="w-full bg-gray-900 hover:bg-gray-800 text-white text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer shadow-md"
+            >
+              Close and Stop Uploading
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
