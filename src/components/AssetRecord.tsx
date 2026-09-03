@@ -95,6 +95,7 @@ import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
 import OnlinePrpdDiagnostics from './diagnostics/OnlinePrpdDiagnostics';
 import OfflinePdDiagnostics from './diagnostics/OfflinePdDiagnostics';
 import DiagnosticEditModal from './DiagnosticEditModal';
+import AssetSearchExport from './AssetSearchExport';
 
 interface AssetRecordProps {
   user: PEAUser;
@@ -119,6 +120,9 @@ export default function AssetRecord({
   inspectedLog,
   onClearInspectMode
 }: AssetRecordProps) {
+  // --- Sub-Tab State (Inspector vs Search & Export) ---
+  const [activeSubTab, setActiveSubTab] = useState<'inspector' | 'search_export'>('inspector');
+
   // --- Filter State ---
   const [filterArea, setFilterArea] = useState<string>((user.role === 'Admin' || user.role === 'Manager') ? 'All' : user.interestArea);
   const [filterCity, setFilterCity] = useState<string>('All');
@@ -1717,6 +1721,63 @@ export default function AssetRecord({
         </div>
       </div>
 
+      {/* Sub-Navigation Sub-Tabs: 1. Asset Inspector & Editor, 2. Search & Export */}
+      <div className="flex border border-gray-200/80 bg-white rounded-2xl p-1.5 shadow-xs gap-1.5" id="asset-record-subtabs">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('inspector')}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
+            activeSubTab === 'inspector'
+              ? 'bg-purple-900 text-white shadow-xs'
+              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+          }`}
+        >
+          <Database className="w-4 h-4" />
+          <span>Asset Inspector & Editor</span>
+          {selectedAsset && (
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+              activeSubTab === 'inspector' ? 'bg-purple-800 text-purple-200' : 'bg-gray-100 text-gray-700'
+            }`}>
+              {selectedAsset.equipmentId}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('search_export')}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
+            activeSubTab === 'search_export'
+              ? 'bg-purple-900 text-white shadow-xs'
+              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+          }`}
+        >
+          <Search className="w-4 h-4" />
+          <span>Search & Export</span>
+          <span className={`text-[9px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider ${
+            activeSubTab === 'search_export' ? 'bg-purple-800 text-purple-200' : 'bg-sky-100 text-sky-800'
+          }`}>
+            CSV + SF6 Estimations
+          </span>
+        </button>
+      </div>
+
+      {activeSubTab === 'search_export' ? (
+        <AssetSearchExport
+          user={user}
+          assets={allAssets && allAssets.length > 0 ? allAssets : (assets || [])}
+          onSelectAssetForInspect={(asset) => {
+            selectAsset(asset);
+            setActiveSubTab('inspector');
+            setTimeout(() => {
+              const el = document.getElementById('selected-asset-panel');
+              if (el) el.scrollIntoView({ behavior: 'smooth' });
+            }, 100);
+          }}
+          onRefreshDatabase={loadDatabase}
+        />
+      ) : (
+        <>
       {/* 2. Filter & Search Panel */}
       <div className="bg-white rounded-2xl border border-gray-100 p-3.5 sm:p-4 shadow-sm space-y-3" id="asset-search-filters">
         <div className="flex items-center gap-1.5 border-b border-gray-100 pb-2">
@@ -3369,6 +3430,8 @@ export default function AssetRecord({
           spreadsheetId={spreadsheetId || undefined}
           driveFolderId={folderId || undefined}
         />
+      )}
+      </>
       )}
 
       {/* Registration Progress Popup */}

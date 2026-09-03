@@ -1180,6 +1180,144 @@ Make it clean, authoritative, engineering-focused, and suitable for technical op
   }
 });
 
+// Automated SF6 Gas Estimation endpoint for Ring Main Units (RMU) and Unit Substations (USS)
+app.post('/api/estimate-sf6', async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    res.status(400).json({ error: 'items array is required' });
+    return;
+  }
+
+  // Engineering reference lookup database
+  const knownSpecs: Record<string, { kg: number; pressure: number; desc: string; source: string }> = {
+    'schneider-rm6': { kg: 1.85, pressure: 1.4, desc: '3-way Compact RMU (2 switch + 1 circuit breaker)', source: 'Schneider Electric RM6 Technical Manual (24kV)' },
+    'schneider-fbx': { kg: 2.10, pressure: 1.3, desc: 'Schneider FBX Compact SF6-insulated switchgear', source: 'Schneider Electric FBX Technical Guide' },
+    'abb-safering': { kg: 1.70, pressure: 1.4, desc: 'ABB SafeRing 24kV 3-way (CCF)', source: 'ABB SafeRing / SafePlus 12-24kV Technical Manual' },
+    'abb-safeplus': { kg: 1.80, pressure: 1.4, desc: 'ABB SafePlus 24kV modular compact switchgear', source: 'ABB SafePlus Technical Datasheet' },
+    'siemens-8djh': { kg: 1.80, pressure: 1.5, desc: 'Siemens 8DJH 24kV 3-way compact block', source: 'Siemens 8DJH Switchgear Technical Manual' },
+    'ormazabal-cgm': { kg: 1.75, pressure: 1.3, desc: 'Ormazabal CGM 24kV compact cubicle unit', source: 'Ormazabal CGM Medium Voltage Switchgear Catalog' },
+    'ormazabal-cgmcosmos': { kg: 1.90, pressure: 1.3, desc: 'Ormazabal CGMcosmos 24kV fully insulated RMU', source: 'Ormazabal CGMcosmos Technical Datasheet' },
+    'lucy-sabre': { kg: 2.00, pressure: 1.4, desc: 'Lucy Electric Sabre VRN/VRC 24kV ring main unit', source: 'Lucy Electric Sabre Ring Main Unit Datasheet' },
+    'lucy-vrn': { kg: 2.20, pressure: 1.4, desc: 'Lucy Electric VRN 12-24kV non-extensible RMU', source: 'Lucy Electric VRN Technical Manual' },
+    'eaton-holec': { kg: 1.50, pressure: 1.3, desc: 'Eaton Capitole 40/50 SF6 insulated RMU', source: 'Eaton Medium Voltage Switchgear Manual' }
+  };
+
+  const estimations: Record<string, any> = {};
+
+  // 1. Generate baseline estimations using engineering lookup
+  for (const item of items) {
+    const eqId = item.equipmentId || 'UNKNOWN';
+    const mfr = (item.manufacturer || '').toLowerCase();
+    const model = (item.model || '').toLowerCase();
+    const volt = (item.voltageLevel || '22').toLowerCase();
+    const isUSS = (item.equipmentType || '').toLowerCase().includes('unit substation');
+
+    let estKg = 1.85;
+    let press = 1.4;
+    let desc = 'Standard 3-way MV Ring Main Unit';
+    let source = 'PEA Standard Specification (22kV/24kV SF6 Switchgear)';
+
+    let matched = false;
+    for (const [key, val] of Object.entries(knownSpecs)) {
+      const [kMfr, kMod] = key.split('-');
+      if ((mfr.includes(kMfr) || model.includes(kMfr)) && (model.includes(kMod) || !kMod)) {
+        estKg = val.kg;
+        press = val.pressure;
+        desc = val.desc;
+        source = val.source;
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      if (mfr.includes('schneider')) { estKg = 1.85; press = 1.4; source = 'Schneider RM6 Technical Spec'; }
+      else if (mfr.includes('abb')) { estKg = 1.70; press = 1.4; source = 'ABB SafeRing Technical Spec'; }
+      else if (mfr.includes('siemens')) { estKg = 1.80; press = 1.5; source = 'Siemens 8DJH Technical Spec'; }
+      else if (mfr.includes('ormazabal')) { estKg = 1.85; press = 1.3; source = 'Ormazabal CGM Technical Spec'; }
+      else if (mfr.includes('lucy')) { estKg = 2.10; press = 1.4; source = 'Lucy Electric Sabre Technical Spec'; }
+    }
+
+    if (volt.includes('33') || volt.includes('36')) {
+      estKg = Math.round(estKg * 1.45 * 100) / 100;
+      press = 1.5;
+      source += ' (33-36kV upsized enclosure)';
+    }
+
+    const gwp = Math.round(estKg * 23.5 * 10) / 10;
+    estimations[eqId] = {
+      isApplicable: true,
+      estimatedGasKg: estKg,
+      displayEstimate: `${estKg.toFixed(2)} kg`,
+      nominalPressureBar: press,
+      compartmentType: isUSS ? `Unit Substation (${desc})` : `Sealed SF6 Gas Tank (${desc})`,
+      co2EquivalentTons: gwp,
+      referenceSource: source,
+      confidence: matched ? 'High' : 'Medium',
+      notes: `Estimated filling weight: ${estKg.toFixed(2)} kg SF6 @ 20°C nominal (${press} bar relative). GWP equivalent: ${gwp} tCO2e.`
+    };
+  }
+
+  // 2. Try enriching with Gemini AI for exact model/datasheet parsing
+  try {
+    const ai = getGeminiClient();
+    const prompt = `
+You are an expert Electrical Substation Engineering Specialist for Provincial Electricity Authority (PEA) of Thailand.
+Provide exact SF6 (Sulfur Hexafluoride) gas mass estimations (in kilograms) and nominal filling specifications for these electrical switchgear units:
+${JSON.stringify(items.slice(0, 10), null, 2)}
+
+Return a strict JSON object mapping each equipmentId to its technical SF6 estimate:
+{
+  "EQUIPMENT_ID": {
+    "estimatedGasKg": 1.85,
+    "nominalPressureBar": 1.4,
+    "compartmentType": "Sealed Stainless Steel Enclosure (3-Way CCF)",
+    "co2EquivalentTons": 43.5,
+    "referenceSource": "Exact manufacturer datasheet name & model reference",
+    "notes": "Engineering justification and datasheet confirmation"
+  }
+}
+Only output valid JSON.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const aiText = response.text?.trim();
+    if (aiText) {
+      const parsed = JSON.parse(aiText);
+      if (typeof parsed === 'object') {
+        Object.entries(parsed).forEach(([eqId, aiEst]: [string, any]) => {
+          if (estimations[eqId] && aiEst.estimatedGasKg) {
+            const kg = typeof aiEst.estimatedGasKg === 'number' ? aiEst.estimatedGasKg : parseFloat(aiEst.estimatedGasKg) || estimations[eqId].estimatedGasKg;
+            const press = typeof aiEst.nominalPressureBar === 'number' ? aiEst.nominalPressureBar : parseFloat(aiEst.nominalPressureBar) || estimations[eqId].nominalPressureBar;
+            const gwp = Math.round(kg * 23.5 * 10) / 10;
+            estimations[eqId] = {
+              ...estimations[eqId],
+              estimatedGasKg: kg,
+              displayEstimate: `${kg.toFixed(2)} kg`,
+              nominalPressureBar: press,
+              compartmentType: aiEst.compartmentType || estimations[eqId].compartmentType,
+              co2EquivalentTons: gwp,
+              referenceSource: aiEst.referenceSource || estimations[eqId].referenceSource,
+              confidence: 'High',
+              notes: aiEst.notes || estimations[eqId].notes
+            };
+          }
+        });
+      }
+    }
+  } catch (aiErr: any) {
+    console.warn('[SF6 Estimator AI Notice] Using deterministic datasheet estimations:', aiErr.message || aiErr);
+  }
+
+  res.json({ success: true, estimations });
+});
+
 // Vite Middleware integration for development / Static Serving for Production
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
