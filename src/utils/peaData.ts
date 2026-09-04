@@ -320,7 +320,28 @@ export function normalizeEquipmentType(
   if (isTerm) {
     const combined = `${clean} ${mfrClean} ${modelClean}`.toLowerCase();
 
-    // A. Check Plug in Termination
+    // A. Check Cold Shrink Termination (All Voltage Systems)
+    if (
+      combined.includes('cold shrink') ||
+      combined.includes('cold-shrink') ||
+      combined.includes('coldshrink') ||
+      combined.includes('cst') ||
+      (mfrClean.includes('3m') && combined.includes('shrink'))
+    ) {
+      return 'Cold Shrink Termination';
+    }
+
+    // B. Check Slip-On Termination (Only in 22, 33 kV)
+    if (
+      combined.includes('slip on') ||
+      combined.includes('slip-on') ||
+      combined.includes('slipon') ||
+      combined.includes('sot')
+    ) {
+      return 'Slip-On Termination';
+    }
+
+    // C. Check Plug in Termination
     if (
       combined.includes('plug in') ||
       combined.includes('plugin') ||
@@ -340,7 +361,7 @@ export function normalizeEquipmentType(
       return 'Plug in Termination';
     }
 
-    // B. Check Oil Insulated Termination
+    // D. Check Oil Insulated Termination
     if (
       combined.includes('oil insulated') ||
       combined.includes('oil termination') ||
@@ -354,15 +375,13 @@ export function normalizeEquipmentType(
       return 'Oil Insulated Termination';
     }
 
-    // C. Check Heat Shrink Termination (Only for <115kV)
+    // E. Check Heat Shrink Termination (Only for <115kV)
     if (
       voltClean !== '115' && (
         combined.includes('heat shrink') ||
         combined.includes('heat-shrink') ||
         combined.includes('thermofit') ||
         combined.includes('heatshrink') ||
-        combined.includes('cold shrink') ||
-        combined.includes('cold-shrink') ||
         combined.includes('hst') ||
         (mfrClean.includes('raychem') && !combined.includes('connex') && !combined.includes('rsti') && !combined.includes('dry')) ||
         (mfrClean.includes('3m') && !combined.includes('elbow'))
@@ -371,7 +390,7 @@ export function normalizeEquipmentType(
       return 'Heat Shrink Termination';
     }
 
-    // D. Check Dry Type Termination
+    // F. Check Dry Type Termination
     if (
       combined.includes('dry type') ||
       combined.includes('dry-type') ||
@@ -389,7 +408,7 @@ export function normalizeEquipmentType(
       return 'Dry Type Termination';
     }
 
-    // E. Default termination choice based on voltage
+    // G. Default termination choice based on voltage
     if (voltClean === '115') {
       return 'Dry Type Termination';
     } else {
@@ -403,6 +422,12 @@ export function normalizeEquipmentType(
   }
   if (clean.includes('ring main') || clean.includes('rmu')) {
     return 'Ring Main Unit';
+  }
+  if (clean.includes('slip-on') || clean.includes('slip on') || clean.includes('slipon')) {
+    return 'Slip-On Termination';
+  }
+  if (clean.includes('cold shrink') || clean.includes('cold-shrink') || clean.includes('coldshrink')) {
+    return 'Cold Shrink Termination';
   }
   if (clean.includes('gnd') || clean.includes('link box') || clean.includes('ground link')) {
     return 'GND Link box';
@@ -533,6 +558,8 @@ export const ALL_EQUIPMENT_TYPES: EquipmentType[] = [
   'Lightning Arrester',
   'Heat Shrink Termination',
   'Plug in Termination',
+  'Slip-On Termination',
+  'Cold Shrink Termination',
   'Air Break Switch',
   'Dry Type Termination',
   'Ring Main Unit',
@@ -546,6 +573,7 @@ export const EQUIPMENT_TYPES: EquipmentType[] = ALL_EQUIPMENT_TYPES;
 
 export const EXCLUDED_115KV_TYPES: EquipmentType[] = [
   'Heat Shrink Termination',
+  'Slip-On Termination',
   'Ring Main Unit',
   'Unit Substation',
   'LV ATS',
@@ -553,10 +581,15 @@ export const EXCLUDED_115KV_TYPES: EquipmentType[] = [
 ];
 
 export function getAvailableEquipmentTypes(voltageLevel: string): EquipmentType[] {
-  if (voltageLevel === '115') {
+  const normVolt = normalizeVoltageLevel(voltageLevel);
+  if (normVolt === '115') {
     return ALL_EQUIPMENT_TYPES.filter(t => !EXCLUDED_115KV_TYPES.includes(t));
   }
-  return ALL_EQUIPMENT_TYPES;
+  if (normVolt === '22' || normVolt === '33') {
+    return ALL_EQUIPMENT_TYPES;
+  }
+  // For other voltage levels (e.g. 0.4 kV), Slip-On Termination is only for 22, 33 kV
+  return ALL_EQUIPMENT_TYPES.filter(t => t !== 'Slip-On Termination');
 }
 
 export const MANUFACTURERS_BY_EQUIPMENT_TYPE: Record<string, string[]> = {
@@ -580,6 +613,12 @@ export const MANUFACTURERS_BY_EQUIPMENT_TYPE: Record<string, string[]> = {
   ],
   'Plug in Termination': [
     'Arkasil', 'Euromold', 'NKT', 'ABB', 'Nexans', 'Tyco Raychem', 'Others', 'Unknown'
+  ],
+  'Slip-On Termination': [
+    'PFISTERER', 'Tyco Raychem', 'NKT', 'ABB', 'Nexans', 'Prysmian', 'Südkabel', 'Centuray', 'Others', 'Unknown'
+  ],
+  'Cold Shrink Termination': [
+    '3M', 'Tyco Raychem', 'NKT', 'Nexans', 'ABB', 'Prysmian', 'Chardon', 'Others', 'Unknown'
   ],
   'Air Break Switch': [
     'COELME', 'Hapam', 'S&C', 'Others', 'Unknown'
@@ -910,7 +949,7 @@ export function getLocationTypeAbbreviation(locType: string): string {
 export function getEquipmentTypeAbbreviation2(eqType: string): string {
   const norm = (eqType || '').toLowerCase().trim();
   if (norm.includes('underground cable') || norm === 'ug') return 'UG';
-  if (norm.includes('oil insulated termination') || norm.includes('dry type termination') || norm.includes('heat shrink termination') || norm.includes('plug in termination') || norm.includes('termination') || norm === 'tm') return 'TM';
+  if (norm.includes('oil insulated termination') || norm.includes('dry type termination') || norm.includes('heat shrink termination') || norm.includes('plug in termination') || norm.includes('slip-on termination') || norm.includes('slip on termination') || norm.includes('cold shrink termination') || norm.includes('termination') || norm === 'tm') return 'TM';
   if (norm.includes('joint') || norm === 'jo') return 'JO';
   if (norm.includes('gnd link box') || norm.includes('ground box') || norm === 'gb') return 'GB';
   if (norm.includes('lightning arrester') || norm.includes('surge arrester') || norm === 'la') return 'LA';
@@ -962,6 +1001,8 @@ export const EQUIPMENT_TYPE_ABBREVIATIONS: Record<string, string> = {
   'Dry Type Termination': 'TM',
   'Heat Shrink Termination': 'TM',
   'Plug in Termination': 'TM',
+  'Slip-On Termination': 'TM',
+  'Cold Shrink Termination': 'TM',
   'Joint': 'JO',
   'GND Link box': 'GB',
   'Lightning Arrester': 'LA',

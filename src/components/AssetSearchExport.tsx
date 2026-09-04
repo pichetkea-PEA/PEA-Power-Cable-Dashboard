@@ -25,6 +25,7 @@ import {
   PEA_AREA_CITIES, 
   EQUIPMENT_TYPES, 
   VOLTAGE_LEVELS, 
+  getAvailableEquipmentTypes,
   getAssetArea 
 } from '../utils/peaData';
 import { 
@@ -80,6 +81,21 @@ export default function AssetSearchExport({
     }
     return PEA_AREA_CITIES[filterArea] || [];
   }, [filterArea]);
+
+  // Available equipment types based on selected voltage
+  const availableEquipmentTypes = useMemo(() => {
+    if (filterVoltage === 'All') {
+      return EQUIPMENT_TYPES;
+    }
+    return getAvailableEquipmentTypes(filterVoltage);
+  }, [filterVoltage]);
+
+  // Reset filterEqType if voltage changed and current eqType is not available
+  useEffect(() => {
+    if (filterEqType !== 'All' && !availableEquipmentTypes.includes(filterEqType as EquipmentType)) {
+      setFilterEqType('All');
+    }
+  }, [availableEquipmentTypes, filterEqType]);
 
   // Unique latest assets deduplication
   const uniqueAssets = useMemo(() => {
@@ -619,7 +635,7 @@ export default function AssetSearchExport({
               className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
             >
               <option value="All">All Equipment Types</option>
-              {EQUIPMENT_TYPES.map(t => (
+              {availableEquipmentTypes.map(t => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>

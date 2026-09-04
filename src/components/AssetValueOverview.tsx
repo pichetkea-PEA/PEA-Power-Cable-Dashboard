@@ -57,6 +57,8 @@ const ASSET_TYPE_COLORS: Record<string, string> = {
   'Ring Main Unit': '#10b981', // Emerald
   'Unit Substation': '#ec4899', // Pink
   'Plug in Termination': '#3b82f6', // Blue
+  'Slip-On Termination': '#0284c7', // Sky
+  'Cold Shrink Termination': '#0d9488', // Teal
   'Dry Type Termination': '#6366f1', // Indigo
   'Heat Shrink Termination': '#a855f7', // Purple
   'GND Link box': '#64748b', // Slate
@@ -717,6 +719,9 @@ export default function AssetValueOverview({
               <option value="Oil Insulated Termination">Oil Insulated Termination</option>
               <option value="Dry Type Termination">Dry Type Termination</option>
               <option value="Plug in Termination">Plug in Termination</option>
+              <option value="Slip-On Termination">Slip-On Termination</option>
+              <option value="Cold Shrink Termination">Cold Shrink Termination</option>
+              <option value="Heat Shrink Termination">Heat Shrink Termination</option>
               <option value="Ring Main Unit">Ring Main Unit</option>
               <option value="Unit Substation">Unit Substation</option>
               <option value="GND Link box">GND Link box</option>

@@ -21,6 +21,8 @@ export type EquipmentType =
   | 'Lightning Arrester'
   | 'Heat Shrink Termination'
   | 'Plug in Termination'
+  | 'Slip-On Termination'
+  | 'Cold Shrink Termination'
   | 'Air Break Switch'
   | 'Dry Type Termination'
   | 'Ring Main Unit'

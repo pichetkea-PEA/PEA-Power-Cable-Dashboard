@@ -249,7 +249,7 @@ export default function AdminRegistrationSuite({
   // Computed available equipment types based on voltage level
   const availableEquipmentTypes = useMemo(() => {
     if (filterVoltage === '115') {
-      return ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t));
+      return ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Slip-On Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t));
     } else {
       return ALL_EQUIPMENT_TYPES.filter(t => !['Air Break Switch', 'HV ATS'].includes(t));
     }
@@ -266,7 +266,7 @@ export default function AdminRegistrationSuite({
 
   // Computed available size options based on equipment type and location type
   const availableSizes = useMemo(() => {
-    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Joint', 'Submarine Cable'].includes(filterEquipmentType);
+    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint', 'Submarine Cable'].includes(filterEquipmentType);
     if (!cableOrTerm) {
       return ['Standard'];
     }
@@ -283,7 +283,7 @@ export default function AdminRegistrationSuite({
   const handleVoltageChange = (newVal: string) => {
     setFilterVoltage(newVal);
     const newEquips = newVal === '115' 
-      ? ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t))
+      ? ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Slip-On Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t))
       : ALL_EQUIPMENT_TYPES.filter(t => !['Air Break Switch', 'HV ATS'].includes(t));
     if (!newEquips.includes(filterEquipmentType)) {
       setFilterEquipmentType(newEquips[0]);
@@ -296,7 +296,7 @@ export default function AdminRegistrationSuite({
 
   const handleEquipmentTypeChange = (newEq: EquipmentType) => {
     setFilterEquipmentType(newEq);
-    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Joint', 'Submarine Cable'].includes(newEq);
+    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint', 'Submarine Cable'].includes(newEq);
     if (!cableOrTerm) {
       setFilterSize('Standard');
     } else {
@@ -343,7 +343,7 @@ export default function AdminRegistrationSuite({
       const yy = String(buddhistYr).slice(-2);
 
       let prefix = 'UG';
-      if (['Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination'].includes(filterEquipmentType)) {
+      if (['Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination'].includes(filterEquipmentType)) {
         prefix = 'TM';
       } else if (filterEquipmentType === 'Lightning Arrester') {
         prefix = 'LA';
