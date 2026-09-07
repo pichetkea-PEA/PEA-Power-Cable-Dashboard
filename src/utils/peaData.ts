@@ -917,6 +917,217 @@ export const CITY_ABBREVIATIONS: Record<string, string> = {
   'hatyai': 'SKA'
 };
 
+export const CITY_ABBREVIATION_TO_NAME: Record<string, string> = {
+  KBI: 'Krabi',
+  BKK: 'Bangkok',
+  KRI: 'Kanchanaburi',
+  KSN: 'Kalasin',
+  KPT: 'Kamphaeng Phet',
+  KKN: 'Khon Kaen',
+  CTI: 'Chanthaburi',
+  CCO: 'Chachoengsao',
+  CBI: 'Chon Buri',
+  CNT: 'Chai Nat',
+  CPM: 'Chaiyaphum',
+  CPN: 'Chumphon',
+  CRI: 'Chiang Rai',
+  CMI: 'Chiang Mai',
+  TRG: 'Trang',
+  TRT: 'Trat',
+  TAK: 'Tak',
+  NYK: 'Nakhon Nayok',
+  NPT: 'Nakhon Pathom',
+  NPM: 'Nakhon Phanom',
+  NMA: 'Nakhon Ratchasima',
+  NRT: 'Nakhon Si Thammarat',
+  NSN: 'Nakhon Sawan',
+  NBI: 'Nonthaburi',
+  NWT: 'Narathiwat',
+  NAN: 'Nan',
+  BKN: 'Bueng Kan',
+  BRM: 'Buri Ram',
+  PTE: 'Pathum Thani',
+  PKN: 'Prachuap Khiri Khan',
+  PRI: 'Prachin Buri',
+  PTN: 'Pattani',
+  PYO: 'Phayao',
+  AYA: 'Phra Nakhon Si Ayutthaya',
+  PNA: 'Phang Nga',
+  PLG: 'Phatthalung',
+  PCK: 'Phichit',
+  PLK: 'Phitsanulok',
+  PBI: 'Phetchaburi',
+  PNB: 'Phetchabun',
+  PRE: 'Phrae',
+  PKT: 'Phuket',
+  MKM: 'Maha Sarakham',
+  MDH: 'Mukdahan',
+  MSN: 'Mae Hong Son',
+  YST: 'Yasothon',
+  YLA: 'Yala',
+  RET: 'Roi Et',
+  RNG: 'Ranong',
+  RYG: 'Rayong',
+  RBR: 'Ratchaburi',
+  LRI: 'Lop Buri',
+  LPG: 'Lampang',
+  LPN: 'Lamphun',
+  LEI: 'Loei',
+  SSK: 'Sisaket',
+  SNK: 'Sakon Nakhon',
+  SKA: 'Songkhla',
+  STN: 'Satun',
+  SPK: 'Samut Prakan',
+  SKM: 'Samut Songkhram',
+  SKN: 'Samut Sakhon',
+  SKW: 'Sa Kaeo',
+  SRI: 'Saraburi',
+  SBR: 'Sing Buri',
+  STI: 'Sukhothai',
+  SPB: 'Suphan Buri',
+  SNI: 'Surat Thani',
+  SRN: 'Surin',
+  NKI: 'Nong Khai',
+  NBP: 'Nong Bua Lamphu',
+  ATG: 'Ang Thong',
+  ACR: 'Amnat Charoen',
+  UDN: 'Udon Thani',
+  UTT: 'Uttaradit',
+  UTI: 'Uthai Thani',
+  UBN: 'Ubon Ratchathani'
+};
+
+export interface ParsedEquipmentIdDetails {
+  area?: string;
+  voltageLevel?: string;
+  locationType?: LocationType;
+  equipmentType?: EquipmentType;
+  equipmentTypeCode?: string;
+  year?: number;
+  city?: string;
+  cityAbbr?: string;
+  runningNumber?: number;
+  peaCode?: string;
+}
+
+export function parseEquipmentIdDetails(equipmentId: string): ParsedEquipmentIdDetails {
+  if (!equipmentId || typeof equipmentId !== 'string') return {};
+  const clean = equipmentId.trim();
+  if (!clean) return {};
+
+  const result: ParsedEquipmentIdDetails = {};
+
+  // Standard pattern: {AREA}-{VOLTAGE}{LOC_TYPE}{EQ_TYPE}-{YEAR}-{CITY_ABBR}#{RUNNING_NO}-{PEA_6DIGITS}
+  // e.g. S2-33DTTM-2008-KBI#0001-XXXXXX or S2-33DTTM-2008-KBI#00001-300001
+  const stdMatch = clean.match(/^([A-Za-z0-9]+)-(\d+)([A-Za-z]{2})([A-Za-z]{2})-(\d{4})-([A-Za-z]{3})(?:#(\d+))?(?:-([A-Za-z0-9]+))?/i);
+
+  if (stdMatch) {
+    const rawArea = stdMatch[1].toUpperCase();
+    if (PEA_AREAS.includes(rawArea as any)) {
+      result.area = rawArea;
+    }
+    result.voltageLevel = stdMatch[2]; // e.g. "33", "115", "22"
+    
+    // Loc Type (DT -> Distribution Line, TL -> Transmission Line, SU -> Substation)
+    const locCode = stdMatch[3].toUpperCase();
+    if (locCode === 'DT') result.locationType = 'Distribution Line';
+    else if (locCode === 'TL') result.locationType = 'Transmission Line';
+    else if (locCode === 'SU') result.locationType = 'Substation';
+
+    // Eq Type
+    const eqCode = stdMatch[4].toUpperCase();
+    result.equipmentTypeCode = eqCode;
+    if (eqCode === 'UG') result.equipmentType = 'Underground Cable';
+    else if (eqCode === 'TM') result.equipmentType = 'Cold Shrink Termination';
+    else if (eqCode === 'JO') result.equipmentType = 'Joint';
+    else if (eqCode === 'GB') result.equipmentType = 'GND Link box';
+    else if (eqCode === 'LA') result.equipmentType = 'Lightning Arrester';
+    else if (eqCode === 'AB') result.equipmentType = 'Air Break Switch';
+    else if (eqCode === 'RU') result.equipmentType = 'Ring Main Unit';
+    else if (eqCode === 'DC') result.equipmentType = 'Distribution Circuit';
+    else if (eqCode === 'HS') result.equipmentType = 'HV ATS';
+    else if (eqCode === 'LS') result.equipmentType = 'LV ATS';
+
+    result.year = parseInt(stdMatch[5], 10);
+    const cityAbbr = stdMatch[6].toUpperCase();
+    result.cityAbbr = cityAbbr;
+    if (CITY_ABBREVIATION_TO_NAME[cityAbbr]) {
+      result.city = CITY_ABBREVIATION_TO_NAME[cityAbbr];
+    }
+
+    if (stdMatch[7]) {
+      result.runningNumber = parseInt(stdMatch[7], 10);
+    }
+    if (stdMatch[8]) {
+      result.peaCode = stdMatch[8];
+    }
+  } else {
+    // Check for hyphens separated segments
+    const parts = clean.split(/[-#]/);
+    if (parts.length > 0) {
+      const areaCandidate = parts[0].toUpperCase();
+      if (PEA_AREAS.includes(areaCandidate as any)) {
+        result.area = areaCandidate;
+      }
+    }
+
+    // Check voltage in string (e.g. 33, 115, 22)
+    const voltMatch = clean.match(/(\d+)\s*(?:kV|kv|DTTM|TLUG|TLTM|SUTM|SULA|DTUG|TLJO|SUGB)/i) || clean.match(/-(\d{2,3})[A-Za-z]*-/);
+    if (voltMatch) {
+      result.voltageLevel = voltMatch[1];
+    }
+
+    // Check location code
+    if (/\b(DT|Distribution)\b/i.test(clean) || /-\d+DT/i.test(clean)) {
+      result.locationType = 'Distribution Line';
+    } else if (/\b(TL|Transmission)\b/i.test(clean) || /-\d+TL/i.test(clean)) {
+      result.locationType = 'Transmission Line';
+    } else if (/\b(SU|Substation)\b/i.test(clean) || /-\d+SU/i.test(clean)) {
+      result.locationType = 'Substation';
+    }
+
+    // Check equipment type code
+    if (/TM/i.test(clean) || /Termination/i.test(clean)) {
+      result.equipmentType = 'Cold Shrink Termination';
+      result.equipmentTypeCode = 'TM';
+    } else if (/UG/i.test(clean) || /Underground/i.test(clean)) {
+      result.equipmentType = 'Underground Cable';
+      result.equipmentTypeCode = 'UG';
+    } else if (/JO/i.test(clean) || /Joint/i.test(clean)) {
+      result.equipmentType = 'Joint';
+      result.equipmentTypeCode = 'JO';
+    } else if (/GB/i.test(clean) || /Link\s*box/i.test(clean)) {
+      result.equipmentType = 'GND Link box';
+      result.equipmentTypeCode = 'GB';
+    } else if (/LA/i.test(clean) || /Arrester/i.test(clean)) {
+      result.equipmentType = 'Lightning Arrester';
+      result.equipmentTypeCode = 'LA';
+    }
+
+    // Check year (4 digits between 1900 and 2099)
+    const yrMatch = clean.match(/[-_](19\d\d|20\d\d)[-_]/);
+    if (yrMatch) {
+      result.year = parseInt(yrMatch[1], 10);
+    }
+
+    // Check city abbreviation
+    for (const [abbr, name] of Object.entries(CITY_ABBREVIATION_TO_NAME)) {
+      if (new RegExp(`[-#_]${abbr}(?:[-#_]|$)`, 'i').test(clean)) {
+        result.cityAbbr = abbr;
+        result.city = name;
+        break;
+      }
+    }
+
+    if (!result.area && result.city) {
+      const infArea = getAreaFromCity(result.city);
+      if (infArea) result.area = infArea;
+    }
+  }
+
+  return result;
+}
+
 export function getCityAbbreviation(city: string): string {
   const norm = (city || '').toLowerCase().trim();
   if (!norm) return 'BKK';

@@ -11,14 +11,86 @@ import {
   ShieldAlert, 
   CheckCircle2, 
   AlertTriangle, 
+  Zap,
   Eye, 
   EyeOff,
   Sparkles,
   Info
 } from 'lucide-react';
 
-export type HeatmapMode = 'all' | 'critical' | 'warning' | 'healthy';
+export type HeatmapMode = 'all' | 'critical' | 'severe_pd' | 'warning' | 'healthy';
 export type MapViewMode = 'hybrid' | 'heatmap' | 'markers';
+
+export interface SeverePdDetails {
+  isSevere: boolean;
+  defectType: string;
+  rawDefect: string;
+  amplitude: number;
+  severity: 'Critical' | 'Warning';
+}
+
+/**
+ * Identify if an asset has active severe online partial discharge
+ * e.g., Internal PD, Surface PD, Void (Cavity), Floating PD, Treeing
+ */
+export function getAssetSeverePd(asset: CableAsset): SeverePdDetails {
+  const pdRes = (asset.pdResult || '').trim();
+  const onlineDefect = (asset.onlinePrpdDefectType || asset.pdDiagnostics?.onlinePrpdDefectType || '').trim();
+  const onlineSev = (asset.onlinePrpdSeverity || asset.pdDiagnostics?.onlinePrpdSeverity || '').trim();
+  const extDischarge = Number(asset.externalDischarge || asset.onlinePdAmplitude || asset.onlinePrpdAmplitude || asset.onlinePrpdPeakCharge || 0);
+
+  const isInternal = pdRes === 'Internal' || /internal/i.test(onlineDefect);
+  const isSurface = pdRes === 'Surface' || /surface/i.test(onlineDefect);
+  const isVoid = pdRes === 'Void' || /void|cavity/i.test(onlineDefect);
+  const isFloating = pdRes === 'Floating' || /floating/i.test(onlineDefect);
+  const isTreeing = pdRes === 'Treeing' || /treeing/i.test(onlineDefect);
+
+  if (isInternal || isSurface || isVoid || isFloating || isTreeing) {
+    let defectType = 'Internal PD';
+    if (isInternal) defectType = 'Internal PD';
+    else if (isSurface) defectType = 'Surface PD';
+    else if (isVoid) defectType = 'Void (Cavity) PD';
+    else if (isFloating) defectType = 'Floating PD';
+    else if (isTreeing) defectType = 'Treeing PD';
+
+    const isCrit = isInternal || isTreeing || onlineSev.toLowerCase() === 'critical' || extDischarge >= 250;
+    return {
+      isSevere: true,
+      defectType,
+      rawDefect: onlineDefect || pdRes,
+      amplitude: extDischarge,
+      severity: isCrit ? 'Critical' : 'Warning'
+    };
+  }
+
+  if (onlineDefect && onlineDefect !== 'None' && !/normal|no discharge|background/i.test(onlineDefect)) {
+    return {
+      isSevere: true,
+      defectType: onlineDefect,
+      rawDefect: onlineDefect,
+      amplitude: extDischarge,
+      severity: onlineSev.toLowerCase() === 'critical' ? 'Critical' : 'Warning'
+    };
+  }
+
+  if (extDischarge >= 50) {
+    return {
+      isSevere: true,
+      defectType: `High Amplitude PD (${extDischarge} pC)`,
+      rawDefect: `${extDischarge} pC`,
+      amplitude: extDischarge,
+      severity: extDischarge >= 250 ? 'Critical' : 'Warning'
+    };
+  }
+
+  return {
+    isSevere: false,
+    defectType: '',
+    rawDefect: '',
+    amplitude: extDischarge,
+    severity: 'Warning'
+  };
+}
 
 interface MapChartProps {
   assets: CableAsset[];
@@ -113,7 +185,7 @@ export default function MapChart({
 
     // 1. Build and Mount Heatmap Layer if viewMode is 'hybrid' or 'heatmap'
     if (viewMode === 'hybrid' || viewMode === 'heatmap') {
-      // Filter assets and assign heat intensity weights based on health status
+      // Filter assets and assign heat intensity weights based on health status & severe PD
       let heatDataPoints: [number, number, number][] = [];
       let customGradient: Record<number, string> = {};
 
@@ -134,6 +206,22 @@ export default function MapChart({
           0.6: '#ef4444', // Danger Red
           0.9: '#b91c1c', // Deep Crimson Red
           1.0: '#7f1d1d'  // Intense Hazard Dark Red
+        };
+      } else if (heatmapMode === 'severe_pd') {
+        // Severe Online Partial Discharge (Internal, Surface, Void, Floating PD) Hotspots
+        const severePdAssets = validAssets.filter(a => getAssetSeverePd(a).isSevere);
+        heatDataPoints = severePdAssets.map(a => {
+          const pd = getAssetSeverePd(a);
+          const weight = pd.severity === 'Critical' ? 1.0 : 0.75;
+          return [a.gps.lat, a.gps.lng, weight];
+        });
+        // Electric Violet / Neon Magenta / Fiery Crimson PD Gradient
+        customGradient = {
+          0.1: '#f3e8ff', // Light Lavender
+          0.3: '#c084fc', // Bright Violet
+          0.6: '#a855f7', // Electric Purple
+          0.85: '#d946ef', // Neon Magenta
+          1.0: '#dc2626'  // Hazard Red Alert
         };
       } else if (heatmapMode === 'warning') {
         // Yellow & Orange Assets
@@ -228,6 +316,10 @@ export default function MapChart({
         lowestHealthScore: number;
         substationName: string;
         city: string;
+        hasSeverePd: boolean;
+        severePdCount: number;
+        severePdTypes: string[];
+        maxPdAmplitude: number;
       }
 
       const locationGroupsMap = new Map<string, LocationGroup>();
@@ -246,12 +338,29 @@ export default function MapChart({
             worstHealthStatus: 'Green',
             lowestHealthScore: 100,
             substationName: asset.substationName || '',
-            city: asset.city || ''
+            city: asset.city || '',
+            hasSeverePd: false,
+            severePdCount: 0,
+            severePdTypes: [],
+            maxPdAmplitude: 0
           });
         }
 
         const group = locationGroupsMap.get(key)!;
         group.assets.push(asset);
+
+        // Check severe PD for this asset
+        const pdInfo = getAssetSeverePd(asset);
+        if (pdInfo.isSevere) {
+          group.hasSeverePd = true;
+          group.severePdCount += 1;
+          if (!group.severePdTypes.includes(pdInfo.defectType)) {
+            group.severePdTypes.push(pdInfo.defectType);
+          }
+          if (pdInfo.amplitude > group.maxPdAmplitude) {
+            group.maxPdAmplitude = pdInfo.amplitude;
+          }
+        }
 
         if (!group.substationName && asset.substationName) {
           group.substationName = asset.substationName;
@@ -287,28 +396,54 @@ export default function MapChart({
         const color = statusColors[group.worstHealthStatus] || '#10B981';
         const isCritical = group.worstHealthStatus === 'Red';
         const isOrange = group.worstHealthStatus === 'Orange';
+        const hasSeverePd = group.hasSeverePd;
 
-        // Marker radius: slightly larger if multiple assets share the coordinate
-        const radius = isMultiple 
+        // Base Marker radius: slightly larger if multiple assets share the coordinate or has severe PD
+        let radius = isMultiple 
           ? (isCritical ? 10 : isOrange ? 9 : 8) 
           : (isCritical ? 8 : isOrange ? 7 : 5.5);
 
+        if (hasSeverePd) {
+          radius = Math.max(radius, 8.5);
+        }
+
+        // 1. If Severe Online PD is found, render an outer pulsing Electric Halo Bubble layer!
+        if (hasSeverePd) {
+          const pdHaloMarker = L.circleMarker([group.lat, group.lng], {
+            radius: radius + 5.5,
+            fillColor: '#d946ef',
+            color: '#9333ea',
+            weight: 2.2,
+            opacity: 0.95,
+            fillOpacity: 0.22,
+            dashArray: '3, 4',
+            className: 'leaflet-severe-pd-pulse'
+          });
+          markerGroup.addLayer(pdHaloMarker);
+        }
+
+        // 2. Primary Marker
         const marker = L.circleMarker([group.lat, group.lng], {
           radius,
-          fillColor: color,
-          color: isCritical ? '#7f1d1d' : (isMultiple ? '#4c1d95' : '#ffffff'),
-          weight: isMultiple ? 2.5 : (isCritical ? 2.5 : 1.5),
+          fillColor: hasSeverePd && !isCritical ? '#9333ea' : color,
+          color: hasSeverePd 
+            ? '#fdf4ff' 
+            : (isCritical ? '#7f1d1d' : (isMultiple ? '#4c1d95' : '#ffffff')),
+          weight: hasSeverePd ? 3 : (isMultiple ? 2.5 : (isCritical ? 2.5 : 1.5)),
           opacity: 1,
-          fillOpacity: viewMode === 'hybrid' ? 0.88 : 0.95
+          fillOpacity: viewMode === 'hybrid' ? 0.92 : 0.98
         });
 
         // Tooltip hint on hover
-        if (isMultiple) {
-          marker.bindTooltip(
-            `📍 <b>${escapeHtml(group.substationName || group.city || 'Location')}</b> (${group.assets.length} assets)<br/><span style="font-size:10px; color:#6b7280;">Click or hover to pick asset</span>`,
-            { direction: 'top', offset: [0, -8], opacity: 0.95 }
-          );
+        let tooltipHtml = `📍 <b>${escapeHtml(group.substationName || group.city || 'Location')}</b> (${group.assets.length} assets)`;
+        if (hasSeverePd) {
+          tooltipHtml += `<br/><span style="color:#d946ef; font-weight:bold;">⚡ Severe Online PD: ${escapeHtml(group.severePdTypes.join(', '))}</span>`;
         }
+        if (isMultiple) {
+          tooltipHtml += `<br/><span style="font-size:10px; color:#6b7280;">Click or hover to pick asset</span>`;
+        }
+
+        marker.bindTooltip(tooltipHtml, { direction: 'top', offset: [0, -8], opacity: 0.95 });
 
         // Popup Content
         let popupContent = '';
@@ -319,9 +454,10 @@ export default function MapChart({
           const currentYear = new Date().getFullYear();
           const regYear = asset.yearOfRegistration || currentYear;
           const age = currentYear - regYear;
+          const pdDetails = getAssetSeverePd(asset);
 
           popupContent = `
-            <div class="p-3 font-sans text-xs text-gray-800 leading-tight min-w-[230px]">
+            <div class="p-3 font-sans text-xs text-gray-800 leading-tight min-w-[240px]">
               <div class="font-bold border-b border-gray-100 pb-1.5 mb-2 text-gray-900 flex items-center justify-between gap-2">
                 <span class="truncate font-bold">${escapeHtml(asset.equipmentType || 'Cable Asset')}</span>
                 <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
@@ -347,6 +483,24 @@ export default function MapChart({
                   asset.healthStatus === 'Yellow' ? '#D97706' : '#10B981'
                 }">${asset.healthScore ?? 100}%</span>
               </div>
+
+              ${pdDetails.isSevere ? `
+                <!-- Severe Online PD High-Visibility Banner -->
+                <div class="mt-2.5 p-2 rounded-lg bg-fuchsia-50 border border-fuchsia-200 text-fuchsia-950">
+                  <div class="flex items-center justify-between gap-1">
+                    <span class="text-[9px] font-black uppercase tracking-wider text-fuchsia-800 flex items-center gap-1">
+                      ⚡ Severe Online PD
+                    </span>
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-fuchsia-200/90 text-fuchsia-900">
+                      ${pdDetails.amplitude > 0 ? pdDetails.amplitude + ' pC' : 'Active Defect'}
+                    </span>
+                  </div>
+                  <div class="text-[11px] font-bold text-fuchsia-900 mt-0.5 truncate">
+                    ${escapeHtml(pdDetails.defectType)}
+                  </div>
+                </div>
+              ` : ''}
+
               <div class="mt-2.5 text-[10px] text-gray-500 border-t border-gray-100 pt-2 flex justify-between items-center">
                 <span class="truncate max-w-[130px] font-medium">${escapeHtml(asset.city || '')}</span>
                 <span class="text-purple-700 hover:text-purple-900 font-bold uppercase tracking-wider cursor-pointer">Open Details &rarr;</span>
@@ -363,9 +517,16 @@ export default function MapChart({
                   <span class="font-bold text-gray-900 text-sm truncate">
                     📍 ${escapeHtml(group.substationName || group.city || 'Asset Location')}
                   </span>
-                  <span class="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide bg-purple-100 text-purple-800 border border-purple-200 shadow-2xs">
-                    ${group.assets.length} ASSETS
-                  </span>
+                  <div class="flex items-center gap-1">
+                    ${group.hasSeverePd ? `
+                      <span class="px-1.5 py-0.5 rounded text-[9px] font-black bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-200">
+                        ⚡ ${group.severePdCount} SEVERE PD
+                      </span>
+                    ` : ''}
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide bg-purple-100 text-purple-800 border border-purple-200 shadow-2xs">
+                      ${group.assets.length} ASSETS
+                    </span>
+                  </div>
                 </div>
                 <div class="text-[10px] text-gray-400 font-mono mt-0.5 flex items-center justify-between">
                   <span>GPS: ${group.lat.toFixed(5)}, ${group.lng.toFixed(5)}</span>
@@ -381,30 +542,40 @@ export default function MapChart({
 
               <!-- Scrollable Asset List -->
               <div class="max-h-[220px] overflow-y-auto space-y-1.5 pr-1" style="scrollbar-width: thin;">
-                ${group.assets.map((asset, idx) => `
-                  <div 
-                    class="asset-select-row p-2 rounded-lg border border-gray-200 hover:border-purple-400 hover:bg-purple-50/70 bg-white transition-all cursor-pointer shadow-2xs flex flex-col gap-1"
-                    data-asset-index="${idx}"
-                  >
-                    <div class="flex items-center justify-between gap-1">
-                      <span class="font-mono font-bold text-gray-900 text-[11px] truncate">
-                        ${escapeHtml(asset.equipmentId || asset.peaNumber || 'Asset #' + (idx + 1))}
-                      </span>
-                      <span class="px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase ${
-                        asset.healthStatus === 'Red' ? 'bg-red-100 text-red-700' :
-                        asset.healthStatus === 'Orange' ? 'bg-orange-100 text-orange-700' :
-                        asset.healthStatus === 'Yellow' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-emerald-100 text-emerald-700'
-                      }">
-                        ${asset.healthStatus || 'Green'} (${asset.healthScore ?? 100}%)
-                      </span>
+                ${group.assets.map((asset, idx) => {
+                  const assetPd = getAssetSeverePd(asset);
+                  return `
+                    <div 
+                      class="asset-select-row p-2 rounded-lg border ${assetPd.isSevere ? 'border-fuchsia-300 bg-fuchsia-50/40 hover:bg-fuchsia-100/60' : 'border-gray-200 bg-white hover:border-purple-400 hover:bg-purple-50/70'} transition-all cursor-pointer shadow-2xs flex flex-col gap-1"
+                      data-asset-index="${idx}"
+                    >
+                      <div class="flex items-center justify-between gap-1">
+                        <span class="font-mono font-bold text-gray-900 text-[11px] truncate">
+                          ${escapeHtml(asset.equipmentId || asset.peaNumber || 'Asset #' + (idx + 1))}
+                        </span>
+                        <div class="flex items-center gap-1">
+                          ${assetPd.isSevere ? `
+                            <span class="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase bg-fuchsia-600 text-white shadow-2xs">
+                              ⚡ ${escapeHtml(assetPd.defectType)}
+                            </span>
+                          ` : ''}
+                          <span class="px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase ${
+                            asset.healthStatus === 'Red' ? 'bg-red-100 text-red-700' :
+                            asset.healthStatus === 'Orange' ? 'bg-orange-100 text-orange-700' :
+                            asset.healthStatus === 'Yellow' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-emerald-100 text-emerald-700'
+                          }">
+                            ${asset.healthStatus || 'Green'} (${asset.healthScore ?? 100}%)
+                          </span>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between text-[10px] text-gray-500">
+                        <span class="truncate max-w-[170px]">${escapeHtml(asset.equipmentType || 'Cable')} • ${escapeHtml(asset.voltageLevel || '22')} kV</span>
+                        <span class="text-purple-700 font-bold hover:underline">Select &rarr;</span>
+                      </div>
                     </div>
-                    <div class="flex items-center justify-between text-[10px] text-gray-500">
-                      <span class="truncate max-w-[170px]">${escapeHtml(asset.equipmentType || 'Cable')} • ${escapeHtml(asset.voltageLevel || '22')} kV</span>
-                      <span class="text-purple-700 font-bold hover:underline">Select &rarr;</span>
-                    </div>
-                  </div>
-                `).join('')}
+                  `;
+                }).join('')}
               </div>
             </div>
           `;
@@ -412,7 +583,7 @@ export default function MapChart({
 
         marker.bindPopup(popupContent, {
           closeButton: false,
-          minWidth: isMultiple ? 290 : 230,
+          minWidth: isMultiple ? 290 : 240,
           className: 'custom-leaflet-popup cursor-pointer'
         });
 
@@ -491,6 +662,7 @@ export default function MapChart({
   ).size;
 
   const criticalCount = assets.filter(a => a.healthStatus === 'Red' || a.healthStatus === 'Orange').length;
+  const severePdCount = assets.filter(a => getAssetSeverePd(a).isSevere).length;
   const healthyCount = assets.filter(a => a.healthStatus === 'Green' || !a.healthStatus).length;
   const warningCount = assets.filter(a => a.healthStatus === 'Yellow').length;
 
@@ -543,7 +715,7 @@ export default function MapChart({
           </button>
         </div>
 
-        {/* Heatmap Health Filter Mode (Visible when heatmap is active) */}
+        {/* Heatmap Health & Severe PD Filter Mode (Visible when heatmap is active) */}
         {viewMode !== 'markers' && (
           <div className="bg-white/95 backdrop-blur-md px-1.5 py-1 rounded-xl shadow-md border border-gray-200/90 flex items-center gap-1 text-xs animate-fadeIn">
             <span className="text-[10px] font-bold text-gray-400 uppercase px-1.5 flex items-center gap-1">
@@ -576,6 +748,21 @@ export default function MapChart({
             >
               <ShieldAlert className="w-3 h-3" />
               <span>Critical ({criticalCount})</span>
+            </button>
+
+            {/* Severe Online PD Filter Mode Button */}
+            <button
+              type="button"
+              onClick={() => setHeatmapMode('severe_pd')}
+              className={`px-2 py-0.5 rounded-md font-bold text-[11px] flex items-center gap-1 transition-all cursor-pointer ${
+                heatmapMode === 'severe_pd'
+                  ? 'bg-purple-700 text-white shadow-xs'
+                  : 'text-purple-700 hover:bg-purple-50'
+              }`}
+              title="Highlight severe online partial discharge hotspots: Internal PD, Surface PD, Void, Floating PD"
+            >
+              <Zap className="w-3 h-3 text-amber-300 fill-amber-300" />
+              <span>Severe PD ({severePdCount})</span>
             </button>
 
             <button
@@ -711,8 +898,9 @@ export default function MapChart({
         <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
           <span className="font-bold text-gray-900 flex items-center gap-1.5">
             <Flame className="w-3.5 h-3.5 text-amber-500" />
-            {viewMode === 'markers' ? 'Marker Health Legend' : (
+            {viewMode === 'markers' ? 'Marker Health & PD Legend' : (
               heatmapMode === 'critical' ? 'Critical Hazard Density' :
+              heatmapMode === 'severe_pd' ? 'Severe Online PD Density (Internal/Surface/Void)' :
               heatmapMode === 'warning' ? 'Monitoring Density' :
               heatmapMode === 'healthy' ? 'Healthy Assets Density' :
               'Health-Risk Density Heatmap'
@@ -737,6 +925,8 @@ export default function MapChart({
               style={{
                 background: heatmapMode === 'critical'
                   ? 'linear-gradient(to right, #fed7aa, #fb923c, #ef4444, #991b1b)'
+                  : heatmapMode === 'severe_pd'
+                  ? 'linear-gradient(to right, #f3e8ff, #c084fc, #a855f7, #d946ef, #dc2626)'
                   : heatmapMode === 'warning'
                   ? 'linear-gradient(to right, #fef08a, #facc15, #f59e0b, #d97706)'
                   : heatmapMode === 'healthy'
@@ -747,24 +937,38 @@ export default function MapChart({
           </div>
         )}
 
-        {/* Individual Status Markers Legend (shown in Hybrid or Markers mode) */}
+        {/* Individual Status Markers & Severe PD Bubble Legend (shown in Hybrid or Markers mode) */}
         {viewMode !== 'heatmap' && (
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] pt-1">
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-800" />
-              <span className="text-gray-700 font-medium">Red: Critical ({criticalCount})</span>
+          <div className="space-y-1.5 pt-1">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-800" />
+                <span className="text-gray-700 font-medium">Red: Critical ({criticalCount})</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />
+                <span className="text-gray-700 font-medium">Orange: Alert</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
+                <span className="text-gray-700 font-medium">Yellow: Monitor ({warningCount})</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <span className="text-gray-700 font-medium">Green: Healthy ({healthyCount})</span>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />
-              <span className="text-gray-700 font-medium">Orange: Alert</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
-              <span className="text-gray-700 font-medium">Yellow: Monitor ({warningCount})</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-              <span className="text-gray-700 font-medium">Green: Healthy ({healthyCount})</span>
+
+            {/* Severe Online PD Bubble Index Indicator */}
+            <div className="flex items-center gap-1.5 pt-1.5 border-t border-gray-100">
+              <div className="relative flex items-center justify-center">
+                <div className="w-4 h-4 rounded-full bg-fuchsia-100 border border-purple-500 border-dashed animate-pulse flex items-center justify-center">
+                  <div className="w-2 h-2 rounded-full bg-purple-700" />
+                </div>
+              </div>
+              <span className="text-purple-900 font-bold text-[10px] leading-tight">
+                ⚡ Severe Online PD: Internal, Surface, Void, Floating ({severePdCount})
+              </span>
             </div>
           </div>
         )}
@@ -772,4 +976,5 @@ export default function MapChart({
     </div>
   );
 }
+
 

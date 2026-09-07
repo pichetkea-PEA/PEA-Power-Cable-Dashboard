@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, PDDiagnosticInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, getCityGpsCenter } from './peaData';
+import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, PEA_AREA_CITIES, getCityGpsCenter, parseEquipmentIdDetails, CITY_ABBREVIATION_TO_NAME } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -140,8 +140,8 @@ export async function fetchFastRegionalIdentifiers(
         const results = await Promise.all(
           entries.map(async ([area, sheetId]) => {
             try {
-              // Fetch only Tab 1 General Information rows (skips images, PRPD, and engineering for maximum speed)
-              const range = encodeURIComponent("'General Information'!A2:AG");
+              // Fetch Tab 1 General Information rows A to AH
+              const range = encodeURIComponent("'General Information'!A2:AH");
               const res = await fetchWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`,
                 { headers: { Authorization: `Bearer ${token}` } },
@@ -160,27 +160,81 @@ export async function fetchFastRegionalIdentifiers(
                   const peaNumber = (row[13] || '').toString().trim();
                   const assetNumber = (row[14] || '').toString().trim(); // Equipment Number ADS
                   const adsNumber = (row[15] || '').toString().trim();   // Account Asset Number AA
-                  const equipmentId = (row[32] || row[30] || '').toString().trim();
+                  const productionMonth = (row[16] || '').toString().trim(); // Column Q
+                  const installationDate = formatToDDMMYYYY((row[17] || '').toString().trim()); // Column R
+                  const wbs = (row[18] || '').toString().trim(); // Column S
+                  const businessType = (row[19] || '').toString().trim(); // Column T
+                  const costCenter = (row[20] || '').toString().trim(); // Column U
+                  const gistag = (row[21] || '').toString().trim(); // Column V
+                  const cls = (row[22] || '').toString().trim(); // Column W
+                  const contractNumber = (row[23] || '').toString().trim(); // Column X
+                  const feeder = (row[24] || '').toString().trim(); // Column Y
+                  const substationId = (row[25] || '').toString().trim(); // Column Z
+                  const operateId = (row[26] || '').toString().trim(); // Column AA
+                  const serialNumber = (row[27] || '').toString().trim(); // Column AB
+                  const model = (row[28] || '').toString().trim(); // Column AC
+                  const workOrder = (row[29] || '').toString().trim(); // Column AD
+                  const size = (row[30] || '').toString().trim(); // Column AE
+                  const assetValue = (row[31] || '').toString().trim(); // Column AF
+                  const equipmentId = (row[32] || row[30] || '').toString().trim(); // Column AG
+                  const qrDocument = (row[33] || '').toString().trim(); // Column AH
+
+                  // Parse equipmentId to ensure complete fidelity if fields are missing or coded
+                  const parsedEq = equipmentId ? parseEquipmentIdDetails(equipmentId) : {};
+                  
+                  const rawArea = (area && PEA_AREAS.includes(area.toUpperCase() as any))
+                    ? area.toUpperCase()
+                    : (parsedEq.area || (row[4] ? getAreaFromCity((row[4] || '').toString().trim()) : null) || 'S2');
+                  
+                  const rawCity = (row[4] || '').toString().trim();
+                  const resolvedCity = (rawCity && rawCity !== area)
+                    ? (CITY_ABBREVIATION_TO_NAME[rawCity.toUpperCase()] || rawCity)
+                    : (parsedEq.city || (PEA_AREA_CITIES[rawArea]?.[0] || ''));
+
+                  const rawVolt = (row[3] || '').toString().trim();
+                  const resolvedVolt = (rawVolt ? String(rawVolt).replace(/[^0-9.]/g, '') : '') || parsedEq.voltageLevel || (rawArea === 'S2' || rawArea === 'S3' ? '33' : '115');
+
+                  const resolvedLocType = ((row[8] || '').toString().trim() || parsedEq.locationType || 'Distribution Line') as LocationType;
+                  const resolvedEqType = ((row[5] || '').toString().trim() || parsedEq.equipmentType || 'Cold Shrink Termination') as EquipmentType;
+                  const resolvedYear = parseInt(row[12], 10) || parsedEq.year || new Date().getFullYear();
 
                   parsed.push({
                     number: parseInt(row[0], 10) || idx + 1,
                     timestamp: (row[1] || '').toString().trim(),
                     operatorName: (row[2] || '').toString().trim(),
-                    voltageLevel: (row[3] || '115').toString().trim(),
-                    city: (row[4] || area).toString().trim(),
-                    equipmentType: (row[5] || 'Underground Cable') as EquipmentType,
+                    voltageLevel: resolvedVolt,
+                    city: resolvedCity,
+                    area: rawArea,
+                    equipmentType: resolvedEqType,
                     manufacturer: (row[6] || '').toString().trim(),
                     country: (row[7] || '').toString().trim(),
-                    locationType: (row[8] || 'Substation') as LocationType,
+                    locationType: resolvedLocType,
                     substationName: (row[9] || '').toString().trim(),
                     landmark: (row[10] || '').toString().trim(),
                     gps: { lat: 0, lng: 0 },
-                    yearOfRegistration: parseInt(row[12], 10) || new Date().getFullYear(),
+                    yearOfRegistration: resolvedYear,
                     peaNumber,
                     assetNumber,
                     adsNumber,
-                    equipmentId: equipmentId || `PEA-${area}-${idx + 1}`
-                  });
+                    productionMonth,
+                    installationDate,
+                    wbs,
+                    businessType,
+                    costCenter,
+                    gistag,
+                    class: cls,
+                    contractNumber,
+                    feeder,
+                    substationId,
+                    operateId,
+                    serialNumber,
+                    model,
+                    workOrder,
+                    size,
+                    assetValue,
+                    equipmentId: equipmentId || `PEA-${rawArea}-${idx + 1}`,
+                    qrDocument
+                  } as any);
                 });
                 return parsed;
               }
@@ -702,6 +756,66 @@ export const PD_DIAGNOSTIC_HEADERS = [
   'Offline Defect Classification', 'Offline IEEE 400.2 Status', '3x3 Failure Risk Level', 'Diagnostic & Maintenance Summary'
 ];
 
+// Helper to format date into DD/MM/YYYY
+export function formatToDDMMYYYY(val: any): string {
+  if (val === null || val === undefined) return '';
+  const str = String(val).trim();
+  if (!str || str.toLowerCase() === 'n/a' || str === '-') return '';
+
+  // Check if it is numeric Excel / Sheets date serial number (e.g. 30000 - 60000)
+  if (/^\d{4,6}$/.test(str)) {
+    const serial = parseFloat(str);
+    if (serial > 30000 && serial < 60000) {
+      const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+      if (!isNaN(date.getTime())) {
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const year = date.getUTCFullYear();
+        return `${day}/${month}/${year}`;
+      }
+    }
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[/.–-](\d{1,2})[/.–-](\d{2,4})/);
+  if (dmyMatch) {
+    const p1 = parseInt(dmyMatch[1], 10);
+    const p2 = parseInt(dmyMatch[2], 10);
+    let y = dmyMatch[3];
+    if (y.length === 2) {
+      y = parseInt(y, 10) > 50 ? '19' + y : '20' + y;
+    } else if (parseInt(y, 10) > 2400) {
+      y = String(parseInt(y, 10) - 543);
+    }
+    const d = String(p1).padStart(2, '0');
+    const m = String(p2).padStart(2, '0');
+    return `${d}/${m}/${y}`;
+  }
+
+  // YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = str.match(/^(\d{4})[/.–-](\d{1,2})[/.–-](\d{1,2})/);
+  if (ymdMatch) {
+    let y = ymdMatch[1];
+    const m = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
+    const d = String(parseInt(ymdMatch[3], 10)).padStart(2, '0');
+    if (parseInt(y, 10) > 2400) {
+      y = String(parseInt(y, 10) - 543);
+    }
+    return `${d}/${m}/${y}`;
+  }
+
+  // Standard Date parse
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 1900 && parsed.getFullYear() < 2100) {
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const year = parsed.getFullYear();
+    return `${day}/${month}/${year}`;
+  }
+
+  return str;
+}
+
 // Helper to normalize sheet headers
 export function normalizeHeader(h: string): string {
   if (!h) return '';
@@ -714,49 +828,49 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     const norm = normalizeHeader(header);
     
     // Standard General Information
-    if (norm === 'number' || norm === 'no') return data.number ?? defaultValues[idx] ?? '';
-    if (norm === 'timestamp' || norm === 'date' || norm === 'time') {
+    if (norm === 'number' || norm === 'no' || (headers.length >= 30 && idx === 0)) return data.number ?? defaultValues[idx] ?? '';
+    if (norm === 'timestamp' || norm === 'date' || norm === 'time' || (headers.length >= 30 && idx === 1)) {
       const rawTs = data.timestamp ?? defaultValues[idx] ?? '';
       return rawTs ? getBangkokTimestamp(rawTs) : getBangkokTimestamp();
     }
-    if (norm === 'nameofuseroradmin' || norm === 'operatorname' || norm === 'operator') return data.operatorName ?? defaultValues[idx] ?? '';
-    if (norm === 'voltagelevelkv' || norm === 'voltagelevel' || norm === 'voltage') return data.voltageLevel ?? defaultValues[idx] ?? '';
-    if (norm === 'city' || norm === 'province') return data.city ?? defaultValues[idx] ?? '';
-    if (norm === 'equipmenttype') return data.equipmentType ?? defaultValues[idx] ?? '';
-    if (norm === 'productmanufacturer' || norm === 'manufacturer' || norm === 'brand') return data.manufacturer ?? defaultValues[idx] ?? '';
-    if (norm === 'countryoforigin' || norm === 'country') return data.country ?? defaultValues[idx] ?? '';
-    if (norm === 'locationtype') return data.locationType ?? defaultValues[idx] ?? '';
-    if (norm === 'substation' || norm === 'substationname') return data.substationName ?? defaultValues[idx] ?? '';
-    if (norm === 'landmarklocation' || norm === 'landmark') return data.landmark ?? defaultValues[idx] ?? '';
-    if (norm === 'gps' || norm === 'coordinates') {
+    if (norm === 'nameofuseroradmin' || norm === 'operatorname' || norm === 'operator' || (headers.length >= 30 && idx === 2)) return data.operatorName ?? defaultValues[idx] ?? '';
+    if (norm === 'voltagelevelkv' || norm === 'voltagelevel' || norm === 'voltage' || (headers.length >= 30 && idx === 3)) return data.voltageLevel ?? defaultValues[idx] ?? '';
+    if (norm === 'city' || norm === 'province' || (headers.length >= 30 && idx === 4)) return data.city ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmenttype' || (headers.length >= 30 && idx === 5)) return data.equipmentType ?? defaultValues[idx] ?? '';
+    if (norm === 'productmanufacturer' || norm === 'manufacturer' || norm === 'brand' || (headers.length >= 30 && idx === 6)) return data.manufacturer ?? defaultValues[idx] ?? '';
+    if (norm === 'countryoforigin' || norm === 'country' || (headers.length >= 30 && idx === 7)) return data.country ?? defaultValues[idx] ?? '';
+    if (norm === 'locationtype' || (headers.length >= 30 && idx === 8)) return data.locationType ?? defaultValues[idx] ?? '';
+    if (norm === 'substation' || norm === 'substationname' || (headers.length >= 30 && idx === 9)) return data.substationName ?? defaultValues[idx] ?? '';
+    if (norm === 'landmarklocation' || norm === 'landmark' || (headers.length >= 30 && idx === 10)) return data.landmark ?? defaultValues[idx] ?? '';
+    if (norm === 'gps' || norm === 'coordinates' || (headers.length >= 30 && idx === 11)) {
       if (data.gps) {
         if (typeof data.gps === 'string') return data.gps;
         return `${data.gps.lat}, ${data.gps.lng}`;
       }
       return defaultValues[idx] ?? '';
     }
-    if (norm === 'yearofregistration' || norm === 'registrationyear') return data.yearOfRegistration ?? defaultValues[idx] ?? '';
-    if (norm === 'peanumberid' || norm === 'peanumber') return data.peaNumber ?? defaultValues[idx] ?? '';
-    if (norm === 'equipmentnumberads' || norm === 'assetnumber') return data.assetNumber ?? defaultValues[idx] ?? '';
-    if (norm === 'accountassetnumberaa' || norm === 'adsnumber' || norm === 'aanumber') return data.adsNumber ?? defaultValues[idx] ?? '';
-    if (norm === 'productionmonth') return data.productionMonth ?? defaultValues[idx] ?? '';
-    if (norm === 'installationdate') return data.installationDate ?? defaultValues[idx] ?? '';
-    if (norm === 'wbs' || norm === 'wbscode') return data.wbs ?? defaultValues[idx] ?? '';
-    if (norm === 'businesstype') return data.businessType ?? defaultValues[idx] ?? '';
-    if (norm === 'costcenter') return data.costCenter ?? defaultValues[idx] ?? '';
-    if (norm === 'gistag') return data.gistag ?? defaultValues[idx] ?? '';
-    if (norm === 'class') return data.class ?? defaultValues[idx] ?? '';
-    if (norm === 'contractnumber') return data.contractNumber ?? defaultValues[idx] ?? '';
-    if (norm === 'feeder') return data.feeder ?? defaultValues[idx] ?? '';
-    if (norm === 'substationid') return data.substationId ?? defaultValues[idx] ?? '';
-    if (norm === 'operateid') return data.operateId ?? defaultValues[idx] ?? '';
-    if (norm === 'serialnumber') return data.serialNumber ?? defaultValues[idx] ?? '';
-    if (norm === 'model') return data.model ?? defaultValues[idx] ?? '';
-    if (norm === 'workorder') return data.workOrder ?? defaultValues[idx] ?? '';
-    if (norm === 'size') return data.size ?? defaultValues[idx] ?? '';
-    if (norm === 'assetvalue' || norm === 'value') return data.assetValue ?? defaultValues[idx] ?? '';
-    if (norm === 'equipmentid') return data.equipmentId ?? defaultValues[idx] ?? '';
-    if (norm === 'qrdocument' || norm === 'qrdocumenturl' || norm === 'qrdocumentlink') return data.qrDocument ?? defaultValues[idx] ?? '';
+    if (norm === 'yearofregistration' || norm === 'registrationyear' || (headers.length >= 30 && idx === 12)) return data.yearOfRegistration ?? defaultValues[idx] ?? '';
+    if (norm === 'peanumberid' || norm === 'peanumber' || (headers.length >= 30 && idx === 13)) return data.peaNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmentnumberads' || norm === 'assetnumber' || (headers.length >= 30 && idx === 14)) return data.assetNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'accountassetnumberaa' || norm === 'adsnumber' || norm === 'aanumber' || (headers.length >= 30 && idx === 15)) return data.adsNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'productionmonth' || (headers.length >= 30 && idx === 16)) return data.productionMonth ?? defaultValues[idx] ?? '';
+    if (norm === 'installationdate' || (headers.length >= 30 && idx === 17)) return (data.installationDate ? formatToDDMMYYYY(data.installationDate) : (defaultValues[idx] ?? ''));
+    if (norm === 'wbs' || norm === 'wbscode' || (headers.length >= 30 && idx === 18)) return data.wbs ?? defaultValues[idx] ?? '';
+    if (norm === 'businesstype' || (headers.length >= 30 && idx === 19)) return data.businessType ?? defaultValues[idx] ?? '';
+    if (norm === 'costcenter' || (headers.length >= 30 && idx === 20)) return data.costCenter ?? defaultValues[idx] ?? '';
+    if (norm === 'gistag' || (headers.length >= 30 && idx === 21)) return data.gistag ?? defaultValues[idx] ?? '';
+    if (norm === 'class' || (headers.length >= 30 && idx === 22)) return data.class ?? defaultValues[idx] ?? '';
+    if (norm === 'contractnumber' || (headers.length >= 30 && idx === 23)) return data.contractNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'feeder' || (headers.length >= 30 && idx === 24)) return data.feeder ?? defaultValues[idx] ?? '';
+    if (norm === 'substationid' || (headers.length >= 30 && idx === 25)) return data.substationId ?? defaultValues[idx] ?? '';
+    if (norm === 'operateid' || (headers.length >= 30 && idx === 26)) return data.operateId ?? defaultValues[idx] ?? '';
+    if (norm === 'serialnumber' || (headers.length >= 30 && idx === 27)) return data.serialNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'model' || (headers.length >= 30 && idx === 28)) return data.model ?? defaultValues[idx] ?? '';
+    if (norm === 'workorder' || (headers.length >= 30 && idx === 29)) return data.workOrder ?? defaultValues[idx] ?? '';
+    if (norm === 'size' || (headers.length >= 30 && idx === 30)) return data.size ?? defaultValues[idx] ?? '';
+    if (norm === 'assetvalue' || norm === 'value' || (headers.length >= 30 && idx === 31)) return data.assetValue ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmentid' || (headers.length >= 30 && idx === 32)) return data.equipmentId ?? defaultValues[idx] ?? '';
+    if (norm === 'qrdocument' || norm === 'qrdocumenturl' || norm === 'qrdocumentlink' || (headers.length >= 30 && idx === 33)) return data.qrDocument ?? defaultValues[idx] ?? '';
     
     // Standard Engineering Information
     if (norm === 'loadcurrentamps' || norm === 'loadcurrent') return data.loadCurrent ?? defaultValues[idx] ?? '';
@@ -1081,39 +1195,39 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       lng = center.lng;
     }
 
-    const number = parseInt(getVal('number') || getVal('no')) || (index + 1);
-    const rawTs = getVal('timestamp') || getVal('date') || getVal('time');
+    const number = parseInt(getVal('number') || getVal('no')) || parseInt(row[0], 10) || (index + 1);
+    const rawTs = getVal('timestamp') || getVal('date') || getVal('time') || cleanStr(row[1]);
     const timestamp = rawTs ? getBangkokTimestamp(rawTs) : getBangkokTimestamp();
-    const operatorName = getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator');
-    const voltageLevel = getVal('voltagelevelkv') || getVal('voltagelevel') || getVal('voltage');
-    const equipmentType = getVal('equipmenttype') as EquipmentType;
-    const manufacturer = getVal('productmanufacturer') || getVal('manufacturer') || getVal('brand');
-    const country = getVal('countryoforigin') || getVal('country');
-    const locationType = getVal('locationtype') as LocationType;
-    const substationName = getVal('substation') || getVal('substationname');
-    const landmark = getVal('landmarklocation') || getVal('landmark');
-    const yearOfRegistration = parseInt(getVal('yearofregistration') || getVal('registrationyear')) || new Date().getFullYear();
-    const peaNumber = getVal('peanumberid') || getVal('peanumber');
-    const assetNumber = getVal('equipmentnumberads') || getVal('assetnumber');
-    const adsNumber = getVal('accountassetnumberaa') || getVal('adsnumber') || getVal('aanumber');
-    const productionMonth = getVal('productionmonth');
-    const installationDate = getVal('installationdate');
-    const wbs = getVal('wbs') || getVal('wbscode');
-    const businessType = getVal('businesstype');
-    const costCenter = getVal('costcenter');
-    const gistag = getVal('gistag');
-    const cls = getVal('class');
-    const contractNumber = getVal('contractnumber');
-    const feeder = getVal('feeder');
-    const substationId = getVal('substationid');
-    const operateId = getVal('operateid');
-    const serialNumber = getVal('serialnumber');
-    const model = getVal('model');
-    const workOrder = getVal('workorder');
-    const size = getVal('size');
-    const assetValue = getVal('assetvalue') || getVal('value') || (row.length > 31 && !row[31]?.toString().includes('-') ? cleanStr(row[31]) : '');
-    let equipmentId = getVal('equipmentid');
-    const qrDocument = getVal('qrdocument') || getVal('qrdocumenturl') || getVal('qrdocumentlink') || (row.length > 33 ? cleanStr(row[33]) : '');
+    const operatorName = getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]);
+    const voltageLevel = getVal('voltagelevelkv') || getVal('voltagelevel') || getVal('voltage') || cleanStr(row[3]);
+    const equipmentType = (getVal('equipmenttype') || cleanStr(row[5])) as EquipmentType;
+    const manufacturer = getVal('productmanufacturer') || getVal('manufacturer') || getVal('brand') || cleanStr(row[6]);
+    const country = getVal('countryoforigin') || getVal('country') || cleanStr(row[7]);
+    const locationType = (getVal('locationtype') || cleanStr(row[8])) as LocationType;
+    const substationName = getVal('substation') || getVal('substationname') || cleanStr(row[9]);
+    const landmark = getVal('landmarklocation') || getVal('landmark') || cleanStr(row[10]);
+    const yearOfRegistration = parseInt(getVal('yearofregistration') || getVal('registrationyear')) || parseInt(row[12], 10) || new Date().getFullYear();
+    const peaNumber = getVal('peanumberid') || getVal('peanumber') || cleanStr(row[13]);
+    const assetNumber = getVal('equipmentnumberads') || getVal('assetnumber') || cleanStr(row[14]);
+    const adsNumber = getVal('accountassetnumberaa') || getVal('adsnumber') || getVal('aanumber') || cleanStr(row[15]);
+    const productionMonth = getVal('productionmonth') || cleanStr(row[16]);
+    const installationDate = formatToDDMMYYYY(getVal('installationdate') || cleanStr(row[17]));
+    const wbs = getVal('wbs') || getVal('wbscode') || cleanStr(row[18]);
+    const businessType = getVal('businesstype') || cleanStr(row[19]);
+    const costCenter = getVal('costcenter') || cleanStr(row[20]);
+    const gistag = getVal('gistag') || cleanStr(row[21]);
+    const cls = getVal('class') || cleanStr(row[22]);
+    const contractNumber = getVal('contractnumber') || cleanStr(row[23]);
+    const feeder = getVal('feeder') || cleanStr(row[24]);
+    const substationId = getVal('substationid') || cleanStr(row[25]);
+    const operateId = getVal('operateid') || cleanStr(row[26]);
+    const serialNumber = getVal('serialnumber') || cleanStr(row[27]);
+    const model = getVal('model') || cleanStr(row[28]);
+    const workOrder = getVal('workorder') || cleanStr(row[29]);
+    const size = getVal('size') || getVal('crosssection') || cleanStr(row[30]);
+    const assetValue = getVal('assetvalue') || getVal('value') || cleanStr(row[31]);
+    let equipmentId = getVal('equipmentid') || cleanStr(row[32]);
+    const qrDocument = getVal('qrdocument') || getVal('qrdocumenturl') || getVal('qrdocumentlink') || cleanStr(row[33]);
 
     // Fallbacks if equipmentid didn't match directly
     if (!equipmentId) {
@@ -1141,6 +1255,21 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       }
     }
 
+    const parsedEq = equipmentId ? parseEquipmentIdDetails(equipmentId) : {};
+
+    let resolvedCity = city;
+    if (resolvedCity && CITY_ABBREVIATION_TO_NAME[resolvedCity.toUpperCase()]) {
+      resolvedCity = CITY_ABBREVIATION_TO_NAME[resolvedCity.toUpperCase()];
+    } else if (!resolvedCity && parsedEq.city) {
+      resolvedCity = parsedEq.city;
+    }
+
+    const resolvedArea = allowedArea || parsedEq.area || getAreaFromCity(resolvedCity) || (equipmentId ? equipmentId.split('-')[0].toUpperCase() : null) || defaultArea;
+    const resolvedVoltage = (voltageLevel ? String(voltageLevel).replace(/[^0-9.]/g, '') : '') || parsedEq.voltageLevel || (resolvedArea === 'S2' || resolvedArea === 'S3' ? '33' : '115');
+    const resolvedLocType = (locationType || parsedEq.locationType || 'Substation') as LocationType;
+    const resolvedEqType = (equipmentType || parsedEq.equipmentType || 'Underground Cable') as EquipmentType;
+    const resolvedYear = yearOfRegistration || parsedEq.year || new Date().getFullYear();
+
     // Now gather all other columns that do NOT match standard headers into customFields
     const standardKeys = [
       'number', 'no', 'timestamp', 'date', 'time', 'nameofuseroradmin', 'operatorname', 'operator',
@@ -1166,16 +1295,17 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       number,
       timestamp,
       operatorName,
-      voltageLevel,
-      city,
-      equipmentType,
+      voltageLevel: resolvedVoltage,
+      city: resolvedCity,
+      area: resolvedArea,
+      equipmentType: resolvedEqType,
       manufacturer,
       country,
-      locationType,
+      locationType: resolvedLocType,
       substationName,
       landmark,
       gps: { lat, lng },
-      yearOfRegistration,
+      yearOfRegistration: resolvedYear,
       peaNumber,
       assetNumber,
       adsNumber,

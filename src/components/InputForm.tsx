@@ -21,12 +21,16 @@ import {
   getEquipmentConditionPrefix,
   getLatestEquipmentRunningNumber,
   getAvailableEquipmentTypes,
-  getManufacturersForEquipmentType
+  getManufacturersForEquipmentType,
+  getAreaFromCity,
+  parseEquipmentIdDetails,
+  CITY_ABBREVIATION_TO_NAME
 } from '../utils/peaData';
 import { getBangkokTimestamp } from '../utils/dateUtils';
 import { 
   uploadImageToDrive,
   uploadFileToDrive,
+  formatToDDMMYYYY,
   appendGeneralRow, 
   appendEngineeringRow, 
   appendVisualRow,
@@ -34,7 +38,8 @@ import {
   fetchSheetsData,
   fetchLastSheetNumber,
   getMasterSpreadsheetsMap,
-  getEffectiveGoogleToken
+  getEffectiveGoogleToken,
+  fetchFastRegionalIdentifiers
 } from '../utils/googleSheets';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, sendAdminNotification } from '../utils/firestore';
@@ -98,6 +103,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [searchAdsNumber, setSearchAdsNumber] = useState<string>('');
   const [searchAssetNumber, setSearchAssetNumber] = useState<string>('');
   const [searchError, setSearchError] = useState<string>('');
+  const [isSearchingGatekeeper, setIsSearchingGatekeeper] = useState<boolean>(false);
   const [isAssetIdentified, setIsAssetIdentified] = useState<boolean>(false);
   const [selectedAsset, setSelectedAsset] = useState<CableAsset | null>(null);
   const [adminUnlockIdentity, setAdminUnlockIdentity] = useState<boolean>(false);
@@ -138,7 +144,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [serialNumber, setSerialNumber] = useState<string>('');
   const [model, setModel] = useState<string>('');
   const [workOrder, setWorkOrder] = useState<string>('');
-  const [size, setSize] = useState<string>('400 sq.mm');
+  const [size, setSize] = useState<string>('');
+  const [assetValue, setAssetValue] = useState<string>('');
   const [qrDocument, setQrDocument] = useState<string>('');
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
@@ -199,11 +206,14 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     isComplete: false
   });
 
-  // Pre-populate city with first available option in selected area
+  // Pre-populate city with first available option in selected area ONLY if city is empty or invalid for the area
   useEffect(() => {
     const cities = PEA_AREA_CITIES[selectedArea] || [];
     if (cities.length > 0) {
-      setCity(cities[0]);
+      setCity(prev => {
+        if (prev && cities.includes(prev)) return prev;
+        return cities[0];
+      });
     } else {
       setCity('');
     }
@@ -263,8 +273,11 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     }
   };
 
-  // Unique Equipment ID generator helper
+  // Unique Equipment ID generator helper: preserves identified equipmentId, or computes if registering new
   const computedEquipmentId = useMemo(() => {
+    if (selectedAsset?.equipmentId) {
+      return selectedAsset.equipmentId;
+    }
     const params = {
       area: selectedArea,
       voltage: String(voltage),
@@ -279,7 +292,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       cityIndex: latestNum + 1,
       peaNumber: (peaNumber || '').trim()
     });
-  }, [selectedArea, voltage, regYear, locationType, eqType, city, peaNumber, assets]);
+  }, [selectedAsset, selectedArea, voltage, regYear, locationType, eqType, city, peaNumber, assets]);
 
   // Image preview handlers for Step 3
   const handleImageChange = (e: ChangeEvent<HTMLInputElement>, type: 'visual' | 'thermal') => {
@@ -372,18 +385,73 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   // Populate form with matched asset details
   const loadAssetDataIntoForm = (asset: CableAsset) => {
-    if (asset.peaNumber) setPeaNumber(asset.peaNumber);
-    if (asset.adsNumber) setAdsNumber(asset.adsNumber);
-    if (asset.assetNumber) setAssetNumber(asset.assetNumber);
-    if (asset.city) setCity(asset.city);
-    if (asset.voltageLevel) {
-      const cleanVolt = String(asset.voltageLevel).replace(/[^0-9.]/g, '');
-      if (cleanVolt) setVoltage(cleanVolt);
+    // Parse equipmentId for complete fidelity (e.g. S2-33DTTM-2008-KBI#0001...)
+    const eqId = asset.equipmentId || '';
+    const parsedEq = eqId ? parseEquipmentIdDetails(eqId) : {};
+
+    // 1. Resolve Area first
+    let targetArea = (asset as any).area;
+    if (!targetArea && parsedEq.area) {
+      targetArea = parsedEq.area;
     }
-    if (asset.equipmentType) setEqType(asset.equipmentType as EquipmentType);
+    if (!targetArea && asset.city) {
+      targetArea = getAreaFromCity(asset.city);
+    }
+    if (!targetArea && eqId) {
+      const prefix = eqId.split('-')[0].toUpperCase();
+      if (PEA_AREAS.includes(prefix as any)) {
+        targetArea = prefix;
+      }
+    }
+    if (targetArea && PEA_AREAS.includes(targetArea.toUpperCase() as any)) {
+      setSelectedArea(targetArea.toUpperCase());
+    }
+
+    // 2. Resolve Voltage Level
+    let targetVoltage = '';
+    if (asset.voltageLevel) {
+      const vDigits = String(asset.voltageLevel).replace(/[^0-9.]/g, '');
+      if (vDigits) targetVoltage = vDigits;
+    }
+    if (!targetVoltage && parsedEq.voltageLevel) {
+      targetVoltage = parsedEq.voltageLevel;
+    }
+    if (targetVoltage) {
+      setVoltage(targetVoltage);
+    }
+
+    // 3. Resolve City / Province
+    let targetCity = asset.city || parsedEq.city || '';
+    if (targetCity && CITY_ABBREVIATION_TO_NAME[targetCity.toUpperCase()]) {
+      targetCity = CITY_ABBREVIATION_TO_NAME[targetCity.toUpperCase()];
+    }
+    if (targetCity) {
+      setCity(targetCity);
+    }
+
+    // 4. Resolve Location Type
+    let targetLocation = asset.locationType || parsedEq.locationType;
+    if (targetLocation) {
+      setLocationType(targetLocation as LocationType);
+    }
+
+    // 5. Resolve Equipment Type
+    let targetEqType = asset.equipmentType || parsedEq.equipmentType;
+    if (targetEqType) {
+      setEqType(targetEqType as EquipmentType);
+    }
+
+    // 6. Resolve Year of Registration
+    let targetYear = asset.yearOfRegistration || parsedEq.year;
+    if (targetYear) {
+      setRegYear(targetYear);
+    }
+
+    setPeaNumber(asset.peaNumber || '');
+    setAdsNumber(asset.adsNumber || '');
+    setAssetNumber(asset.assetNumber || '');
     if (asset.manufacturer) setBrand(asset.manufacturer);
     if (asset.country) setCountry(asset.country);
-    if (asset.locationType) setLocationType(asset.locationType as LocationType);
     if (asset.substationName) setSubstation(asset.substationName);
     if (asset.landmark) setLandmark(asset.landmark);
     if (asset.gps) {
@@ -392,9 +460,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         setGpsLng(String(asset.gps.lng || ''));
       }
     }
-    if (asset.yearOfRegistration) setRegYear(asset.yearOfRegistration);
     if (asset.productionMonth) setProductionMonth(asset.productionMonth);
-    if (asset.installationDate) setInstallationDate(asset.installationDate);
+    if (asset.installationDate) setInstallationDate(formatToDDMMYYYY(asset.installationDate));
     if (asset.wbs) setWbs(asset.wbs);
     if (asset.businessType) setBusinessType(asset.businessType);
     if (asset.costCenter) setCostCenter(asset.costCenter);
@@ -408,15 +475,12 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     if (asset.model) setModel(asset.model);
     if (asset.workOrder) setWorkOrder(asset.workOrder);
     if (asset.size) setSize(asset.size);
-
-    const assetArea = (asset as any).area || asset.city || (asset.equipmentId ? asset.equipmentId.split('-')[0] : 'N1');
-    if (assetArea && PEA_AREAS.includes(assetArea.toUpperCase() as any)) {
-      setSelectedArea(assetArea.toUpperCase());
-    }
+    if (asset.assetValue) setAssetValue(asset.assetValue);
+    if (asset.qrDocument) setQrDocument(asset.qrDocument);
   };
 
   // Search equipment by 1 of 4 identifiers
-  const handleSearchEquipment = (e?: FormEvent) => {
+  const handleSearchEquipment = async (e?: FormEvent) => {
     if (e) e.preventDefault();
     setSearchError('');
 
@@ -430,28 +494,49 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       return;
     }
 
-    const found = (assets || []).find(a => {
-      const matchPea = termPea && a.peaNumber && a.peaNumber.trim().toLowerCase() === termPea;
-      const matchEq = termEq && a.equipmentId && a.equipmentId.trim().toLowerCase() === termEq;
-      const matchAds = termAds && (
-        (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAds) ||
-        (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAds)
-      );
-      const matchAa = termAa && (
-        (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAa) ||
-        (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAa)
-      );
+    setIsSearchingGatekeeper(true);
 
-      return matchPea || matchEq || matchAds || matchAa;
-    });
+    try {
+      let searchPool = assets || [];
 
-    if (found) {
-      loadAssetDataIntoForm(found);
-      setSelectedAsset(found);
-      setIsAssetIdentified(true);
-    } else {
+      // If active token is available, attempt to retrieve the latest registered items from regional sheets
+      const activeToken = getEffectiveGoogleToken(googleToken);
+      if (activeToken) {
+        try {
+          const freshSheetsAssets = await fetchFastRegionalIdentifiers(activeToken, searchPool);
+          if (freshSheetsAssets && freshSheetsAssets.length > 0) {
+            searchPool = freshSheetsAssets;
+          }
+        } catch (fetchErr) {
+          console.warn("Failed fetching live sheets data during gatekeeper search, using memory assets:", fetchErr);
+        }
+      }
+
+      // Exact match check
+      const found = searchPool.find(a => {
+        const matchPea = termPea && a.peaNumber && a.peaNumber.trim().toLowerCase() === termPea;
+        const matchEq = termEq && a.equipmentId && a.equipmentId.trim().toLowerCase() === termEq;
+        const matchAds = termAds && (
+          (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAds) ||
+          (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAds)
+        );
+        const matchAa = termAa && (
+          (a.assetNumber && a.assetNumber.trim().toLowerCase() === termAa) ||
+          (a.adsNumber && a.adsNumber.trim().toLowerCase() === termAa)
+        );
+
+        return matchPea || matchEq || matchAds || matchAa;
+      });
+
+      if (found) {
+        loadAssetDataIntoForm(found);
+        setSelectedAsset(found);
+        setIsAssetIdentified(true);
+        return;
+      }
+
       // Check partial match
-      const partialFound = (assets || []).find(a => {
+      const partialFound = searchPool.find(a => {
         const pPea = termPea && a.peaNumber?.toLowerCase().includes(termPea);
         const pEq = termEq && a.equipmentId?.toLowerCase().includes(termEq);
         const pAds = termAds && (a.adsNumber?.toLowerCase().includes(termAds) || a.assetNumber?.toLowerCase().includes(termAds));
@@ -463,9 +548,44 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         loadAssetDataIntoForm(partialFound);
         setSelectedAsset(partialFound);
         setIsAssetIdentified(true);
+      } else if (termEq) {
+        // Smart fallback: If Equipment ID format is structured (e.g. S2-33DTTM-2008-KBI...), parse its encoded fields
+        const parsed = parseEquipmentIdDetails(searchEquipmentId.trim());
+        if (parsed.area || parsed.voltageLevel || parsed.city) {
+          const fallbackAsset: CableAsset = {
+            number: 1,
+            timestamp: getBangkokTimestamp(),
+            operatorName: user?.name || '',
+            voltageLevel: parsed.voltageLevel || (parsed.area === 'S2' || parsed.area === 'S3' ? '33' : '115'),
+            city: parsed.city || (parsed.cityAbbr ? CITY_ABBREVIATION_TO_NAME[parsed.cityAbbr] : '') || 'Krabi',
+            area: parsed.area || 'S2',
+            equipmentType: parsed.equipmentType || 'Cold Shrink Termination',
+            manufacturer: '',
+            country: '',
+            locationType: parsed.locationType || 'Distribution Line',
+            substationName: '',
+            landmark: '',
+            gps: { lat: 0, lng: 0 },
+            yearOfRegistration: parsed.year || new Date().getFullYear(),
+            peaNumber: searchPeaNumber.trim() || (parsed.peaCode ? parsed.peaCode : ''),
+            assetNumber: searchAssetNumber.trim() || '',
+            adsNumber: searchAdsNumber.trim() || '',
+            equipmentId: searchEquipmentId.trim()
+          } as any;
+          loadAssetDataIntoForm(fallbackAsset);
+          setSelectedAsset(fallbackAsset);
+          setIsAssetIdentified(true);
+          return;
+        }
+        setSearchError('Equipment not found with the entered identifier. Please verify the PEA Number, Equipment ID, ADS, or AA and try again.');
       } else {
         setSearchError('Equipment not found with the entered identifier. Please verify the PEA Number, Equipment ID, ADS, or AA and try again.');
       }
+    } catch (err) {
+      console.error("Gatekeeper search error:", err);
+      setSearchError('Error querying equipment database. Please verify your network connection.');
+    } finally {
+      setIsSearchingGatekeeper(false);
     }
   };
 
@@ -572,9 +692,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         }
       }
 
-      const finalPeaNumber = (peaNumber || '').trim();
-      const finalAssetNumber = (assetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-      const finalAdsNumber = (adsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      // Pre-submission identity integrity validation check
+      const finalEquipmentId = (selectedAsset?.equipmentId || computedEquipmentId || '').trim();
+      const finalPeaNumber = (selectedAsset?.peaNumber || peaNumber || '').trim();
+      const finalAdsNumber = (selectedAsset?.adsNumber || adsNumber || '').trim();
+      const finalAssetNumber = (selectedAsset?.assetNumber || assetNumber || '').trim();
+
+      if (selectedAsset) {
+        if (selectedAsset.equipmentId && finalEquipmentId !== selectedAsset.equipmentId) {
+          setStatusMessage('Identity Error: Equipment ID mismatch with identified asset.');
+          setLoading(false);
+          setProgressModal(prev => ({ ...prev, isError: true, errorMessage: 'Equipment ID mismatch with identified asset.' }));
+          return;
+        }
+      }
 
       // Tab 1: General Information
       const generalRow = [
@@ -582,16 +713,16 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         brand || 'Prysmian Group', country || 'Thailand', locationType, substation || 'Main Station', 
         landmark || 'No landmarks', `${gpsLat || '13.7563'}, ${gpsLng || '100.5018'}`, regYear, 
         finalPeaNumber, finalAssetNumber, finalAdsNumber,
-        productionMonth || 'N/A', installationDate || 'N/A', wbs || 'N/A', businessType || 'N/A',
-        costCenter || 'N/A', gistag || 'N/A', assetClass || 'N/A', contractNumber || 'N/A',
-        feeder || 'N/A', substationId || 'N/A', operateId || 'N/A', serialNumber || 'N/A',
-        model || 'N/A', workOrder || 'N/A', size || 'N/A', 'N/A',
-        computedEquipmentId, (qrDocument || '').trim()
+        productionMonth || '', installationDate || '', wbs || '', businessType || '',
+        costCenter || '', gistag || '', assetClass || '', contractNumber || '',
+        feeder || '', substationId || '', operateId || '', serialNumber || '',
+        model || '', workOrder || '', size || '', assetValue || '',
+        finalEquipmentId, (qrDocument || '').trim()
       ];
 
       // Tab 2: Engineering Information
       const engineeringRow = [
-        rowNum, timestamp, user.name, computedEquipmentId, 
+        rowNum, timestamp, user.name, finalEquipmentId, 
         parseFloat(loadCurrent) || 120, parseFloat(sheathCurrent) || 8, parseFloat(surfaceTemp) || 35, 
         parseFloat(discharge) || 5, pdResult,
         parseFloat(onlinePdAmplitude) || (parseFloat(prpdPeakCharge) || 0),
@@ -601,7 +732,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
       // Tab 3: Visual & Thermal Images
       const visualRow = [
-        rowNum, timestamp, user.name, computedEquipmentId, visualUrl, thermalUrl
+        rowNum, timestamp, user.name, finalEquipmentId, visualUrl, thermalUrl
       ];
 
       // Tab 4: PD & Diagnostic Data (Aligned with 27-column schema)
@@ -609,7 +740,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         rowNum,
         timestamp,
         user.name,
-        computedEquipmentId,
+        finalEquipmentId,
         finalPeaNumber,
         voltage,
         city,
@@ -667,7 +798,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         yearOfRegistration: regYear, peaNumber: finalPeaNumber, assetNumber: finalAssetNumber, adsNumber: finalAdsNumber,
         productionMonth, installationDate, wbs, businessType, costCenter, gistag, class: assetClass,
         contractNumber, feeder, substationId, operateId, serialNumber, model, workOrder, size,
-        equipmentId: computedEquipmentId,
+        assetValue,
+        equipmentId: finalEquipmentId,
         qrDocument: (qrDocument || '').trim(),
         loadCurrent: parseFloat(loadCurrent) || 120, sheathCurrent: parseFloat(sheathCurrent) || 8,
         surfaceTemperature: parseFloat(surfaceTemp) || 35, externalDischarge: parseFloat(discharge) || 5,
@@ -680,7 +812,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       };
 
       if (currentSpreadsheetId) {
-        setProgressModal(prev => ({ ...prev, percent: 50, stepMessage: `Writing General Information for ${computedEquipmentId}...` }));
+        setProgressModal(prev => ({ ...prev, percent: 50, stepMessage: `Writing General Information for ${finalEquipmentId}...` }));
         await appendGeneralRow(activeToken, currentSpreadsheetId, generalRow);
 
         setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing Engineering Parameters row...' }));
@@ -697,7 +829,25 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
       try {
         const currentList = assets || [];
-        const updatedList = [combinedAsset, ...currentList];
+        // Check if the asset already exists in local list by equipmentId or peaNumber
+        const existingIdx = currentList.findIndex(a => 
+          (a.equipmentId && a.equipmentId === finalEquipmentId) ||
+          (a.peaNumber && finalPeaNumber && a.peaNumber === finalPeaNumber)
+        );
+
+        let updatedList: CableAsset[];
+        if (existingIdx >= 0) {
+          // Update the existing asset record in-place to prevent unnecessary extra duplicate assets
+          updatedList = [...currentList];
+          updatedList[existingIdx] = {
+            ...updatedList[existingIdx],
+            ...combinedAsset,
+            number: updatedList[existingIdx].number || combinedAsset.number
+          };
+        } else {
+          updatedList = [combinedAsset, ...currentList];
+        }
+
         localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
         localStorage.setItem('pea_central_assets_backup', JSON.stringify(updatedList));
         await saveCentralAssetsCache(updatedList, true);
@@ -705,14 +855,14 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         // Log registration event for Admin Audit Monitor
         await logAssetActivity({
           type: 'registration',
-          equipmentId: computedEquipmentId,
+          equipmentId: finalEquipmentId,
           equipmentType: combinedAsset.equipmentType,
           voltageLevel: combinedAsset.voltageLevel ? `${combinedAsset.voltageLevel} kV` : '115 kV',
           area: selectedArea,
           operatorName: combinedAsset.operatorName || user.name || 'Local Operator',
           userEmail: user.email,
           timestamp: getBangkokTimestamp(),
-          details: `Registered ${combinedAsset.equipmentType} in ${combinedAsset.substationName || 'Substation'} (${selectedArea})`,
+          details: `Logged Diagnostic Record for ${combinedAsset.equipmentType} ${finalEquipmentId} in ${combinedAsset.substationName || 'Substation'} (${selectedArea})`,
           gps: combinedAsset.gps,
           substationName: combinedAsset.substationName,
           landmark: combinedAsset.landmark,
@@ -723,8 +873,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         await sendAdminNotification({
           type: 'submit_log',
           title: 'New Diagnostic Log Submitted',
-          message: `Local operator ${user.name} submitted a new diagnostic log for asset ${computedEquipmentId} (${selectedArea}).`,
-          equipmentId: computedEquipmentId,
+          message: `Local operator ${user.name} submitted a new diagnostic log for asset ${finalEquipmentId} (${selectedArea}).`,
+          equipmentId: finalEquipmentId,
           operatorName: user.name,
           userEmail: user.email,
           timestamp: getBangkokTimestamp(),
@@ -738,8 +888,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       setStatusMessage('Asset successfully logged with full diagnostic data!');
       setProgressModal({
         isOpen: true,
-        title: 'Asset Registered Successfully',
-        stepMessage: `Asset Equipment ${computedEquipmentId} (PEA: ${finalPeaNumber || 'Assigned'}) registered across all 4 database sheets! (100%)`,
+        title: 'Diagnostic Record Submitted Successfully',
+        stepMessage: `Asset Equipment ${finalEquipmentId} (PEA: ${finalPeaNumber || 'Assigned'}) recorded across all database sheets! (100%)`,
         percent: 100,
         isError: false,
         isComplete: true
@@ -865,10 +1015,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             </p>
             <button
               type="submit"
-              className="w-full sm:w-auto px-6 py-2.5 bg-purple-900 hover:bg-purple-950 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+              disabled={isSearchingGatekeeper}
+              className="w-full sm:w-auto px-6 py-2.5 bg-purple-900 hover:bg-purple-950 disabled:bg-purple-800/70 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
             >
-              <Search className="w-4 h-4" />
-              <span>Search Equipment</span>
+              {isSearchingGatekeeper ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Searching Database...</span>
+                </>
+              ) : (
+                <>
+                  <Search className="w-4 h-4" />
+                  <span>Search Equipment</span>
+                </>
+              )}
             </button>
           </div>
 
@@ -1127,24 +1287,39 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               {/* Grid 1 */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Operator Name</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>PEA Operator Name</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <div className="relative">
                     <User className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-gray-400" />
                     <input
                       type="text"
                       disabled
                       value={user.name}
-                      className="w-full bg-gray-100 border border-gray-200 rounded-lg py-2 pl-8 pr-3 text-xs font-semibold text-gray-500"
+                      className="w-full bg-gray-100 border border-gray-200 rounded-lg py-2 pl-8 pr-3 text-xs font-semibold text-gray-600 cursor-not-allowed"
                     />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Voltage Level (kV)</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>Voltage Level (kV)</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <select
                     value={voltage}
+                    disabled={!adminUnlockIdentity}
                     onChange={e => setVoltage(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className={`rounded-lg py-2 px-3 text-xs font-medium focus:outline-hidden transition-all ${
+                      !adminUnlockIdentity
+                        ? 'bg-gray-100 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-900 border-purple-400 ring-2 ring-purple-200'
+                    }`}
                   >
                     <option value="115">115 kV (Transmission)</option>
                     <option value="33">33 kV (Distribution)</option>
@@ -1154,11 +1329,21 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA Area</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>PEA Area</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <select
                     value={selectedArea}
+                    disabled={!adminUnlockIdentity}
                     onChange={e => setSelectedArea(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className={`rounded-lg py-2 px-3 text-xs font-medium focus:outline-hidden transition-all ${
+                      !adminUnlockIdentity
+                        ? 'bg-gray-100 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-900 border-purple-400 ring-2 ring-purple-200'
+                    }`}
                   >
                     {PEA_AREAS.map(area => (
                       <option key={area} value={area}>{area}</option>
@@ -1167,11 +1352,21 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">PEA City / Province</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>PEA City / Province</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <select
                     value={city}
+                    disabled={!adminUnlockIdentity}
                     onChange={e => setCity(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className={`rounded-lg py-2 px-3 text-xs font-medium focus:outline-hidden transition-all ${
+                      !adminUnlockIdentity
+                        ? 'bg-gray-100 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-900 border-purple-400 ring-2 ring-purple-200'
+                    }`}
                   >
                     {(PEA_AREA_CITIES[selectedArea] || []).map(c => (
                       <option key={c} value={c}>{c}</option>
@@ -1180,11 +1375,21 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Equipment Type</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>Equipment Type</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <select
                     value={eqType}
+                    disabled={!adminUnlockIdentity}
                     onChange={e => setEqType(e.target.value as EquipmentType)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className={`rounded-lg py-2 px-3 text-xs font-medium focus:outline-hidden transition-all ${
+                      !adminUnlockIdentity
+                        ? 'bg-gray-100 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-900 border-purple-400 ring-2 ring-purple-200'
+                    }`}
                   >
                     {getAvailableEquipmentTypes(voltage).map(t => (
                       <option key={t} value={t}>{t}</option>
@@ -1193,11 +1398,16 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Manufacturer Brand</label>
+                  <label className="text-[10px] font-bold text-purple-900 uppercase flex items-center justify-between">
+                    <span>Manufacturer Brand</span>
+                    <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                      Editable
+                    </span>
+                  </label>
                   <select
                     value={brand}
                     onChange={e => setBrand(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                   >
                     {getManufacturersForEquipmentType(eqType).map(m => (
                       <option key={m} value={m}>{m}</option>
@@ -1206,11 +1416,16 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Country of Origin</label>
+                  <label className="text-[10px] font-bold text-purple-900 uppercase flex items-center justify-between">
+                    <span>Country of Origin</span>
+                    <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                      Editable
+                    </span>
+                  </label>
                   <select
                     value={country}
                     onChange={e => setCountry(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                   >
                     {COUNTRIES_OF_ORIGIN.map(c => (
                       <option key={c} value={c}>{c}</option>
@@ -1222,11 +1437,21 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               {/* Grid 2 */}
               <div className="grid grid-cols-3 gap-4 border-t border-gray-50 pt-4">
                 <div className="flex flex-col gap-1.5 col-span-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Location Type</label>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>Location Type</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
+                  </label>
                   <select
                     value={locationType}
+                    disabled={!adminUnlockIdentity}
                     onChange={e => setLocationType(e.target.value as LocationType)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden"
+                    className={`rounded-lg py-2 px-3 text-xs font-medium focus:outline-hidden transition-all ${
+                      !adminUnlockIdentity
+                        ? 'bg-gray-100 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-900 border-purple-400 ring-2 ring-purple-200'
+                    }`}
                   >
                     <option value="Substation">Substation</option>
                     <option value="Transmission Line">Transmission Line</option>
@@ -1235,27 +1460,37 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="flex flex-col gap-1.5 col-span-2">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Substation Name / Segment</label>
+                  <label className="text-[10px] font-bold text-purple-900 uppercase flex items-center justify-between">
+                    <span>Substation Name / Segment</span>
+                    <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                      Editable
+                    </span>
+                  </label>
                   <input
                     type="text"
                     required
                     placeholder="e.g. Chiang Mai 2 Substation"
                     value={substation}
                     onChange={e => setSubstation(e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                    className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                   />
                 </div>
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-bold text-gray-400 uppercase">Landmark / Geographic details</label>
+                <label className="text-[10px] font-bold text-purple-900 uppercase flex items-center justify-between">
+                  <span>Landmark / Geographic details</span>
+                  <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                    Editable
+                  </span>
+                </label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Opposite BigC Main Expressway Highway Room 107"
                   value={landmark}
                   onChange={e => setLandmark(e.target.value)}
-                  className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                  className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                 />
               </div>
 
@@ -1263,96 +1498,126 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               <div className="grid grid-cols-2 gap-4 border-t border-gray-50 pt-4">
                 <div className="flex flex-col gap-1.5 col-span-2">
                   <div className="flex justify-between items-center">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase">GPS Coordinates</label>
-                    <button
-                      type="button"
-                      onClick={detectGPS}
-                      className="text-[10px] text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <MapPin className="w-3.5 h-3.5" />
-                      Auto-detect Location
-                    </button>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-1.5">
+                      <span>GPS Coordinates</span>
+                      <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                        <Lock className="w-2.5 h-2.5" /> Locked
+                      </span>
+                    </label>
+                    {adminUnlockIdentity && (
+                      <button
+                        type="button"
+                        onClick={detectGPS}
+                        className="text-[10px] text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <MapPin className="w-3.5 h-3.5" />
+                        Auto-detect Location
+                      </button>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <input
                       type="number"
                       step="any"
                       required
+                      readOnly={!adminUnlockIdentity}
+                      disabled={!adminUnlockIdentity}
                       placeholder="Latitude (e.g. 18.7883)"
                       value={gpsLat}
                       onChange={e => setGpsLat(e.target.value)}
-                      className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      className={`rounded-lg py-2 px-3 text-xs font-medium transition-all ${
+                        !adminUnlockIdentity
+                          ? 'bg-gray-100 text-gray-600 border border-gray-200 cursor-not-allowed'
+                          : 'bg-white text-gray-900 border border-purple-400 ring-2 ring-purple-200'
+                      }`}
                     />
                     <input
                       type="number"
                       step="any"
                       required
+                      readOnly={!adminUnlockIdentity}
+                      disabled={!adminUnlockIdentity}
                       placeholder="Longitude (e.g. 98.9853)"
                       value={gpsLng}
                       onChange={e => setGpsLng(e.target.value)}
-                      className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      className={`rounded-lg py-2 px-3 text-xs font-medium transition-all ${
+                        !adminUnlockIdentity
+                          ? 'bg-gray-100 text-gray-600 border border-gray-200 cursor-not-allowed'
+                          : 'bg-white text-gray-900 border border-purple-400 ring-2 ring-purple-200'
+                      }`}
                     />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">Registration Year</label>
+                  <label className="text-[10px] font-bold text-purple-900 uppercase flex items-center justify-between">
+                    <span>Registration Year</span>
+                    <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                      Editable
+                    </span>
+                  </label>
                   <input
                     type="number"
                     required
                     placeholder="e.g. 2018"
                     value={regYear}
                     onChange={e => setRegYear(parseInt(e.target.value) || new Date().getFullYear())}
-                    className="bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600"
+                    className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>PEA Number (ID) {eqType === 'Distribution Circuit' && <span className="text-purple-600 font-normal text-[9px]">(Blank for Distribution Circuit)</span>}</span>
-                    <Lock className="w-3 h-3 text-gray-400" />
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>PEA Number (ID)</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
                   </label>
                   <input
                     type="text"
                     required={eqType !== 'Distribution Circuit'}
-                    disabled={eqType === 'Distribution Circuit' || user.role !== 'Admin' || !adminUnlockIdentity}
-                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
-                    placeholder={eqType === 'Distribution Circuit' ? 'Leave blank for Distribution Circuit' : 'e.g. PEA-N1-UG01'}
-                    value={eqType === 'Distribution Circuit' ? '' : peaNumber}
+                    disabled={!adminUnlockIdentity}
+                    readOnly={!adminUnlockIdentity}
+                    placeholder="e.g. PEA-N1-UG01"
+                    value={peaNumber}
                     onChange={e => setPeaNumber(e.target.value)}
                     className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>Equipment Number ADS</span>
-                    <Lock className="w-3 h-3 text-gray-400" />
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>ADS Number (ADS)</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
                   </label>
                   <input
                     type="text"
                     required
-                    disabled={user.role !== 'Admin' || !adminUnlockIdentity}
-                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
-                    placeholder="e.g. EQ-9081234"
-                    value={assetNumber}
-                    onChange={e => setAssetNumber(e.target.value)}
+                    disabled={!adminUnlockIdentity}
+                    readOnly={!adminUnlockIdentity}
+                    placeholder="e.g. ADS-98201"
+                    value={adsNumber}
+                    onChange={e => setAdsNumber(e.target.value)}
                     className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>Account Asset Number (AA)</span>
-                    <Lock className="w-3 h-3 text-gray-400" />
+                  <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center justify-between">
+                    <span>Asset Number (AA)</span>
+                    <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Locked
+                    </span>
                   </label>
                   <input
                     type="text"
-                    disabled={user.role !== 'Admin' || !adminUnlockIdentity}
-                    readOnly={user.role !== 'Admin' || !adminUnlockIdentity}
+                    disabled={!adminUnlockIdentity}
+                    readOnly={!adminUnlockIdentity}
                     placeholder="e.g. AA-1001"
-                    value={adsNumber}
-                    onChange={e => setAdsNumber(e.target.value)}
+                    value={assetNumber}
+                    onChange={e => setAssetNumber(e.target.value)}
                     className="bg-gray-100 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono font-bold text-gray-800 focus:outline-hidden focus:border-purple-600 disabled:opacity-75 disabled:bg-gray-100 cursor-not-allowed"
                   />
                 </div>
@@ -1381,9 +1646,10 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date</label>
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Installation Date (Col R)</label>
                       <input
-                        type="date"
+                        type="text"
+                        placeholder="dd/mm/yyyy"
                         value={installationDate}
                         onChange={e => setInstallationDate(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
@@ -1510,12 +1776,22 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-gray-400 uppercase">Size</label>
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Size (Col AE)</label>
                       <input
                         type="text"
                         placeholder="e.g. 400 sq.mm"
                         value={size}
                         onChange={e => setSize(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase">Asset Value (Col AF)</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 2,500,000 THB"
+                        value={assetValue}
+                        onChange={e => setAssetValue(e.target.value)}
                         className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2.5 text-xs font-medium text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                       />
                     </div>

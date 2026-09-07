@@ -44,3 +44,24 @@
   background: white;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
+
+/* Severe Online PD Radar Halo Pulse */
+@keyframes pdHaloPulse {
+  0% {
+    stroke-opacity: 0.9;
+    stroke-width: 2.5px;
+  }
+  50% {
+    stroke-opacity: 0.3;
+    stroke-width: 4px;
+  }
+  100% {
+    stroke-opacity: 0.9;
+    stroke-width: 2.5px;
+  }
+}
+
+.leaflet-severe-pd-pulse {
+  animation: pdHaloPulse 2s ease-in-out infinite;
+}
+

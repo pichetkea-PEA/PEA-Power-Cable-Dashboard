@@ -42,6 +42,7 @@ import {
 } from '../utils/peaData';
 import { 
   fetchSheetsData, 
+  formatToDDMMYYYY,
   updateSheetRow, 
   appendGeneralRow, 
   appendEngineeringRow, 
@@ -1047,7 +1048,7 @@ export default function AssetRecord({
 
     // 15 New General Info columns
     setEditProductionMonth(asset.productionMonth || '');
-    setEditInstallationDate(asset.installationDate || '');
+    setEditInstallationDate(formatToDDMMYYYY(asset.installationDate || ''));
     setEditWbs(asset.wbs || '');
     setEditBusinessType(asset.businessType || '');
     setEditCostCenter(asset.costCenter || '');
@@ -1060,7 +1061,7 @@ export default function AssetRecord({
     setEditSerialNumber(asset.serialNumber || '');
     setEditModel(asset.model || '');
     setEditWorkOrder(asset.workOrder || '');
-    setEditSize(asset.size || '400 sq.mm');
+    setEditSize(asset.size || '');
     setEditAssetValue(asset.assetValue || '');
     setEditQrDocument(asset.qrDocument || '');
 
@@ -1265,8 +1266,8 @@ export default function AssetRecord({
 
       // 2. Fetch row indexes from sheets
       const finalPeaNumber = (editPeaNumber || '').trim();
-      const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-      const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      const finalAssetNumber = (editAssetNumber || '').trim();
+      const finalAdsNumber = (editAdsNumber || '').trim();
       const updatedEquipmentId = selectedAsset.equipmentId;
 
       // Construct complete updated asset object
@@ -1554,8 +1555,8 @@ export default function AssetRecord({
       }
 
       const finalPeaNumber = (editPeaNumber || '').trim();
-      const finalAssetNumber = (editAssetNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
-      const finalAdsNumber = (editAdsNumber || '').trim() || (finalPeaNumber ? finalPeaNumber : '');
+      const finalAssetNumber = (editAssetNumber || '').trim();
+      const finalAdsNumber = (editAdsNumber || '').trim();
 
       // Preserve original equipmentId when logging a new maintenance record for an existing asset
       const updatedEquipmentId = selectedAsset.equipmentId;
@@ -2440,7 +2441,7 @@ export default function AssetRecord({
 
                     <div className="grid grid-cols-2 gap-2">
                       <div className="flex flex-col">
-                        {renderFieldLabel('Size (Cross Section)', 'size')}
+                        {renderFieldLabel('Size (Cross Section)', 'size', 'Col AE')}
                         <input
                           type="text"
                           placeholder="e.g. 1x400 sq.mm"
@@ -2451,7 +2452,7 @@ export default function AssetRecord({
                         />
                       </div>
                       <div className="flex flex-col">
-                        {renderFieldLabel('Production Month', 'productionMonth')}
+                        {renderFieldLabel('Production Month', 'productionMonth', 'Col Q')}
                         <input
                           type="text"
                           placeholder="e.g. 07/2018"
@@ -2465,9 +2466,10 @@ export default function AssetRecord({
 
                     <div className="grid grid-cols-2 gap-2">
                       <div className="flex flex-col">
-                        {renderFieldLabel('Installation Date', 'installationDate')}
+                        {renderFieldLabel('Installation Date', 'installationDate', 'Col R')}
                         <input
-                          type="date"
+                          type="text"
+                          placeholder="dd/mm/yyyy"
                           value={editInstallationDate}
                           onChange={e => setEditInstallationDate(e.target.value)}
                           disabled={!isEditing}

@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PEA Cable Health Index & Risk Assessment Theory Manual</title>
+  <style>
+    @media print {
+      body { font-size: 11pt; }
+      .no-print { display: none; }
+      .page-break { page-break-before: always; }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: #1e293b;
+      background-color: #f8fafc;
+      margin: 0;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 50px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      border: 1px solid #e2e8f0;
+    }
+    .header {
+      border-bottom: 2px solid #6b21a8;
+      padding-bottom: 20px;
+      margin-bottom: 30px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 {
+      margin: 0 0 8px 0;
+      color: #4c1d95;
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .header p {
+      margin: 0;
+      color: #64748b;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .badge {
+      background: #f3e8ff;
+      color: #6b21a8;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #d8b4fe;
+    }
+    h2 {
+      color: #334155;
+      font-size: 18px;
+      margin-top: 32px;
+      margin-bottom: 12px;
+      border-left: 4px solid #7c3aed;
+      padding-left: 12px;
+    }
+    h3 {
+      color: #475569;
+      font-size: 15px;
+      margin-top: 20px;
+      margin-bottom: 8px;
+    }
+    p, li {
+      font-size: 14px;
+      color: #334155;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th {
+      background-color: #f1f5f9;
+      color: #1e293b;
+      font-weight: 600;
+    }
+    tr:nth-child(even) {
+      background-color: #f8fafc;
+    }
+    .formula-box {
+      background: #fdf4ff;
+      border: 1px solid #f0abfc;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 16px 0;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 14px;
+      color: #701a75;
+      font-weight: 600;
+      text-align: center;
+    }
+    .tag-good { color: #16a34a; font-weight: bold; }
+    .tag-mod { color: #2563eb; font-weight: bold; }
+    .tag-caution { color: #d97706; font-weight: bold; }
+    .tag-poor { color: #ea580c; font-weight: bold; }
+    .tag-crit { color: #dc2626; font-weight: bold; }
+    .btn-print {
+      background: #7c3aed;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+    }
+    .btn-print:hover {
+      background: #6d28d9;
+    }
+    .btn-group {
+      margin-bottom: 24px;
+      display: flex;
+      gap: 12px;
+    }
+    .btn-secondary {
+      background: #e2e8f0;
+      color: #334155;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn-secondary:hover {
+      background: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="btn-group no-print">
+      <button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button>
+      <a class="btn-secondary" href="/HEALTH_INDEX_THEORY_AND_CRITERIA.md" download="HEALTH_INDEX_THEORY_AND_CRITERIA.md">📥 Download Markdown (.md)</a>
+    </div>
+
+    <div class="header">
+      <div>
+        <h1>PEA Cable Asset Health Index & Risk Theory</h1>
+        <p>Standard Operating Procedure & Diagnostic Evaluation Manual v2.4</p>
+      </div>
+      <div class="badge">IEEE 400.2 / IEC 60270 Compliant</div>
+    </div>
+
+    <h2>1. Executive Summary & Diagnostic Philosophy</h2>
+    <p>
+      The <strong>Cable Health Index (HI)</strong> algorithm implemented in this platform is a condition-based, multi-parametric scoring engine that quantifies the real-time degradation state of underground power cable circuits (XLPE/EPR insulation systems, accessories, and sheath earthing configurations).
+    </p>
+    <p>
+      The calculated Health Index ranges from <strong>0% (Critical / Severe Defect)</strong> to <strong>100% (Pristine / Good Condition)</strong>.
+    </p>
+
+    <h2>2. Multi-Parametric Mathematical Formulation</h2>
+    <div class="formula-box">
+      Base HI = 100 - &sum; ( W<sub>i</sub> &times; S<sub>i</sub> )
+    </div>
+    <p>
+      Where <strong>W<sub>i</sub></strong> is the normalized weight factor (&sum; W<sub>i</sub> = 1.0) and <strong>S<sub>i</sub></strong> is the parameter severity penalty score (0 to 100).
+    </p>
+
+    <h2>3. Diagnostic Parameters & Weight Breakdown</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Parameter</th>
+          <th>Weight (W<sub>i</sub>)</th>
+          <th>Standard Ref</th>
+          <th>Primary Physics of Degradation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1. Partial Discharge (PD)</strong></td>
+          <td><strong>35%</strong></td>
+          <td>IEC 60270 / IEEE 400.2</td>
+          <td>Micro-discharge erosion inside voids leading to electrical treeing</td>
+        </tr>
+        <tr>
+          <td><strong>2. Tan Delta (&tan;&delta;)</strong></td>
+          <td><strong>25%</strong></td>
+          <td>IEEE Std 400.2-2013</td>
+          <td>Bulk dielectric loss factor, moisture ingress, water treeing</td>
+        </tr>
+        <tr>
+          <td><strong>3. Insulation Resistance (IR)</strong></td>
+          <td><strong>15%</strong></td>
+          <td>IEEE 43 / IEC 60502</td>
+          <td>DC leakage current traversing bulk volume and terminations</td>
+        </tr>
+        <tr>
+          <td><strong>4. Operating Temperature</strong></td>
+          <td><strong>15%</strong></td>
+          <td>IEC 60287 / CIGRE TB 728</td>
+          <td>Arrhenius polymer aging, joint hotspot, contact resistance</td>
+        </tr>
+        <tr>
+          <td><strong>5. Sheath Current Ratio</strong></td>
+          <td><strong>10%</strong></td>
+          <td>IEEE 575 / CIGRE TB 422</td>
+          <td>Cross-bonding faults, SVL breakdown, ground loop loss</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Parameter 1: Partial Discharge (PD) Criteria (35% Weight)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Measured PD Amplitude (Q<sub>max</sub>)</th>
+          <th>Discharge Mode</th>
+          <th>Severity Score (S<sub>1</sub>)</th>
+          <th>Penalty Contribution</th>
+          <th>Condition Assessment</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>&lt; 10 pC</td>
+          <td>None / Background</td>
+          <td>0</td>
+          <td>0.00%</td>
+          <td><span class="tag-good">Pristine / Normal</span></td>
+        </tr>
+        <tr>
+          <td>10 &le; Q &lt; 50 pC</td>
+          <td>Internal Void (Incipient)</td>
+          <td>25</td>
+          <td>8.75%</td>
+          <td><span class="tag-mod">Minor Void Discharges</span></td>
+        </tr>
+        <tr>
+          <td>50 &le; Q &lt; 250 pC</td>
+          <td>Joint Interface / Slot</td>
+          <td>60</td>
+          <td>21.00%</td>
+          <td><span class="tag-caution">Active Treeing</span></td>
+        </tr>
+        <tr>
+          <td>250 &le; Q &lt; 1000 pC</td>
+          <td>Severe Void / Treeing</td>
+          <td>85</td>
+          <td>29.75%</td>
+          <td><span class="tag-poor">Critical Insulation Erosion</span></td>
+        </tr>
+        <tr>
+          <td>&ge; 1000 pC</td>
+          <td>Surface / Corona Tracking</td>
+          <td>100</td>
+          <td>35.00%</td>
+          <td><span class="tag-crit">Imminent Breakdown Hazard</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Parameter 2: Tan Delta (&tan;&delta;) Loss Criteria (25% Weight)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Mean &tan;&delta; at U<sub>0</sub></th>
+          <th>Differential &Delta;&tan;&delta;</th>
+          <th>Severity Score (S<sub>2</sub>)</th>
+          <th>Penalty Contribution</th>
+          <th>IEEE 400.2 Classification</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>&lt; 1.2 &times; 10<sup>-3</sup></td>
+          <td>&lt; 0.6 &times; 10<sup>-3</sup></td>
+          <td>0</td>
+          <td>0.00%</td>
+          <td><span class="tag-good">No Action Required (Good)</span></td>
+        </tr>
+        <tr>
+          <td>1.2 &times; 10<sup>-3</sup> to 2.2 &times; 10<sup>-3</sup></td>
+          <td>0.6 &times; 10<sup>-3</sup> to 1.0 &times; 10<sup>-3</sup></td>
+          <td>40</td>
+          <td>10.00%</td>
+          <td><span class="tag-caution">Further Study Advised</span></td>
+        </tr>
+        <tr>
+          <td>&ge; 2.2 &times; 10<sup>-3</sup></td>
+          <td>&ge; 1.0 &times; 10<sup>-3</sup></td>
+          <td>100</td>
+          <td>25.00%</td>
+          <td><span class="tag-crit">Action Required (High Loss)</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Parameter 3: Insulation Resistance (15% Weight)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Insulation Resistance (R<sub>iso</sub>)</th>
+          <th>Severity Score (S<sub>3</sub>)</th>
+          <th>Penalty Contribution</th>
+          <th>Condition Assessment</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>&ge; 50 G&Omega;</td>
+          <td>0</td>
+          <td>0.00%</td>
+          <td><span class="tag-good">High Dielectric Isolation</span></td>
+        </tr>
+        <tr>
+          <td>10 &le; R<sub>iso</sub> &lt; 50 G&Omega;</td>
+          <td>30</td>
+          <td>4.50%</td>
+          <td><span class="tag-mod">Minor Contamination / Mild Aging</span></td>
+        </tr>
+        <tr>
+          <td>1 &le; R<sub>iso</sub> &lt; 10 G&Omega;</td>
+          <td>70</td>
+          <td>10.50%</td>
+          <td><span class="tag-poor">High Leakage / Probable Moisture</span></td>
+        </tr>
+        <tr>
+          <td>&lt; 1 G&Omega;</td>
+          <td>100</td>
+          <td>15.00%</td>
+          <td><span class="tag-crit">Critical Dielectric Breakdown</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Parameter 4: Thermal & Surface Temperature (15% Weight)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Surface Temperature (T<sub>s</sub>)</th>
+          <th>Severity Score (S<sub>4</sub>)</th>
+          <th>Penalty Contribution</th>
+          <th>Thermal Operating Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>T<sub>s</sub> &lt; 50&deg;C</td>
+          <td>0</td>
+          <td>0.00%</td>
+          <td><span class="tag-good">Normal Operating Zone</span></td>
+        </tr>
+        <tr>
+          <td>50&deg;C &le; T<sub>s</sub> &lt; 70&deg;C</td>
+          <td>35</td>
+          <td>5.25%</td>
+          <td><span class="tag-mod">Warm / Moderate Continuous Load</span></td>
+        </tr>
+        <tr>
+          <td>70&deg;C &le; T<sub>s</sub> &lt; 90&deg;C</td>
+          <td>75</td>
+          <td>11.25%</td>
+          <td><span class="tag-poor">Hotspot Warning / Nearing Thermal Limit</span></td>
+        </tr>
+        <tr>
+          <td>T<sub>s</sub> &ge; 90&deg;C</td>
+          <td>100</td>
+          <td>15.00%</td>
+          <td><span class="tag-crit">Severe Thermal Runaway Risk</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Parameter 5: Sheath Circulating Current Ratio (10% Weight)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Sheath Current Ratio (I<sub>sheath</sub> / I<sub>load</sub>)</th>
+          <th>Severity Score (S<sub>5</sub>)</th>
+          <th>Penalty Contribution</th>
+          <th>Earthing System Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Ratio &lt; 10%</td>
+          <td>0</td>
+          <td>0.00%</td>
+          <td><span class="tag-good">Normal Cross-Bonding / Single Point</span></td>
+        </tr>
+        <tr>
+          <td>10% &le; Ratio &lt; 25%</td>
+          <td>40</td>
+          <td>4.00%</td>
+          <td><span class="tag-caution">Moderate Sheath Circulating Current</span></td>
+        </tr>
+        <tr>
+          <td>Ratio &ge; 25%</td>
+          <td>100</td>
+          <td>10.00%</td>
+          <td><span class="tag-crit">Severe Earthing / SVL Fault</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>4. Critical Penalty Override Rule (Safety Ceiling)</h2>
+    <div class="formula-box">
+      Final HI = Min ( Base HI, Critical Safety Cap )
+    </div>
+    <p>
+      To prevent minor healthy parameters from masking a fatal localized defect:
+    </p>
+    <ul>
+      <li>If <strong>PD &ge; 1000 pC</strong> or Discharge = <em>Surface / Corona</em>: Final HI is capped at <strong>45% (Poor/Critical)</strong>.</li>
+      <li>If <strong>Tan Delta</strong> IEEE Status is <em>Action Required</em>: Final HI is capped at <strong>45%</strong>.</li>
+      <li>If <strong>Temperature &ge; 90&deg;C</strong> or <strong>IR &lt; 1 G&Omega;</strong>: Final HI is capped at <strong>40%</strong>.</li>
+    </ul>
+
+    <h2>5. Health Index Classification Bands & Action Protocols</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Health Index</th>
+          <th>Condition</th>
+          <th>Action Protocol</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>85% - 100%</strong></td>
+          <td><span class="tag-good">Good</span></td>
+          <td>Routine periodic inspection cycle (every 3 to 5 years).</td>
+        </tr>
+        <tr>
+          <td><strong>70% - 84%</strong></td>
+          <td><span class="tag-mod">Moderate</span></td>
+          <td>Annual condition monitoring; trend analysis of telemetry.</td>
+        </tr>
+        <tr>
+          <td><strong>50% - 69%</strong></td>
+          <td><span class="tag-caution">Caution</span></td>
+          <td>Schedule diagnostic re-test within 6 months; pinpoint joint issues.</td>
+        </tr>
+        <tr>
+          <td><strong>30% - 49%</strong></td>
+          <td><span class="tag-poor">Poor</span></td>
+          <td>Plan refurbishment or replacement within 30 to 60 days.</td>
+        </tr>
+        <tr>
+          <td><strong>0% - 29%</strong></td>
+          <td><span class="tag-crit">Critical</span></td>
+          <td>Immediate de-energization or load shift; emergency repair.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>6. 3&times;3 Failure Risk Matrix</h2>
+    <div class="formula-box">
+      Risk Level = Probability of Failure (PoF) &times; Consequence of Failure (CoF)
+    </div>
+    <ul>
+      <li><strong>Probability of Failure (PoF):</strong> High (HI &lt; 50%), Medium (50% &le; HI &lt; 75%), Low (HI &ge; 75%).</li>
+      <li><strong>Consequence of Failure (CoF):</strong> High (115/230 kV, Critical Substation, or Asset Value &gt; 5M THB), Medium (22/33 kV Trunk Feeder), Low (Radial/Spur Feeder).</li>
+    </ul>
+
+    <h2>7. Regional Google Sheets Column Index Reference</h2>
+    <p>All 12 regional Google Sheets extract telemetry from Tab 1 (<em>General Information</em>):</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Column</th>
+          <th>Field Name</th>
+          <th>Column</th>
+          <th>Field Name</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Col Q</strong></td>
+          <td>Production Month</td>
+          <td><strong>Col Z</strong></td>
+          <td>Substation ID</td>
+        </tr>
+        <tr>
+          <td><strong>Col R</strong></td>
+          <td>Installation Date (dd/mm/yyyy)</td>
+          <td><strong>Col AA</strong></td>
+          <td>Operate ID</td>
+        </tr>
+        <tr>
+          <td><strong>Col S</strong></td>
+          <td>WBS Code</td>
+          <td><strong>Col AB</strong></td>
+          <td>Serial Number</td>
+        </tr>
+        <tr>
+          <td><strong>Col T</strong></td>
+          <td>Business Type</td>
+          <td><strong>Col AC</strong></td>
+          <td>Equipment Model</td>
+        </tr>
+        <tr>
+          <td><strong>Col U</strong></td>
+          <td>Cost Center</td>
+          <td><strong>Col AD</strong></td>
+          <td>Work Order Number</td>
+        </tr>
+        <tr>
+          <td><strong>Col V</strong></td>
+          <td>GISTAG Identifier</td>
+          <td><strong>Col AE</strong></td>
+          <td>Cable Size / Cross Section</td>
+        </tr>
+        <tr>
+          <td><strong>Col W</strong></td>
+          <td>Equipment Class</td>
+          <td><strong>Col AF</strong></td>
+          <td>Asset Value (THB)</td>
+        </tr>
+        <tr>
+          <td><strong>Col X</strong></td>
+          <td>Contract Number</td>
+          <td><strong>Col AG</strong></td>
+          <td>Equipment ID</td>
+        </tr>
+        <tr>
+          <td><strong>Col Y</strong></td>
+          <td>Feeder ID</td>
+          <td><strong>Col AH</strong></td>
+          <td>QR Document Link</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #cbd5e1; text-align: center; font-size: 12px; color: #64748b;">
+      Provincial Electricity Authority (PEA) Underground Cable Asset Management System &bull; Technical Manual
+    </div>
+  </div>
+
+</body>
+</html>
