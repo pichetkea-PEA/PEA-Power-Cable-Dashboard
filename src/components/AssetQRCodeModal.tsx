@@ -49,7 +49,7 @@ export function AssetQRCodeModal({ asset, onClose, onNavigateToRecord }: AssetQR
 
   // Download QR Code as PNG image file
   const handleDownloadPNG = () => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
     
     // Create a composite canvas with logo & label metadata for a professional tag
     const qrCanvas = canvasRef.current;
@@ -494,23 +494,37 @@ export function QRScannerModal({ onClose, onScanSuccess }: QRScannerModalProps) 
   };
 
   const tickVideo = () => {
-    if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height, {
-          inversionAttempts: 'dontInvert'
-        });
+    if (
+      videoRef.current &&
+      videoRef.current.readyState >= 2 &&
+      videoRef.current.videoWidth > 0 &&
+      videoRef.current.videoHeight > 0
+    ) {
+      try {
+        const width = videoRef.current.videoWidth;
+        const height = videoRef.current.videoHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx && width > 0 && height > 0) {
+          ctx.drawImage(videoRef.current, 0, 0, width, height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          if (imageData && imageData.data && imageData.width > 0 && imageData.height > 0) {
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'dontInvert'
+            });
 
-        if (code && code.data) {
-          processQRResult(code.data);
-          stopCamera();
-          return;
+            if (code && code.data) {
+              processQRResult(code.data);
+              stopCamera();
+              return;
+            }
+          }
         }
+      } catch (err) {
+        // Silently ignore transient frame capture errors while video initializes
+        console.debug("Frame capture skipped:", err);
       }
     }
     animFrameRef.current = requestAnimationFrame(tickVideo);
@@ -520,25 +534,43 @@ export function QRScannerModal({ onClose, onScanSuccess }: QRScannerModalProps) 
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const objectUrl = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      URL.revokeObjectURL(objectUrl);
+      const width = img.naturalWidth || img.width;
+      const height = img.naturalHeight || img.height;
+      if (width <= 0 || height <= 0) {
+        alert('Invalid image dimensions. Please try another image file.');
+        return;
+      }
 
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
 
-      if (code && code.data) {
-        processQRResult(code.data);
-      } else {
-        alert('No valid QR code detected in the uploaded image. Please try another image or enter the Equipment ID manually.');
+        ctx.drawImage(img, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+        if (code && code.data) {
+          processQRResult(code.data);
+        } else {
+          alert('No valid QR code detected in the uploaded image. Please try another image or enter the Equipment ID manually.');
+        }
+      } catch (err) {
+        console.error("Error reading QR image:", err);
+        alert('Failed to read image data. Please upload a clear QR code image or enter ID manually.');
       }
     };
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      alert('Failed to load the selected image file.');
+    };
+    img.src = objectUrl;
   };
 
   const processQRResult = (qrText: string) => {

@@ -90,7 +90,8 @@ import {
   QrCode,
   FileSpreadsheet,
   Copy,
-  ShieldCheck
+  ShieldCheck,
+  ZoomIn
 } from 'lucide-react';
 import { AssetQRCodeModal, QRScannerModal } from './AssetQRCodeModal';
 import OnlinePrpdDiagnostics from './diagnostics/OnlinePrpdDiagnostics';
@@ -167,6 +168,16 @@ export default function AssetRecord({
   const [showQRModal, setShowQRModal] = useState<boolean>(false);
   const [showScannerModal, setShowScannerModal] = useState<boolean>(false);
   const [qrAsset, setQrAsset] = useState<CableAsset | null>(null);
+
+  // --- Topic 3: Enlarged Picture Modal State ---
+  const [enlargedImage, setEnlargedImage] = useState<{
+    url: string;
+    fallbackUrl?: string;
+    title: string;
+    subtitle?: string;
+    type?: 'visual' | 'thermal' | 'satellite';
+    externalUrl?: string;
+  } | null>(null);
 
   // Derived state: keep only the latest revision of each unique equipment ID for general browsing & search
   const latestAssets = useMemo(() => {
@@ -744,6 +755,18 @@ export default function AssetRecord({
   const [thermalFile, setThermalFile] = useState<File | null>(null);
   const [visualPreview, setVisualPreview] = useState<string>('');
   const [thermalPreview, setThermalPreview] = useState<string>('');
+
+  // Close enlarged image modal on ESC key
+  useEffect(() => {
+    if (!enlargedImage) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setEnlargedImage(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [enlargedImage]);
 
   const currentAssetArea = useMemo(() => {
     if (!selectedAsset) return 'N1';
@@ -2844,11 +2867,25 @@ export default function AssetRecord({
                       <div className="flex items-center justify-between">
                         {renderFieldLabel('Visual Light Photograph', 'visualPictureUrl')}
                       </div>
-                      <div className={`rounded-lg overflow-hidden bg-white p-1 transition-all ${
-                        highlightedFields.has('visualPictureUrl')
-                          ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
-                          : 'border border-gray-200'
-                      }`}>
+                      <div 
+                        onClick={() => {
+                          const imgUrl = visualPreview || editVisualUrl || 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
+                          setEnlargedImage({
+                            url: imgUrl,
+                            fallbackUrl: 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400',
+                            title: 'Visual Light Photograph',
+                            subtitle: `${selectedAsset.equipmentId || selectedAsset.peaNumber || 'Asset'} • Optical Inspection Record`,
+                            type: 'visual',
+                            externalUrl: imgUrl
+                          });
+                        }}
+                        className={`rounded-lg overflow-hidden bg-white p-1 transition-all cursor-pointer group relative ${
+                          highlightedFields.has('visualPictureUrl')
+                            ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                            : 'border border-gray-200 hover:border-purple-400 hover:shadow-md'
+                        }`}
+                        title="Click to view larger image"
+                      >
                         <img
                           src={visualPreview || editVisualUrl || 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400'}
                           alt="Visual Light Capture"
@@ -2856,8 +2893,14 @@ export default function AssetRecord({
                           onError={(e) => {
                             e.currentTarget.src = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
                           }}
-                          className="w-full h-32 object-cover rounded-md"
+                          className="w-full h-32 object-cover rounded-md group-hover:scale-[1.02] transition-transform duration-200"
                         />
+                        <div className="absolute inset-1 rounded-md bg-slate-900/0 group-hover:bg-slate-900/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <span className="bg-white/95 text-gray-900 text-[10px] font-bold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1.5 backdrop-blur-xs">
+                            <ZoomIn className="w-3 h-3 text-purple-700" />
+                            Click to Enlarge
+                          </span>
+                        </div>
                       </div>
                       {isEditing && (
                         <input
@@ -2874,11 +2917,25 @@ export default function AssetRecord({
                       <div className="flex items-center justify-between">
                         {renderFieldLabel('Thermal / Infrared Snapshot', 'thermalImageUrl')}
                       </div>
-                      <div className={`rounded-lg overflow-hidden bg-white p-1 transition-all ${
-                        highlightedFields.has('thermalImageUrl')
-                          ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
-                          : 'border border-gray-200'
-                      }`}>
+                      <div 
+                        onClick={() => {
+                          const imgUrl = thermalPreview || editThermalUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
+                          setEnlargedImage({
+                            url: imgUrl,
+                            fallbackUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400',
+                            title: 'Thermal / Infrared Snapshot',
+                            subtitle: `${selectedAsset.equipmentId || selectedAsset.peaNumber || 'Asset'} • Thermography Diagnostic Record`,
+                            type: 'thermal',
+                            externalUrl: imgUrl
+                          });
+                        }}
+                        className={`rounded-lg overflow-hidden bg-white p-1 transition-all cursor-pointer group relative ${
+                          highlightedFields.has('thermalImageUrl')
+                            ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                            : 'border border-gray-200 hover:border-purple-400 hover:shadow-md'
+                        }`}
+                        title="Click to view larger image"
+                      >
                         <img
                           src={thermalPreview || editThermalUrl || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400'}
                           alt="Thermography Diagnostic"
@@ -2886,8 +2943,14 @@ export default function AssetRecord({
                           onError={(e) => {
                             e.currentTarget.src = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
                           }}
-                          className="w-full h-32 object-cover rounded-md"
+                          className="w-full h-32 object-cover rounded-md group-hover:scale-[1.02] transition-transform duration-200"
                         />
+                        <div className="absolute inset-1 rounded-md bg-slate-900/0 group-hover:bg-slate-900/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <span className="bg-white/95 text-gray-900 text-[10px] font-bold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1.5 backdrop-blur-xs">
+                            <ZoomIn className="w-3 h-3 text-purple-700" />
+                            Click to Enlarge
+                          </span>
+                        </div>
                       </div>
                       {isEditing && (
                         <input
@@ -2903,6 +2966,8 @@ export default function AssetRecord({
                     {(() => {
                       const mapLat = editLat ? (parseFloat(editLat) || 13.7563) : (selectedAsset?.gps?.lat || 13.7563);
                       const mapLng = editLng ? (parseFloat(editLng) || 100.5018) : (selectedAsset?.gps?.lng || 100.5018);
+                      const satelliteUrl = `/api/map-image?lat=${mapLat}&lng=${mapLng}`;
+                      const fallbackUrl = `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${mapLng - 0.003},${mapLat - 0.002},${mapLng + 0.003},${mapLat + 0.002}&bboxSR=4326&size=1000,600&format=png&f=image`;
                       return (
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
@@ -2920,25 +2985,44 @@ export default function AssetRecord({
                               <span>Open Maps</span>
                             </a>
                           </div>
-                          <div className={`rounded-lg overflow-hidden bg-white p-1 relative group transition-all ${
-                            highlightedFields.has('gps')
-                              ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
-                              : 'border border-gray-200'
-                          }`}>
+                          <div 
+                            onClick={() => {
+                              setEnlargedImage({
+                                url: satelliteUrl,
+                                fallbackUrl,
+                                title: 'Equipment Satellite Location',
+                                subtitle: `Coordinates: ${mapLat.toFixed(5)}, ${mapLng.toFixed(5)} • ${selectedAsset.substationName || selectedAsset.city || ''}`,
+                                type: 'satellite',
+                                externalUrl: `https://www.google.com/maps/search/?api=1&query=${mapLat},${mapLng}`
+                              });
+                            }}
+                            className={`rounded-lg overflow-hidden bg-white p-1 relative group transition-all cursor-pointer ${
+                              highlightedFields.has('gps')
+                                ? 'border-2 border-amber-500 ring-2 ring-indigo-500/40 edited-photo-box'
+                                : 'border border-gray-200 hover:border-purple-400 hover:shadow-md'
+                            }`}
+                            title="Click to view larger satellite image"
+                          >
                             <img
-                              src={`/api/map-image?lat=${mapLat}&lng=${mapLng}`}
+                              src={satelliteUrl}
                               alt="Equipment Satellite Location"
                               referrerPolicy="no-referrer"
                               onError={(e) => {
                                 const target = e.currentTarget;
-                                const fallbackUrl = `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${mapLng - 0.002},${mapLat - 0.001},${mapLng + 0.002},${mapLat + 0.001}&bboxSR=4326&size=600,300&format=png&f=image`;
-                                if (target.src !== fallbackUrl) {
-                                  target.src = fallbackUrl;
+                                const fallbackUrlSmall = `https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox=${mapLng - 0.002},${mapLat - 0.001},${mapLng + 0.002},${mapLat + 0.001}&bboxSR=4326&size=600,300&format=png&f=image`;
+                                if (target.src !== fallbackUrlSmall) {
+                                  target.src = fallbackUrlSmall;
                                 }
                               }}
-                              className="w-full h-32 object-cover rounded-md"
+                              className="w-full h-32 object-cover rounded-md group-hover:scale-[1.02] transition-transform duration-200"
                             />
-                            <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-white text-[9px] font-mono px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
+                            <div className="absolute inset-1 rounded-md bg-slate-900/0 group-hover:bg-slate-900/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 z-10">
+                              <span className="bg-white/95 text-gray-900 text-[10px] font-bold px-2.5 py-1 rounded-full shadow-md flex items-center gap-1.5 backdrop-blur-xs">
+                                <ZoomIn className="w-3 h-3 text-purple-700" />
+                                Click to Enlarge
+                              </span>
+                            </div>
+                            <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-white text-[9px] font-mono px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs z-10">
                               <MapPin className="w-2.5 h-2.5 text-purple-400 shrink-0" />
                               <span>{mapLat.toFixed(5)}, {mapLng.toFixed(5)}</span>
                             </div>
@@ -3447,6 +3531,89 @@ export default function AssetRecord({
         isComplete={progressModal.isComplete}
         onClose={() => setProgressModal(prev => ({ ...prev, isOpen: false }))}
       />
+
+      {/* --- TOPIC 3: ENLARGED PICTURE LIGHTBOX MODAL --- */}
+      {enlargedImage && (
+        <div 
+          id="enlarged-picture-lightbox"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 transition-opacity duration-200 cursor-pointer"
+          onClick={() => setEnlargedImage(null)}
+        >
+          <div 
+            className="relative bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 bg-slate-800/90 border-b border-slate-700/80">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/20 border border-purple-400/30 flex items-center justify-center text-purple-300 shrink-0">
+                  {enlargedImage.type === 'thermal' ? <Activity className="w-4 h-4" /> :
+                   enlargedImage.type === 'satellite' ? <MapPin className="w-4 h-4" /> :
+                   <Camera className="w-4 h-4" />}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-black text-white tracking-wide truncate">
+                    {enlargedImage.title}
+                  </h3>
+                  {enlargedImage.subtitle && (
+                    <p className="text-[11px] text-slate-400 font-medium truncate">
+                      {enlargedImage.subtitle}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {enlargedImage.externalUrl && (
+                  <a
+                    href={enlargedImage.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700/60 rounded-lg transition-colors flex items-center gap-1 text-xs font-semibold"
+                    title="Open full-size in new tab"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Open External</span>
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setEnlargedImage(null)}
+                  className="p-1.5 text-slate-400 hover:text-white hover:bg-rose-500/20 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
+                  title="Close (or click outside)"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Image Body */}
+            <div className="flex-1 bg-black/75 p-3 sm:p-6 flex items-center justify-center overflow-auto min-h-[260px] max-h-[72vh]">
+              <img
+                src={enlargedImage.url}
+                alt={enlargedImage.title}
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  if (enlargedImage.fallbackUrl && e.currentTarget.src !== enlargedImage.fallbackUrl) {
+                    e.currentTarget.src = enlargedImage.fallbackUrl;
+                  }
+                }}
+                className="max-h-[68vh] max-w-full w-auto object-contain rounded-lg shadow-2xl transition-all"
+              />
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-2.5 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+              <span className="font-mono text-slate-300 truncate max-w-[200px] sm:max-w-md">
+                {selectedAsset?.equipmentId || selectedAsset?.peaNumber || 'Asset Record'}
+              </span>
+              <span className="text-slate-400 flex items-center gap-1.5 text-[10px] shrink-0">
+                Click outside this dialog or press <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-[9px] text-slate-300 font-mono">ESC</kbd> to exit
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
