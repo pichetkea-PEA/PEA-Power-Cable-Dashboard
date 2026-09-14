@@ -42,7 +42,8 @@ import {
   Copy,
   Database,
   Download,
-  Loader2
+  Loader2,
+  ShieldCheck
 } from 'lucide-react';
 import { 
   updateSheetRow, 
@@ -199,6 +200,29 @@ export default function AdminRegistrationSuite({
   const [showOtherDuplicateModal, setShowOtherDuplicateModal] = useState<boolean>(false);
   const [savedDataRowsForAutoResolve, setSavedDataRowsForAutoResolve] = useState<string[][]>([]);
   const [savedHeaderRowForAutoResolve, setSavedHeaderRowForAutoResolve] = useState<string[]>([]);
+  const [canUpdateAdsAaFromCsv, setCanUpdateAdsAaFromCsv] = useState<boolean>(false);
+
+  // Pop-up modal asking user to select import option right after file is selected and uploaded
+  const [showImportOptionModal, setShowImportOptionModal] = useState<boolean>(false);
+  const [isCheckingPeaDuplicates, setIsCheckingPeaDuplicates] = useState<boolean>(false);
+  const [isOption1Locked, setIsOption1Locked] = useState<boolean>(false);
+  const [option1LockedReason, setOption1LockedReason] = useState<string>('');
+
+  // 3 Scenarios checking state for PEA Duplicate CSV upload
+  const [showScenarioResolutionModal, setShowScenarioResolutionModal] = useState<boolean>(false);
+  const [showScenario2ExitModal, setShowScenario2ExitModal] = useState<boolean>(false);
+  const [scenario2ExitRows, setScenario2ExitRows] = useState<any[]>([]);
+  const [scenarioAnalysisData, setScenarioAnalysisData] = useState<{
+    uniquePeaRows: { rowNum: number; csvRowIndex: number; row: string[]; pea: string }[];
+    scenario1Rows: any[];
+    scenario2Rows: any[];
+    scenario3Rows: any[];
+    scenarioDiffAdsAaRows: any[];
+    allScenarioRecords: any[];
+  } | null>(null);
+  const [isSavingScenarioUpdates, setIsSavingScenarioUpdates] = useState<boolean>(false);
+  const [scenarioSaveStatusMsg, setScenarioSaveStatusMsg] = useState<string>('');
+  const [scenarioGlobalChoice, setScenarioGlobalChoice] = useState<'new_values' | 'keep_existing'>('new_values');
 
   // Integrity checks duplicates state
   const [integrityFilterType, setIntegrityFilterType] = useState<'all' | 'pea' | 'sap' | 'aa'>('all');
@@ -592,22 +616,44 @@ export default function AdminRegistrationSuite({
             normalizeIdentifier(matchAsset.assetNumber) === rawAa
           );
           if (!isExact) {
+            const hasSapInRow = Boolean(
+              rawAds && rawAa &&
+              !BLANK_IDENTIFIERS_SET.has(rawAds.toLowerCase()) &&
+              !BLANK_IDENTIFIERS_SET.has(rawAa.toLowerCase())
+            );
+            const dbMissingAdsAa = Boolean(
+              (!matchAsset.adsNumber || BLANK_IDENTIFIERS_SET.has(matchAsset.adsNumber.trim().toLowerCase())) &&
+              (!matchAsset.assetNumber || BLANK_IDENTIFIERS_SET.has(matchAsset.assetNumber.trim().toLowerCase()))
+            );
             peaDuplicates.push({
               type: 'PEA_DUPLICATE',
               value: rawPea,
               rowNum,
               existingAsset: matchAsset,
-              csvRowIndex: i
+              csvRowIndex: i,
+              csvAds: (cols[5] || '').trim(),
+              csvAa: (cols[6] || '').trim(),
+              hasSapNumbers: hasSapInRow,
+              existingHasNoAdsAa: dbMissingAdsAa
             });
           }
         }
         // internal CSV duplicate check
         else if (seenCsvPea.has(rawPea)) {
+          const hasSapInRow = Boolean(
+            rawAds && rawAa &&
+            !BLANK_IDENTIFIERS_SET.has(rawAds.toLowerCase()) &&
+            !BLANK_IDENTIFIERS_SET.has(rawAa.toLowerCase())
+          );
           peaDuplicates.push({
             type: 'PEA_DUPLICATE',
             value: rawPea,
             rowNum,
-            csvRowIndex: i
+            csvRowIndex: i,
+            csvAds: (cols[5] || '').trim(),
+            csvAa: (cols[6] || '').trim(),
+            hasSapNumbers: hasSapInRow,
+            existingHasNoAdsAa: false
           });
         } else {
           seenCsvPea.set(rawPea, rowNum);
@@ -682,6 +728,561 @@ export default function AdminRegistrationSuite({
     return { exactMatch, peaDuplicates, otherDuplicates };
   };
 
+  const COMPARISON_COLUMNS = [
+    { csvIdx: 0, sheetColIdx: 3, label: 'Voltage Level', dbField: 'voltageLevel', getDbVal: (a: CableAsset) => a.voltageLevel },
+    { csvIdx: 1, sheetColIdx: 4, label: 'PEA Area', dbField: 'area', getDbVal: (a: CableAsset) => getAssetArea(a) },
+    { csvIdx: 2, sheetColIdx: 4, label: 'City', dbField: 'city', getDbVal: (a: CableAsset) => a.city },
+    { csvIdx: 4, sheetColIdx: 8, label: 'Location Type', dbField: 'locationType', getDbVal: (a: CableAsset) => a.locationType },
+    { csvIdx: 7, sheetColIdx: 5, label: 'Equipment Type', dbField: 'equipmentType', getDbVal: (a: CableAsset) => a.equipmentType },
+    { csvIdx: 8, sheetColIdx: 30, label: 'Size', dbField: 'size', getDbVal: (a: CableAsset) => a.size },
+    { csvIdx: 10, sheetColIdx: 26, label: 'Operate ID', dbField: 'operateId', getDbVal: (a: CableAsset) => a.operateId },
+    { csvIdx: 11, sheetColIdx: 27, label: 'Serial Number', dbField: 'serialNumber', getDbVal: (a: CableAsset) => a.serialNumber },
+    { csvIdx: 12, sheetColIdx: 6, label: 'Manufacturer', dbField: 'manufacturer', getDbVal: (a: CableAsset) => a.manufacturer },
+    { csvIdx: 13, sheetColIdx: 28, label: 'Model', dbField: 'model', getDbVal: (a: CableAsset) => a.model },
+    { csvIdx: 14, sheetColIdx: 7, label: 'Country', dbField: 'country', getDbVal: (a: CableAsset) => a.country },
+    { csvIdx: 15, sheetColIdx: 16, label: 'Production Month', dbField: 'productionMonth', getDbVal: (a: CableAsset) => a.productionMonth },
+    { csvIdx: 16, sheetColIdx: 12, label: 'Year of Registration', dbField: 'yearOfRegistration', getDbVal: (a: CableAsset) => a.yearOfRegistration ? String(a.yearOfRegistration) : '' },
+    { csvIdx: 17, sheetColIdx: 9, label: 'Substation Name', dbField: 'substationName', getDbVal: (a: CableAsset) => a.substationName },
+    { csvIdx: 18, sheetColIdx: 25, label: 'Substation ID', dbField: 'substationId', getDbVal: (a: CableAsset) => a.substationId },
+    { csvIdx: 19, sheetColIdx: 24, label: 'Feeder', dbField: 'feeder', getDbVal: (a: CableAsset) => a.feeder },
+    { csvIdx: 20, sheetColIdx: 10, label: 'Landmark', dbField: 'landmark', getDbVal: (a: CableAsset) => a.landmark },
+    { csvIdx: 21, sheetColIdx: 17, label: 'Installation Date', dbField: 'installationDate', getDbVal: (a: CableAsset) => a.installationDate },
+    { csvIdx: 22, sheetColIdx: 18, label: 'WBS', dbField: 'wbs', getDbVal: (a: CableAsset) => a.wbs },
+    { csvIdx: 23, sheetColIdx: 29, label: 'Work Order', dbField: 'workOrder', getDbVal: (a: CableAsset) => a.workOrder },
+    { csvIdx: 24, sheetColIdx: 19, label: 'Business Type', dbField: 'businessType', getDbVal: (a: CableAsset) => a.businessType },
+    { csvIdx: 25, sheetColIdx: 20, label: 'Cost Center', dbField: 'costCenter', getDbVal: (a: CableAsset) => a.costCenter },
+    { csvIdx: 26, sheetColIdx: 21, label: 'GIS Tag', dbField: 'gistag', getDbVal: (a: CableAsset) => a.gistag },
+    { csvIdx: 27, sheetColIdx: 22, label: 'Class', dbField: 'class', getDbVal: (a: CableAsset) => a.class },
+    { csvIdx: 28, sheetColIdx: 23, label: 'Contract Number', dbField: 'contractNumber', getDbVal: (a: CableAsset) => a.contractNumber },
+    { csvIdx: 29, sheetColIdx: 31, label: 'Asset Value', dbField: 'assetValue', getDbVal: (a: CableAsset) => a.assetValue },
+    { csvIdx: 31, sheetColIdx: 33, label: 'QR Document', dbField: 'qrDocument', getDbVal: (a: CableAsset) => a.qrDocument },
+  ];
+
+  const normalizeCompareVal = (val?: string | null): string => {
+    if (!val) return '';
+    return String(val).trim().toLowerCase().replace(/\s+/g, ' ');
+  };
+
+  const isDifferentValue = (csvVal: string, dbVal: string, label: string): boolean => {
+    const c = normalizeCompareVal(csvVal);
+    const d = normalizeCompareVal(dbVal);
+    if (!c || BLANK_IDENTIFIERS_SET.has(c)) return false;
+    if (c === d) return false;
+
+    // Numbers with units: e.g. "115" vs "115 kv" or "400" vs "400 sq.mm"
+    const cDigits = c.replace(/[^0-9.]/g, '');
+    const dDigits = d.replace(/[^0-9.]/g, '');
+    if (cDigits && dDigits && cDigits === dDigits) return false;
+
+    return true;
+  };
+
+  const evaluateCsvRegistrationScenarios = (
+    dataRows: string[][]
+  ): {
+    uniquePeaRows: { rowNum: number; csvRowIndex: number; row: string[]; pea: string }[];
+    scenario1Rows: any[];
+    scenario2Rows: any[];
+    scenario3Rows: any[];
+    scenarioDiffAdsAaRows: any[];
+    allScenarioRecords: any[];
+  } => {
+    const existingPeaMap = new Map<string, CableAsset>();
+    assets.forEach(asset => {
+      const p = normalizeIdentifier(asset.peaNumber);
+      if (p) existingPeaMap.set(p, asset);
+    });
+
+    const uniquePeaRows: { rowNum: number; csvRowIndex: number; row: string[]; pea: string }[] = [];
+    const scenario1Rows: any[] = [];
+    const scenario2Rows: any[] = [];
+    const scenario3Rows: any[] = [];
+    const allScenarioRecords: any[] = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
+      const rowNum = i + 2;
+      const rawPea = (row[9] || '').trim();
+      const normalizedPea = normalizeIdentifier(rawPea);
+
+      // If no PEA number or PEA number is not found in existing database (all 12 Google Sheets)
+      if (!normalizedPea || !existingPeaMap.has(normalizedPea)) {
+        uniquePeaRows.push({ rowNum, csvRowIndex: i, row, pea: rawPea });
+        continue;
+      }
+
+      // PEA is already present in database
+      const matchAsset = existingPeaMap.get(normalizedPea)!;
+
+      // 1. Check ADS (col 5) & AA (col 6) in CSV
+      const csvAds = (row[5] || '').trim();
+      const csvAa = (row[6] || '').trim();
+      const csvHasAds = Boolean(csvAds && !BLANK_IDENTIFIERS_SET.has(csvAds.toLowerCase()));
+      const csvHasAa = Boolean(csvAa && !BLANK_IDENTIFIERS_SET.has(csvAa.toLowerCase()));
+      const csvHasBothAdsAa = csvHasAds && csvHasAa;
+
+      // 2. Check ADS & AA in Database asset (assetNumber = ADS, adsNumber = AA)
+      const dbAds = (matchAsset.assetNumber || '').trim();
+      const dbAa = (matchAsset.adsNumber || '').trim();
+      const dbHasAds = Boolean(dbAds && !BLANK_IDENTIFIERS_SET.has(dbAds.toLowerCase()));
+      const dbHasAa = Boolean(dbAa && !BLANK_IDENTIFIERS_SET.has(dbAa.toLowerCase()));
+      const dbHasBothAdsAa = dbHasAds && dbHasAa;
+      const dbAdsAaEmpty = !dbHasAds && !dbHasAa;
+
+      // Check if both upload CSV file and database ALREADY have an ADS and AA number
+      const bothAlreadyHaveAdsAa = (csvHasAds || csvHasAa) && (dbHasAds || dbHasAa);
+      const bothHaveFullAdsAa = csvHasBothAdsAa && dbHasBothAdsAa;
+
+      const adsIsDiff = csvHasAds && isDifferentValue(csvAds, dbAds, 'Equipment Number (ADS)');
+      const aaIsDiff = csvHasAa && isDifferentValue(csvAa, dbAa, 'Account Asset Number (AA)');
+      const hasAdsOrAaDiff = Boolean(adsIsDiff || aaIsDiff);
+      const hasAdsAaConflict = Boolean(bothAlreadyHaveAdsAa && hasAdsOrAaDiff);
+      const isSameAdsAndAa = Boolean((bothHaveFullAdsAa || (csvHasAds && dbHasAds && !aaIsDiff && !adsIsDiff)) && !hasAdsOrAaDiff);
+
+      // 3. Compare other columns
+      const columnDiffs: any[] = [];
+
+      // Note: PEA number, ADS, and AA numbers are permanent identifiers and unable to change.
+      // Therefore, they are not editable in columnDiffs. Only differences in other columns can be updated.
+      if (csvHasBothAdsAa && dbAdsAaEmpty) {
+        // Scenario 1: DB ADS/AA are empty, CSV has ADS & AA
+        columnDiffs.push({
+          csvIdx: 5,
+          sheetColIdx: 14,
+          label: 'Equipment Number (ADS)',
+          dbField: 'assetNumber',
+          dbVal: dbAds || '(Empty in DB)',
+          csvVal: csvAds,
+          useNewValue: true,
+          isAdsAaField: true
+        });
+        columnDiffs.push({
+          csvIdx: 6,
+          sheetColIdx: 15,
+          label: 'Account Asset Number (AA)',
+          dbField: 'adsNumber',
+          dbVal: dbAa || '(Empty in DB)',
+          csvVal: csvAa,
+          useNewValue: true,
+          isAdsAaField: true
+        });
+      }
+
+      for (const col of COMPARISON_COLUMNS) {
+        const csvVal = (row[col.csvIdx] || '').trim();
+        const dbVal = String(col.getDbVal(matchAsset) || '').trim();
+
+        if (!csvVal || BLANK_IDENTIFIERS_SET.has(csvVal.toLowerCase())) {
+          continue; // CSV is blank, do not treat as diff
+        }
+        if (isDifferentValue(csvVal, dbVal, col.label)) {
+          columnDiffs.push({
+            csvIdx: col.csvIdx,
+            sheetColIdx: col.sheetColIdx,
+            label: col.label,
+            dbField: col.dbField,
+            dbVal,
+            csvVal,
+            useNewValue: true,
+            isAdsAaField: false
+          });
+        }
+      }
+
+      let scenario: 1 | 2 | 3;
+      let exitReason = '';
+
+      if (csvHasBothAdsAa && dbAdsAaEmpty) {
+        // Scenario 1: CSV contains ADS & AA, and database ADS & AA are empty
+        scenario = 1;
+      } else if (columnDiffs.length === 0) {
+        // Scenario 2: Both sources have the same number (or both empty) and no other differences
+        scenario = 2;
+        if (bothHaveFullAdsAa && isSameAdsAndAa) {
+          exitReason = 'Same PEA, ADS, and AA numbers already registered in database with identical values.';
+        } else if (dbAdsAaEmpty && !csvHasAds && !csvHasAa) {
+          exitReason = 'Both CSV and database have empty ADS & AA numbers with matching attributes.';
+        } else {
+          exitReason = 'All identifiers and attributes match existing database record.';
+        }
+      } else {
+        // Scenario 3: Different ADS or AA number, or changes in other columns
+        scenario = 3;
+      }
+
+      const record = {
+        rowNum,
+        csvRowIndex: i,
+        row,
+        peaNumber: rawPea,
+        existingAsset: matchAsset,
+        csvAds,
+        csvAa,
+        dbAds,
+        dbAa,
+        scenario,
+        hasAdsAaConflict,
+        isSameAdsAndAa,
+        exitReason,
+        columnDiffs,
+        otherColumnsChanged: columnDiffs.length > 0
+      };
+
+      allScenarioRecords.push(record);
+      if (scenario === 1) scenario1Rows.push(record);
+      else if (scenario === 2) scenario2Rows.push(record);
+      else if (scenario === 3) scenario3Rows.push(record);
+    }
+
+    const scenarioDiffAdsAaRows = allScenarioRecords.filter(r => r.hasAdsAaConflict);
+
+    return { uniquePeaRows, scenario1Rows, scenario2Rows, scenario3Rows, scenarioDiffAdsAaRows, allScenarioRecords };
+  };
+
+  const handleSetAllScenarioChoices = (choice: 'new_values' | 'keep_existing') => {
+    setScenarioGlobalChoice(choice);
+    if (!scenarioAnalysisData) return;
+    const useNew = choice === 'new_values';
+
+    const updateItem = (item: any) => ({
+      ...item,
+      columnDiffs: item.columnDiffs.map((d: any) => ({ ...d, useNewValue: useNew }))
+    });
+
+    setScenarioAnalysisData({
+      ...scenarioAnalysisData,
+      scenario1Rows: scenarioAnalysisData.scenario1Rows.map(updateItem),
+      scenario3Rows: scenarioAnalysisData.scenario3Rows.map(updateItem),
+      scenarioDiffAdsAaRows: (scenarioAnalysisData.scenarioDiffAdsAaRows || []).map(updateItem),
+      allScenarioRecords: scenarioAnalysisData.allScenarioRecords.map(updateItem)
+    });
+  };
+
+  const handleToggleScenarioColumnDiffByRow = (rowNum: number, diffIdx: number, useNew: boolean) => {
+    if (!scenarioAnalysisData) return;
+    const updateItem = (item: any) => {
+      if (item.rowNum !== rowNum) return item;
+      const diffs = item.columnDiffs.map((d: any, i: number) =>
+        i === diffIdx ? { ...d, useNewValue: useNew } : d
+      );
+      return { ...item, columnDiffs: diffs };
+    };
+
+    setScenarioAnalysisData({
+      ...scenarioAnalysisData,
+      scenario1Rows: scenarioAnalysisData.scenario1Rows.map(updateItem),
+      scenario3Rows: scenarioAnalysisData.scenario3Rows.map(updateItem),
+      scenarioDiffAdsAaRows: (scenarioAnalysisData.scenarioDiffAdsAaRows || []).map(updateItem),
+      allScenarioRecords: scenarioAnalysisData.allScenarioRecords.map(updateItem)
+    });
+  };
+
+  const handleExitScenarioUpload = () => {
+    setShowImportOptionModal(false);
+    setShowScenarioResolutionModal(false);
+    setShowScenario2ExitModal(false);
+    setShowExactMatchModal(false);
+    setExactMatchConflict(null);
+    setIsOption1Locked(false);
+    setOption1LockedReason('');
+    setIsCheckingPeaDuplicates(false);
+    setScenarioAnalysisData(null);
+    setScenario2ExitRows([]);
+    setCsvFileObj(null);
+    setCsvParsedRows([]);
+    setSelectedCsvOption(null);
+    setOption1ReviewList([]);
+    setOption2ReviewList([]);
+    const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+    if (fileInput) fileInput.value = '';
+  };
+
+  const startPeaDuplicateCheckingProcess = async (headerRow: string[], dataRows: string[][]) => {
+    setIsCheckingPeaDuplicates(true);
+    setOption2StatusMsg('Checking PEA numbers against all 12 regional Google Sheets...');
+
+    try {
+      // 1. Cross-check for difference values between each column of input CSV and database
+      const scenarioAnalysis = evaluateCsvRegistrationScenarios(dataRows);
+
+      // Case 1: If no duplicated PEA number has found in database this will mark as a new asset registration.
+      // A normal process for new asset register shall be commenced.
+      if (scenarioAnalysis.uniquePeaRows.length === dataRows.length) {
+        console.log(`[CSV Asset Registration] No duplicated PEA numbers found in database. Marking as new asset registration and commencing normal registration process.`);
+        const rows = [headerRow, ...dataRows];
+        setCsvParsedRows(rows);
+        setValidationErrors([]);
+        setOption2StatusMsg('');
+        await handleSelectOption1(rows);
+        return;
+      }
+
+      // Case 2: Duplicated PEA number found in database
+      // Cross-check difference values between each column of input CSV and database
+      const hasAnyColumnDiffs = scenarioAnalysis.scenario1Rows.some(r => r.columnDiffs.length > 0) ||
+        scenarioAnalysis.scenario3Rows.some(r => r.columnDiffs.length > 0) ||
+        scenarioAnalysis.scenarioDiffAdsAaRows.length > 0;
+
+      // Sub-case 2A: Found no change when comparison between uploaded CSV file and database
+      // (Using the original data or found no change -> exit the uploading process)
+      if (!hasAnyColumnDiffs && scenarioAnalysis.uniquePeaRows.length === 0) {
+        console.log(`[CSV Asset Registration] Duplicated PEA found with existing ADS/AA and no column changes detected. Exiting upload process.`);
+        setScenario2ExitRows(scenarioAnalysis.scenario2Rows.length > 0 ? scenarioAnalysis.scenario2Rows : scenarioAnalysis.allScenarioRecords);
+        setShowScenario2ExitModal(true);
+        setCsvFileObj(null);
+        setCsvParsedRows([]);
+        setSelectedCsvOption(null);
+        setOption1ReviewList([]);
+        setOption2ReviewList([]);
+        const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        return;
+      }
+
+      // Sub-case 2B: Differences found in some column(s)
+      // Pop-up will ask user to decide whether they want to do an update on another column
+      // or exit the uploading process (using original data)
+      setSavedHeaderRowForAutoResolve(headerRow);
+      setSavedDataRowsForAutoResolve(dataRows);
+      setScenarioAnalysisData(scenarioAnalysis);
+      setShowScenarioResolutionModal(true);
+    } catch (err: any) {
+      console.error('Error during PEA duplicate checking process:', err);
+      alert(`Error checking PEA duplicates: ${err.message || err}`);
+    } finally {
+      setIsCheckingPeaDuplicates(false);
+      setOption2StatusMsg('');
+    }
+  };
+
+  const handleChooseOption1FromModal = async () => {
+    if (isOption1Locked) {
+      alert(option1LockedReason || "Option 1 is locked. All 3 numbers (PEA, ADS, AA) already exist in the database with differences in other columns. Please select Option 2 to update.");
+      return;
+    }
+    setShowImportOptionModal(false);
+    setSelectedCsvOption(1);
+    await startPeaDuplicateCheckingProcess(savedHeaderRowForAutoResolve, savedDataRowsForAutoResolve);
+  };
+
+  const handleChooseOption2FromModal = async () => {
+    setShowImportOptionModal(false);
+    setSelectedCsvOption(2);
+    if (isOption1Locked) {
+      await startPeaDuplicateCheckingProcess(savedHeaderRowForAutoResolve, savedDataRowsForAutoResolve);
+    } else {
+      const rowsToUse = [savedHeaderRowForAutoResolve, ...savedDataRowsForAutoResolve];
+      await handleSelectOption2(rowsToUse);
+    }
+  };
+
+  const handleExecuteScenarioUpdates = async () => {
+    if (!scenarioAnalysisData) return;
+    setIsSavingScenarioUpdates(true);
+    setScenarioSaveStatusMsg('Preparing database updates across regional sheets...');
+
+    try {
+      const recordsToUpdate = [
+        ...scenarioAnalysisData.scenario1Rows,
+        ...scenarioAnalysisData.scenario3Rows.filter(r => r.columnDiffs.some((d: any) => d.useNewValue))
+      ];
+
+      if (recordsToUpdate.length === 0) {
+        alert('All existing database values were retained. No changes were made to the database.');
+        setIsSavingScenarioUpdates(false);
+        setShowScenarioResolutionModal(false);
+        if (scenarioAnalysisData.uniquePeaRows.length > 0) {
+          const uniqueRows = [savedHeaderRowForAutoResolve, ...scenarioAnalysisData.uniquePeaRows.map(u => u.row)];
+          setCsvParsedRows(uniqueRows);
+          await handleSelectOption1(uniqueRows);
+        } else {
+          handleExitScenarioUpload();
+        }
+        return;
+      }
+
+      // Phase 1: Group batch updates by sheet
+      const sheetsToCheck = spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
+      const cachedSheetsData: Record<string, CableAsset[]> = {};
+
+      setScenarioSaveStatusMsg('Locating asset records across all 12 regional spreadsheets...');
+      if (activeToken && sheetsToCheck.length > 0) {
+        await Promise.all(
+          sheetsToCheck.map(async (sId) => {
+            try {
+              const res = await fetchSheetsData(activeToken, sId);
+              cachedSheetsData[sId] = Array.isArray(res) ? res : ((res as any)?.assets || []);
+            } catch (e) {
+              console.warn(`Failed fetching sheet ${sId}:`, e);
+              cachedSheetsData[sId] = [];
+            }
+          })
+        );
+      }
+
+      const batchUpdatesBySheet: Record<string, { range: string; values: any[][] }[]> = {};
+      const updatedAssetIds: string[] = [];
+
+      for (let i = 0; i < recordsToUpdate.length; i++) {
+        const item = recordsToUpdate[i];
+        const targetPea = (item.peaNumber || '').trim();
+
+        let foundLocations: { spreadsheetId: string; rowIndex: number; rowData: any }[] = [];
+        for (const sId of sheetsToCheck) {
+          const sheetRowsData = cachedSheetsData[sId] || [];
+          sheetRowsData.forEach((ast, assetIndex) => {
+            if (ast.peaNumber && ast.peaNumber.trim().toLowerCase() === targetPea.toLowerCase()) {
+              foundLocations.push({
+                spreadsheetId: sId,
+                rowIndex: assetIndex + 2,
+                rowData: ast
+              });
+            }
+          });
+        }
+
+        if (foundLocations.length === 0) {
+          console.warn(`Could not locate PEA ${targetPea} in fetched sheets.`);
+          continue;
+        }
+
+        const match = foundLocations[0];
+        const existing = match.rowData;
+
+        const getValForSheetCol = (sheetColIdx: number, fallbackDbVal: any) => {
+          const diff = item.columnDiffs.find((d: any) => d.sheetColIdx === sheetColIdx);
+          if (diff && diff.useNewValue) {
+            return diff.csvVal;
+          }
+          return fallbackDbVal !== undefined && fallbackDbVal !== null ? fallbackDbVal : '';
+        };
+
+        const updatedAds = item.scenario === 1 ? (item.csvAds || existing.assetNumber || '') : (existing.assetNumber || '');
+        const updatedAa = item.scenario === 1 ? (item.csvAa || existing.adsNumber || '') : (existing.adsNumber || '');
+
+        const fullRowValues = [
+          existing.number,
+          getBangkokTimestamp(),
+          existing.operatorName || (user?.name || user?.email || 'CSV Update'),
+          getValForSheetCol(3, existing.voltageLevel),
+          getValForSheetCol(4, existing.city),
+          getValForSheetCol(5, existing.equipmentType),
+          getValForSheetCol(6, existing.manufacturer),
+          getValForSheetCol(7, existing.country),
+          getValForSheetCol(8, existing.locationType),
+          getValForSheetCol(9, existing.substationName),
+          getValForSheetCol(10, existing.landmark || 'Primary Feeder Line'),
+          existing.gps ? `${existing.gps.lat}, ${existing.gps.lng}` : '13.7563, 100.5018',
+          getValForSheetCol(12, existing.yearOfRegistration),
+          existing.peaNumber,
+          updatedAds,
+          updatedAa,
+          getValForSheetCol(16, existing.productionMonth || ''),
+          getValForSheetCol(17, existing.installationDate || ''),
+          getValForSheetCol(18, existing.wbs || ''),
+          getValForSheetCol(19, existing.businessType || ''),
+          getValForSheetCol(20, existing.costCenter || ''),
+          getValForSheetCol(21, existing.gistag || ''),
+          getValForSheetCol(22, existing.class || ''),
+          getValForSheetCol(23, existing.contractNumber || ''),
+          getValForSheetCol(24, existing.feeder || ''),
+          getValForSheetCol(25, existing.substationId || ''),
+          getValForSheetCol(26, existing.operateId || ''),
+          getValForSheetCol(27, existing.serialNumber || ''),
+          getValForSheetCol(28, existing.model || ''),
+          getValForSheetCol(29, existing.workOrder || ''),
+          getValForSheetCol(30, existing.size || ''),
+          getValForSheetCol(31, existing.assetValue || ''),
+          existing.equipmentId || '',
+          getValForSheetCol(33, existing.qrDocument || '')
+        ];
+
+        if (!batchUpdatesBySheet[match.spreadsheetId]) {
+          batchUpdatesBySheet[match.spreadsheetId] = [];
+        }
+        batchUpdatesBySheet[match.spreadsheetId].push({
+          range: `'General Information'!A${match.rowIndex}:AH${match.rowIndex}`,
+          values: [fullRowValues]
+        });
+
+        // Update local memory
+        const localIdx = assets.findIndex(a => a.peaNumber && a.peaNumber.trim().toLowerCase() === targetPea.toLowerCase());
+        if (localIdx !== -1) {
+          const t = assets[localIdx];
+          if (item.scenario === 1) {
+            t.assetNumber = updatedAds;
+            t.adsNumber = updatedAa;
+          }
+          item.columnDiffs.forEach((d: any) => {
+            if (d.useNewValue && d.dbField !== 'peaNumber' && d.dbField !== 'assetNumber' && d.dbField !== 'adsNumber') {
+              (t as any)[d.dbField] = d.csvVal;
+            }
+          });
+          t.latestUpdatedAt = getBangkokTimestamp();
+          t.latestUpdatedBy = user?.name || user?.email || 'CSV Update';
+          t.isEdited = true;
+          updatedAssetIds.push(t.equipmentId || targetPea);
+        }
+      }
+
+      // Phase 2: Save batch updates
+      const sheetIdsList = Object.keys(batchUpdatesBySheet);
+      for (let sIdx = 0; sIdx < sheetIdsList.length; sIdx++) {
+        const sId = sheetIdsList[sIdx];
+        const updates = batchUpdatesBySheet[sId];
+        setScenarioSaveStatusMsg(`Saving ${updates.length} records to sheet ${sIdx + 1}/${sheetIdsList.length}...`);
+        await batchUpdateSheetRows(activeToken, sId, updates);
+      }
+
+      // Phase 3: Log activity & notify
+      const editorName = user?.name || user?.email || 'Admin';
+      const bangkokTime = getBangkokTimestamp();
+      logAssetActivity({
+        type: 'edit',
+        source: 'csv_scenario_update',
+        equipmentId: updatedAssetIds[0] || 'Multiple Assets',
+        equipmentType: 'Cable Asset',
+        voltageLevel: '115 kV',
+        area: 'PEA Regional',
+        operatorName: editorName,
+        userEmail: user?.email,
+        timestamp: bangkokTime,
+        details: `Saved CSV updates for ${recordsToUpdate.length} asset records across database sheets.`,
+        changedFields: ['Scenario CSV Updates']
+      }).catch(e => console.warn('Activity log failed:', e));
+
+      sendAdminNotification({
+        type: 'edit',
+        title: 'Asset Records Updated via CSV',
+        message: `${editorName} updated ${recordsToUpdate.length} asset records in Google Sheets.`,
+        equipmentId: updatedAssetIds[0] || 'Multiple Assets',
+        operatorName: editorName,
+        userEmail: user?.email || '',
+        timestamp: bangkokTime,
+        details: `Updated ${recordsToUpdate.length} assets with SAP ADS/AA & reviewed column data.`,
+        area: 'Regional'
+      }).catch(e => console.warn('Notification failed:', e));
+
+      invalidateFastRegionalIdentifierCache();
+      setCommitSuccess(`Successfully updated ${recordsToUpdate.length} asset records in the database!`);
+      setShowScenarioResolutionModal(false);
+
+      if (scenarioAnalysisData.uniquePeaRows.length > 0) {
+        const uniqueRows = [savedHeaderRowForAutoResolve, ...scenarioAnalysisData.uniquePeaRows.map(u => u.row)];
+        setCsvParsedRows(uniqueRows);
+        await handleSelectOption1(uniqueRows);
+      } else {
+        handleExitScenarioUpload();
+      }
+    } catch (err: any) {
+      console.error('Failed saving scenario updates:', err);
+      alert(`Error updating assets in database: ${err.message}`);
+    } finally {
+      setIsSavingScenarioUpdates(false);
+      setScenarioSaveStatusMsg('');
+    }
+  };
+
   const handleResolvePeaStop = () => {
     setShowPeaDuplicateModal(false);
     setPeaDuplicateConflicts([]);
@@ -691,6 +1292,7 @@ export default function AdminRegistrationSuite({
     setSelectedCsvOption(null);
     setOption1ReviewList([]);
     setOption2ReviewList([]);
+    setCanUpdateAdsAaFromCsv(false);
     const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
     if (fileInput) fileInput.value = '';
   };
@@ -748,6 +1350,20 @@ export default function AdminRegistrationSuite({
     setSavedHeaderRowForAutoResolve([]);
     setSelectedCsvOption(null);
     setOption1ReviewList([]);
+    setCanUpdateAdsAaFromCsv(false);
+  };
+
+  const handleResolvePeaUpdateAdsAa = () => {
+    const fullRows = [savedHeaderRowForAutoResolve, ...savedDataRowsForAutoResolve];
+    setShowPeaDuplicateModal(false);
+    setPeaDuplicateConflicts([]);
+    setSavedDataRowsForAutoResolve([]);
+    setSavedHeaderRowForAutoResolve([]);
+    setValidationErrors([]);
+    setCanUpdateAdsAaFromCsv(false);
+
+    setCsvParsedRows(fullRows);
+    handleSelectOption2(fullRows);
   };
 
   const findCsvDuplicateConflicts = (
@@ -1081,57 +1697,149 @@ export default function AdminRegistrationSuite({
         return;
       }
 
-      // Pre-flight 3-tier duplicate checks for Exact match, PEA duplicate, and ADS/AA duplicate
-      const checkResults = runNewAssetRegistrationCheck(validDataRows);
+      // =========================================================================
+      // PRE-OPTION CROSS-CHECK (PEA Number, ADS Number, AA Number & Other Columns)
+      // =========================================================================
+      // Checking all three numbers comparison with database before user selects option 1 or 2:
+      // 1. If all 3 numbers already in database and found differences in other column(s),
+      //    automatically select Option 2 and lock Option 1 button.
+      // 2. If all 3 numbers already in database and found no differences in other columns,
+      //    pop-up message: "The asset is already registered" and exit uploading process.
+      // =========================================================================
+      const existingPeaMap = new Map<string, CableAsset>();
+      assets.forEach(asset => {
+        const p = normalizeIdentifier(asset.peaNumber);
+        if (p) existingPeaMap.set(p, asset);
+      });
 
-      // Condition A: EXACT REGISTERED MATCH (All 3 match)
-      if (checkResults.exactMatch) {
-        setExactMatchConflict(checkResults.exactMatch);
+      let recordsWithAllThreeInDb = 0;
+      let recordsWithChangesCount = 0;
+      let recordsWithoutChangesCount = 0;
+      const unchangedRecordsList: any[] = [];
+      const changedRecordsList: any[] = [];
+      const uniqueRecordsList: any[] = [];
+
+      for (let i = 0; i < validDataRows.length; i++) {
+        const row = validDataRows[i];
+        const rowNum = i + 2;
+        const rawPea = (row[9] || '').trim();
+        const normalizedPea = normalizeIdentifier(rawPea);
+
+        // Check if PEA number is found in database
+        const matchAsset = normalizedPea ? existingPeaMap.get(normalizedPea) : undefined;
+        if (!matchAsset) {
+          uniqueRecordsList.push({ rowNum, row, pea: rawPea });
+          continue;
+        }
+
+        // Database numbers: Col 14 (assetNumber) is ADS, Col 15 (adsNumber) is AA
+        const dbAds = (matchAsset.assetNumber || '').trim();
+        const dbAa = (matchAsset.adsNumber || '').trim();
+        const dbHasAds = Boolean(dbAds && !BLANK_IDENTIFIERS_SET.has(dbAds.toLowerCase()));
+        const dbHasAa = Boolean(dbAa && !BLANK_IDENTIFIERS_SET.has(dbAa.toLowerCase()));
+
+        // Check if all 3 numbers (PEA, ADS, AA) already exist in database
+        const allThreeInDb = Boolean(matchAsset.peaNumber && dbHasAds && dbHasAa);
+        if (!allThreeInDb) {
+          // Asset exists in DB, but does not have both ADS and AA numbers yet
+          continue;
+        }
+
+        recordsWithAllThreeInDb++;
+
+        const columnDiffs: any[] = [];
+
+        // Compare other columns (PEA, ADS, and AA are permanent identifiers and unable to change)
+        for (const col of COMPARISON_COLUMNS) {
+          const csvVal = (row[col.csvIdx] || '').trim();
+          const dbVal = String(col.getDbVal(matchAsset) || '').trim();
+          if (!csvVal || BLANK_IDENTIFIERS_SET.has(csvVal.toLowerCase())) {
+            continue;
+          }
+          if (isDifferentValue(csvVal, dbVal, col.label)) {
+            columnDiffs.push({
+              label: col.label,
+              csvVal,
+              dbVal,
+              csvIdx: col.csvIdx
+            });
+          }
+        }
+
+        if (columnDiffs.length > 0) {
+          recordsWithChangesCount++;
+          changedRecordsList.push({ rowNum, row, matchAsset, columnDiffs });
+        } else {
+          recordsWithoutChangesCount++;
+          unchangedRecordsList.push({ rowNum, row, matchAsset });
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // SCENARIO 2: All 3 numbers already exist in database and NO differences found
+      // Pop-up message will tell user that "The asset is already registered" and exit uploading process.
+      // -------------------------------------------------------------------------
+      if (
+        recordsWithAllThreeInDb > 0 &&
+        recordsWithChangesCount === 0 &&
+        uniqueRecordsList.length === 0
+      ) {
+        console.log(`[Cross-Check Pre-Option] All 3 numbers exist in database and NO column changes found across all ${recordsWithAllThreeInDb} records. Showing "The asset is already registered" and exiting upload.`);
+        const firstMatch = unchangedRecordsList[0];
+        setExactMatchConflict({
+          existingAsset: firstMatch.matchAsset,
+          rowNum: firstMatch.rowNum,
+          totalCount: unchangedRecordsList.length,
+          allMatches: unchangedRecordsList
+        });
         setShowExactMatchModal(true);
-        
-        setCsvParsedRows([]);
+
+        // Exit uploading process immediately
         setCsvFileObj(null);
+        setCsvParsedRows([]);
         setSelectedCsvOption(null);
         setOption1ReviewList([]);
         setOption2ReviewList([]);
+        setShowImportOptionModal(false);
+        setIsOption1Locked(false);
+        setOption1LockedReason('');
         const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
         if (fileInput) fileInput.value = '';
         return;
       }
 
-      // Condition C: Other duplicates (ADS or AA duplicate) - Tell user and stop uploading
-      if (checkResults.otherDuplicates.length > 0) {
-        setOtherDuplicateConflicts(checkResults.otherDuplicates);
-        setShowOtherDuplicateModal(true);
+      // -------------------------------------------------------------------------
+      // SCENARIO 1: All 3 numbers already exist in database BUT found difference in other column
+      // Automatically select Option 2 and lock the Option 1 button (user cannot select this option).
+      // *** This procedure will work only in the case that at least one of all columns
+      // in database and upload CSV file has a difference value (not work when found nothing change).
+      // -------------------------------------------------------------------------
+      const hasAllThreeWithChanges = recordsWithAllThreeInDb > 0 && recordsWithChangesCount > 0;
 
-        setCsvParsedRows([]);
-        setCsvFileObj(null);
-        setSelectedCsvOption(null);
-        setOption1ReviewList([]);
-        setOption2ReviewList([]);
-        const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
-        if (fileInput) fileInput.value = '';
-        return;
-      }
-
-      // Condition B: Duplicate PEA numbers - Offer User decision "Stop" or "Auto Assigned PEA"
-      if (checkResults.peaDuplicates.length > 0) {
-        setSavedHeaderRowForAutoResolve(headerRow);
-        setSavedDataRowsForAutoResolve(validDataRows);
-        setPeaDuplicateConflicts(checkResults.peaDuplicates);
-        setShowPeaDuplicateModal(true);
-        
-        // Wait on setting csvParsedRows until choice is made
-        setCsvParsedRows([]);
-        return;
-      }
-
+      // Prepare parsed rows and trigger the Import Option selector pop-up modal
       const rows = [headerRow, ...validDataRows];
       setCsvParsedRows(rows);
+      setSavedHeaderRowForAutoResolve(headerRow);
+      setSavedDataRowsForAutoResolve(validDataRows);
       setValidationErrors([]);
-      setSelectedCsvOption(null);
-      setOption1ReviewList([]);
       setOption2StatusMsg('');
+
+      if (hasAllThreeWithChanges) {
+        console.log(`[Cross-Check Pre-Option] All 3 numbers exist in database with differences in other columns. Auto-selecting Option 2 and locking Option 1.`);
+        setIsOption1Locked(true);
+        setOption1LockedReason(
+          `All 3 numbers (PEA, ADS, AA) already exist in database with changed column values detected (${recordsWithChangesCount} record${recordsWithChangesCount > 1 ? 's' : ''}). Option 1 (New Asset Registration) cannot be selected. Option 2 has been automatically selected.`
+        );
+        setSelectedCsvOption(2);
+      } else {
+        setIsOption1Locked(false);
+        setOption1LockedReason('');
+        setSelectedCsvOption(null);
+      }
+
+      // Open pop-up modal asking user to select import option
+      setShowImportOptionModal(true);
+      return;
     } catch (err) {
       console.error("Error decoding CSV file:", err);
       setValidationErrors(["Failed to read or decode CSV file."]);
@@ -1325,10 +2033,18 @@ export default function AdminRegistrationSuite({
     setCsvFileObj(null);
     setCsvParsedRows([]);
     setOption2StatusMsg('');
+    setShowImportOptionModal(false);
+    setShowExactMatchModal(false);
+    setExactMatchConflict(null);
+    setIsOption1Locked(false);
+    setOption1LockedReason('');
+    const fileInput = document.getElementById('file-upload-input') as HTMLInputElement;
+    if (fileInput) fileInput.value = '';
   };
 
-  const handleSelectOption1 = async () => {
-    if (csvParsedRows.length <= 1) return;
+  const handleSelectOption1 = async (explicitRows?: string[][]) => {
+    const sourceRows = explicitRows || csvParsedRows;
+    if (sourceRows.length <= 1) return;
     setSelectedCsvOption(1);
     setIsLoadingOption1Review(true);
     setOption1ReviewList([]);
@@ -1363,7 +2079,7 @@ export default function AdminRegistrationSuite({
         }
       });
 
-      const dataRows = csvParsedRows.slice(1);
+      const dataRows = sourceRows.slice(1);
       const parsedReview: any[] = [];
       const batchConditionCounters: Record<string, number> = {};
 
@@ -2259,15 +2975,16 @@ export default function AdminRegistrationSuite({
     }
   };
 
-  const handleSelectOption2 = async () => {
-    if (csvParsedRows.length <= 1) return;
+  const handleSelectOption2 = async (overrideRows?: string[][]) => {
+    const rowsToUse = overrideRows && overrideRows.length > 1 ? overrideRows : csvParsedRows;
+    if (rowsToUse.length <= 1) return;
     setSelectedCsvOption(2);
     setIsLoadingOption2Review(true);
     setOption2ReviewList([]);
 
     try {
       // File Integrity Check: Check if all data rows have a PEA number in column J (index 9) or Equipment ID in Column AE (index 30)
-      const dataRows = csvParsedRows.slice(1);
+      const dataRows = rowsToUse.slice(1);
       const missingIdentifierRows: number[] = [];
       
       for (let i = 0; i < dataRows.length; i++) {
@@ -3554,51 +4271,45 @@ export default function AdminRegistrationSuite({
                 </div>
               )}
 
-              {/* Choose Option Buttons after file loaded */}
-              {csvParsedRows.length > 1 && (
-                <div className="mt-4 space-y-3 pt-3 border-t border-gray-100">
-                  <span className="text-[10px] font-black text-purple-900 uppercase block">Select Import Option:</span>
-                  <div className="grid grid-cols-1 gap-2">
-                    <button
-                      onClick={handleSelectOption1}
-                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
-                        selectedCsvOption === 1 ? 'bg-purple-900 text-white border-purple-900 shadow-sm' : 'bg-purple-50/60 hover:bg-purple-100 text-purple-900 border-purple-200'
-                      }`}
-                    >
-                      <div className="text-xs font-bold flex items-center justify-between">
-                        <span>Option 1: New Asset Registration</span>
-                        <PlusCircle className="w-4 h-4" />
-                      </div>
-                      <p className="text-[9px] opacity-80 mt-0.5">Generates PEA numbers, leaves ADS & AA blank for review</p>
-                    </button>
+              {/* Status and Actions after file loaded */}
+              {isCheckingPeaDuplicates && (
+                <div className="mt-4 bg-purple-50 border border-purple-200 p-3.5 rounded-2xl text-xs font-bold text-purple-900 flex items-center gap-2.5 animate-pulse">
+                  <Loader2 className="w-4 h-4 animate-spin text-purple-700 shrink-0" />
+                  <span>Checking PEA numbers & cross-checking attributes across 12 sheets...</span>
+                </div>
+              )}
 
-                    <button
-                      onClick={handleSelectOption2}
-                      disabled={isProcessingOption2}
-                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
-                        selectedCsvOption === 2 ? 'bg-purple-900 text-white border-purple-900 shadow-sm' : 'bg-purple-50/60 hover:bg-purple-100 text-purple-900 border-purple-200'
-                      }`}
-                    >
-                      <div className="text-xs font-bold flex items-center justify-between">
-                        <span>Option 2: Update ADS & AA</span>
-                        <Edit className="w-4 h-4" />
-                      </div>
-                      <p className="text-[9px] opacity-80 mt-0.5">Updates Equipment Number ADS & Account Asset (AA) via Column J PEA check</p>
-                    </button>
-                  </div>
+              {isProcessingOption2 && (
+                <div className="mt-4 bg-purple-50 p-3 rounded-xl text-xs font-bold text-purple-900 flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-purple-700" />
+                  <span>{option2StatusMsg}</span>
+                </div>
+              )}
 
-                  {isProcessingOption2 && (
-                    <div className="bg-purple-50 p-3 rounded-xl text-[10px] font-bold text-purple-900 flex items-center gap-2">
-                      <RefreshCw className="w-4 h-4 animate-spin text-purple-700" />
-                      <span>{option2StatusMsg}</span>
-                    </div>
-                  )}
+              {option2StatusMsg && !isProcessingOption2 && (
+                <div className="mt-4 bg-emerald-50 border border-emerald-100 p-3 rounded-xl text-xs font-bold text-emerald-800">
+                  {option2StatusMsg}
+                </div>
+              )}
 
-                  {option2StatusMsg && !isProcessingOption2 && (
-                    <div className="bg-emerald-50 border border-emerald-100 p-3 rounded-xl text-[10px] font-bold text-emerald-800">
-                      {option2StatusMsg}
-                    </div>
-                  )}
+              {csvParsedRows.length > 1 && !selectedCsvOption && !isCheckingPeaDuplicates && (
+                <div className="mt-4 space-y-2 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowImportOptionModal(true)}
+                    className="w-full bg-purple-900 hover:bg-purple-800 text-white text-xs font-black py-3 px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-purple-200" />
+                    <span>Select Import Option ({csvParsedRows.length - 1} Assets)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelCsvUpload}
+                    className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <XCircle className="w-3.5 h-3.5 text-red-500" />
+                    <span>Cancel & Clear File</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -4598,6 +5309,526 @@ export default function AdminRegistrationSuite({
         }}
       />
 
+      {/* IMPORT OPTION SELECTOR POP-UP MODAL (Triggers immediately after file upload) */}
+      {showImportOptionModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-purple-100 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150 relative">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between border-b border-gray-100 pb-3">
+              <div>
+                <span className="text-xs font-black text-purple-900 uppercase tracking-wider block">
+                  Select Import Option:
+                </span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Choose how you want to process the uploaded CSV file
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExitScenarioUpload}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-xl hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* File Info Chip */}
+            {csvFileObj && (
+              <div className="flex items-center justify-between bg-purple-50/70 border border-purple-100 rounded-2xl px-3.5 py-2 text-xs">
+                <div className="flex items-center gap-2 text-purple-950 font-bold truncate max-w-[280px]">
+                  <FileSpreadsheet className="w-4 h-4 text-purple-700 shrink-0" />
+                  <span className="truncate">{csvFileObj.name}</span>
+                </div>
+                <span className="bg-emerald-100 text-emerald-900 font-black text-[11px] px-2.5 py-0.5 rounded-full shrink-0 border border-emerald-200">
+                  {savedDataRowsForAutoResolve.length} Assets Detected
+                </span>
+              </div>
+            )}
+
+            {/* Alert banner if Option 1 is locked due to cross-check */}
+            {isOption1Locked && (
+              <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3 text-xs text-amber-950 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-extrabold text-amber-950 block">Registered Asset with Column Differences Detected</span>
+                  <p className="text-amber-900 text-[11px] leading-relaxed font-medium">
+                    All 3 numbers (PEA, ADS, AA) already exist in the database, but differences were found in other column(s).
+                    <strong> Option 2 has been automatically selected</strong>. Option 1 is locked.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Option Cards */}
+            <div className="grid grid-cols-1 gap-3">
+              {/* Option 1 */}
+              <button
+                type="button"
+                onClick={handleChooseOption1FromModal}
+                disabled={isOption1Locked}
+                className={`p-4 rounded-2xl text-left border-2 transition-all ${
+                  isOption1Locked
+                    ? 'border-dashed border-gray-300 bg-gray-100/90 text-gray-400 cursor-not-allowed opacity-80'
+                    : 'border-purple-200 bg-white hover:bg-purple-50/60 hover:border-purple-400 text-purple-950 cursor-pointer group shadow-xs'
+                }`}
+              >
+                <div className="text-sm font-black flex items-center justify-between">
+                  <span className={isOption1Locked ? 'text-gray-400 font-bold' : 'text-purple-950 group-hover:text-purple-900'}>
+                    Option 1: New Asset Registration
+                  </span>
+                  {isOption1Locked ? (
+                    <span className="bg-red-100 text-red-700 text-[10px] font-black uppercase px-2 py-0.5 rounded-md flex items-center gap-1 border border-red-200">
+                      <Lock className="w-3 h-3 text-red-600" /> Locked
+                    </span>
+                  ) : (
+                    <div className="p-1 rounded-full border border-purple-300 text-purple-700 group-hover:bg-purple-200 transition-colors">
+                      <PlusCircle className="w-4 h-4" />
+                    </div>
+                  )}
+                </div>
+                <p className={`text-xs mt-1 font-medium ${isOption1Locked ? 'text-gray-400' : 'text-purple-900/80'}`}>
+                  {isOption1Locked
+                    ? 'Option 1 locked: All 3 numbers (PEA, ADS, AA) already exist in database with changes detected in other column(s). User cannot select this option.'
+                    : 'Generates PEA numbers, leaves ADS & AA blank for review'}
+                </p>
+              </button>
+
+              {/* Option 2 */}
+              <button
+                type="button"
+                onClick={handleChooseOption2FromModal}
+                className={`p-4 rounded-2xl text-left transition-all cursor-pointer group shadow-md ${
+                  isOption1Locked
+                    ? 'bg-purple-900 hover:bg-purple-800 text-white ring-4 ring-purple-300 border-2 border-purple-400'
+                    : 'bg-purple-900 hover:bg-purple-800 text-white'
+                }`}
+              >
+                <div className="text-sm font-black flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span>Option 2: Update ADS & AA</span>
+                    {isOption1Locked && (
+                      <span className="bg-emerald-400 text-emerald-950 text-[10px] font-black uppercase px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
+                        <CheckCircle className="w-3 h-3 text-emerald-950" /> Automatically Selected
+                      </span>
+                    )}
+                  </div>
+                  <div className="p-1 rounded-full border border-purple-700 bg-purple-800 text-purple-100 group-hover:text-white transition-colors">
+                    <Edit className="w-4 h-4" />
+                  </div>
+                </div>
+                <p className="text-xs text-purple-200 mt-1 font-medium">
+                  Updates Equipment Number ADS & Account Asset (AA) and changed column attributes via Column J PEA check
+                </p>
+              </button>
+            </div>
+
+            {/* Bottom action buttons */}
+            <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={handleExitScenarioUpload}
+                className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-xl transition-all cursor-pointer"
+              >
+                Cancel & Clear File
+              </button>
+              {isOption1Locked && (
+                <button
+                  type="button"
+                  onClick={handleChooseOption2FromModal}
+                  className="px-4 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  <span>Proceed with Option 2</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SCENARIO 2 EXIT MODAL */}
+      {showScenario2ExitModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-amber-200 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3.5">
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="bg-amber-100 text-amber-800 text-xs font-black uppercase px-2 py-0.5 rounded-md">
+                    Upload Exited
+                  </span>
+                  <h3 className="text-base md:text-lg font-black text-gray-900">Upload Process Exited</h3>
+                </div>
+                <p className="text-xs md:text-sm text-gray-600">
+                  Duplicated PEA number found with existing ADS/AA numbers and no column differences.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50/60 border border-amber-200/80 rounded-2xl p-4 space-y-3 text-xs md:text-sm">
+              <p className="text-amber-950 leading-relaxed font-medium">
+                The PEA number(s) in your uploaded CSV file already exist in the database (across all 12 regional Google Sheets):
+              </p>
+              <ul className="list-disc pl-5 space-y-1.5 text-amber-900 text-xs">
+                <li>
+                  Both the uploaded CSV and the database have <strong>existing ADS & AA numbers</strong> (matching values).
+                </li>
+                <li>
+                  The cross-check between the uploaded CSV file and database <strong>found no change across all columns</strong>.
+                </li>
+              </ul>
+              <p className="text-xs font-semibold text-amber-950 pt-1">
+                Using the original data from database. The uploading process has exited automatically.
+              </p>
+
+              {scenario2ExitRows.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-amber-200 max-h-48 overflow-y-auto space-y-1.5">
+                  <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider block">
+                    Existing Matched Records ({scenario2ExitRows.length}):
+                  </span>
+                  {scenario2ExitRows.map((r, i) => (
+                    <div key={i} className="flex justify-between items-center text-xs bg-white/80 p-2.5 rounded-xl border border-amber-100">
+                      <div className="flex flex-col">
+                        <span className="font-mono font-bold text-amber-950">PEA: {r.peaNumber}</span>
+                        <span className="text-[11px] text-amber-800 font-medium">
+                          {r.exitReason || (r.csvAds ? `ADS: ${r.csvAds} • AA: ${r.csvAa}` : 'Empty ADS/AA on both')}
+                        </span>
+                      </div>
+                      <span className="text-gray-600 text-[11px] font-medium text-right">
+                        {r.existingAsset?.city || 'Regional'} • {r.existingAsset?.substationName || 'Substation'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                setShowScenario2ExitModal(false);
+                setScenario2ExitRows([]);
+              }}
+              className="w-full bg-gray-900 hover:bg-gray-800 text-white text-sm font-bold py-3 px-4 rounded-xl transition-all cursor-pointer shadow-md"
+            >
+              OK / Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SCENARIO 1 & 3 RESOLUTION MODAL */}
+      {showScenarioResolutionModal && scenarioAnalysisData && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-55 p-3 md:p-6 animate-in fade-in duration-150 overflow-y-auto">
+          <div className="bg-white rounded-3xl p-5 md:p-6 max-w-4xl w-full border border-purple-100 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150 my-auto">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-3.5">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 bg-purple-100 text-purple-800 rounded-xl shrink-0">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-base md:text-lg font-black text-gray-900">
+                      Asset Registration & Cross-Check Review
+                    </h3>
+                  </div>
+                  <p className="text-xs md:text-sm text-gray-500">
+                    Review PEA duplicate records & ADS/AA cross-check results across regional Google Sheets
+                  </p>
+                </div>
+              </div>
+
+              {/* Status Badges */}
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                {scenarioAnalysisData.scenarioDiffAdsAaRows.length > 0 && (
+                  <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-xs">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                    Different ADS/AA: {scenarioAnalysisData.scenarioDiffAdsAaRows.length}
+                  </span>
+                )}
+                {scenarioAnalysisData.scenario1Rows.length > 0 && (
+                  <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    New SAP ADS/AA: {scenarioAnalysisData.scenario1Rows.length}
+                  </span>
+                )}
+                {scenarioAnalysisData.scenario3Rows.some(r => !r.hasAdsAaConflict) && (
+                  <span className="bg-blue-100 text-blue-800 border border-blue-200 text-xs font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                    Attribute Changes: {scenarioAnalysisData.scenario3Rows.filter(r => !r.hasAdsAaConflict).length}
+                  </span>
+                )}
+                {scenarioAnalysisData.scenario2Rows.length > 0 && (
+                  <span className="bg-gray-100 text-gray-700 border border-gray-200 text-xs font-bold px-2 py-1 rounded-lg">
+                    {scenarioAnalysisData.scenario2Rows.length} Identical (Skipped)
+                  </span>
+                )}
+                {scenarioAnalysisData.uniquePeaRows.length > 0 && (
+                  <span className="bg-purple-100 text-purple-800 border border-purple-200 text-xs font-extrabold px-2.5 py-1 rounded-lg">
+                    {scenarioAnalysisData.uniquePeaRows.length} Unique PEA (New)
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Scenario Description & Global Choice Banner */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 md:p-4 space-y-3">
+              <div className="text-xs md:text-sm text-slate-800 space-y-2 leading-relaxed">
+                <div className="bg-slate-100 border border-slate-300 rounded-xl p-3 text-xs text-slate-900 flex items-start gap-2.5">
+                  <ShieldCheck className="w-5 h-5 text-slate-700 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-extrabold text-sm text-slate-950">
+                      Permanent Identifiers Retained (PEA, ADS & AA)
+                    </div>
+                    <p className="text-slate-700 leading-relaxed text-xs">
+                      PEA Number, Equipment Number (ADS), and Account Asset Number (AA) are fixed identifiers and <strong>cannot be changed</strong>. Only differences in the other data column(s) below can be updated.
+                    </p>
+                  </div>
+                </div>
+
+                {scenarioAnalysisData.scenario1Rows.length > 0 && (
+                  <p className="flex items-center gap-1.5 text-emerald-900 font-semibold">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      <strong>New SAP Identifiers:</strong> Uploaded CSV contains SAP Equipment Number (ADS) & Account Asset Number (AA) for database records that are currently empty.
+                    </span>
+                  </p>
+                )}
+
+                {(scenarioAnalysisData.scenario1Rows.some(r => r.otherColumnsChanged) || scenarioAnalysisData.scenario3Rows.length > 0) && (
+                  <p className="flex items-center gap-1.5 text-blue-900 font-semibold">
+                    <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+                    <span>
+                      Choose your preferred values for changed fields below (individually or using the quick action buttons):
+                    </span>
+                  </p>
+                )}
+              </div>
+
+              {/* Global Decision Buttons */}
+              {(scenarioAnalysisData.scenario1Rows.some(r => r.otherColumnsChanged) || scenarioAnalysisData.scenario3Rows.length > 0) && (
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllScenarioChoices('new_values')}
+                    className={`flex-1 text-xs md:text-sm font-bold py-2.5 px-3 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                      scenarioGlobalChoice === 'new_values'
+                        ? 'bg-blue-700 text-white border-blue-800 shadow-sm'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                    }`}
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Change to New Values (from CSV)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetAllScenarioChoices('keep_existing')}
+                    className={`flex-1 text-xs md:text-sm font-bold py-2.5 px-3 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                      scenarioGlobalChoice === 'keep_existing'
+                        ? 'bg-slate-700 text-white border-slate-800 shadow-sm'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                    }`}
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    Use Original Numbers & Values (from Database)
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* List of Affected Assets */}
+            <div className="max-h-[380px] overflow-y-auto space-y-3 pr-1">
+              {[...scenarioAnalysisData.scenario1Rows, ...scenarioAnalysisData.scenario3Rows].map((item, itemIdx) => {
+                const isScenario1 = item.scenario === 1;
+
+                return (
+                  <div
+                    key={itemIdx}
+                    className={`border rounded-2xl p-3.5 space-y-2.5 bg-white shadow-xs ${
+                      isScenario1
+                        ? 'border-emerald-200'
+                        : 'border-gray-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {isScenario1 ? (
+                          <span className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-black uppercase px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                            New SAP ADS & AA
+                          </span>
+                        ) : (
+                          <span className="bg-blue-100 text-blue-800 border border-blue-200 text-xs font-black uppercase px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                            Column Differences
+                          </span>
+                        )}
+                        <span className="font-mono font-bold text-gray-900 text-sm">
+                          PEA: {item.peaNumber}
+                        </span>
+                        <span className="text-xs text-gray-500 font-medium">
+                          (CSV Row #{item.rowNum})
+                        </span>
+                        <span className="font-mono text-xs text-gray-600 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md">
+                          ADS: {item.existingAsset?.assetNumber || '-'} • AA: {item.existingAsset?.adsNumber || '-'}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded uppercase">
+                          PEA/ADS/AA Locked
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-600 font-medium">
+                        {item.existingAsset?.city || 'Regional'} • {item.existingAsset?.substationName || 'Unknown Substation'}
+                      </div>
+                    </div>
+
+                    {/* Scenario 1 SAP ADS/AA display */}
+                    {isScenario1 && (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-bold text-emerald-950">SAP Identifiers to Copy:</span>
+                        <span className="bg-white font-mono font-bold px-2 py-0.5 rounded border border-emerald-300 text-emerald-900">
+                          ADS: {item.csvAds}
+                        </span>
+                        <span className="bg-white font-mono font-bold px-2 py-0.5 rounded border border-emerald-300 text-emerald-900">
+                          AA: {item.csvAa}
+                        </span>
+                        <span className="text-emerald-700 text-[11px] font-medium ml-auto">
+                          (Database ADS/AA is currently empty and will be updated)
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Column Diffs Table */}
+                    {item.columnDiffs.length > 0 ? (
+                      <div className="space-y-1.5">
+                        <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider block">
+                          Differences ({item.columnDiffs.length} field{item.columnDiffs.length > 1 ? 's' : ''}):
+                        </span>
+                        <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                          <table className="w-full text-xs text-left">
+                            <thead className="bg-gray-50 text-gray-600 border-b border-gray-200 font-bold">
+                              <tr>
+                                <th className="py-1.5 px-2.5">Field</th>
+                                <th className="py-1.5 px-2.5">Database Value (Original)</th>
+                                <th className="py-1.5 px-2.5">Uploaded CSV Value (New)</th>
+                                <th className="py-1.5 px-2.5 text-center">Update Choice</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                              {item.columnDiffs.map((diff: any, dIdx: number) => (
+                                <tr key={dIdx} className="hover:bg-slate-50/60">
+                                  <td className="py-1.5 px-2.5 font-bold text-gray-800">
+                                    <div className="flex items-center gap-1.5">
+                                      {diff.isAdsAaField && (
+                                        <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 text-[9.5px] font-black rounded uppercase">
+                                          SAP ID
+                                        </span>
+                                      )}
+                                      <span>{diff.label}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-1.5 px-2.5 text-gray-500 line-through decoration-gray-400">
+                                    {diff.dbVal || '<empty>'}
+                                  </td>
+                                  <td className="py-1.5 px-2.5 font-semibold text-blue-700 bg-blue-50/40">
+                                    {diff.csvVal}
+                                  </td>
+                                  <td className="py-1.5 px-2.5 text-center">
+                                    <div className="inline-flex rounded-lg p-0.5 bg-gray-100 border border-gray-200">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleScenarioColumnDiffByRow(item.rowNum, dIdx, true)}
+                                        className={`px-2.5 py-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                                          diff.useNewValue
+                                            ? 'bg-blue-600 text-white shadow-xs'
+                                            : 'text-gray-600 hover:text-gray-900'
+                                        }`}
+                                      >
+                                        Change to New
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleScenarioColumnDiffByRow(item.rowNum, dIdx, false)}
+                                        className={`px-2.5 py-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                                          !diff.useNewValue
+                                            ? 'bg-slate-700 text-white shadow-xs'
+                                            : 'text-gray-600 hover:text-gray-900'
+                                        }`}
+                                      >
+                                        Use Original
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded-xl">
+                        ✓ All other columns match the database. Database values will be retained.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Unique PEA note if present */}
+            {scenarioAnalysisData.uniquePeaRows.length > 0 && (
+              <div className="bg-purple-50 border border-purple-200 rounded-xl p-2.5 flex items-center gap-2 text-xs text-purple-900">
+                <PlusCircle className="w-4 h-4 text-purple-600 shrink-0" />
+                <span>
+                  <strong>{scenarioAnalysisData.uniquePeaRows.length} Unique PEA records:</strong> After saving updates to existing records, you will automatically enter the normal New Asset Registration flow for the new assets.
+                </span>
+              </div>
+            )}
+
+            {/* Status message while saving */}
+            {scenarioSaveStatusMsg && (
+              <div className="text-xs font-semibold text-purple-800 bg-purple-50 p-2 rounded-xl flex items-center gap-2 animate-pulse">
+                <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+                {scenarioSaveStatusMsg}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={handleExitScenarioUpload}
+                disabled={isSavingScenarioUpdates}
+                className="w-full sm:w-auto px-4 py-2.5 text-xs md:text-sm font-bold text-gray-700 bg-gray-100 hover:bg-gray-200 border border-gray-300 hover:text-gray-900 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <XCircle className="w-4 h-4 text-gray-500" />
+                Exit Uploading Process (Use Original Data)
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExecuteScenarioUpdates}
+                disabled={isSavingScenarioUpdates}
+                className="w-full sm:w-auto px-5 py-2.5 text-xs md:text-sm font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
+              >
+                {isSavingScenarioUpdates ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    Saving Updates to Database...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-4 h-4 text-emerald-200" />
+                    Do Update on Changed Column(s)
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 1. EXACT REGISTERED MATCH MODAL */}
       {showExactMatchModal && exactMatchConflict && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
@@ -4607,9 +5838,9 @@ export default function AdminRegistrationSuite({
                 <XCircle className="w-6 h-6" />
               </div>
               <div className="space-y-1.5">
-                <h3 className="text-lg font-extrabold text-gray-900">The asset already registered</h3>
+                <h3 className="text-lg font-extrabold text-gray-900">The asset is already registered</h3>
                 <p className="text-xs text-gray-500">
-                  An uploaded record has matching identifiers for PEA, ADS, and AA numbers with an asset currently registered in the database.
+                  All 3 numbers (PEA Number, Equipment Number ADS, Account Asset Number AA) already exist in the database and comparison found no differences in any other columns.
                 </p>
               </div>
             </div>
@@ -4626,11 +5857,11 @@ export default function AdminRegistrationSuite({
                 </div>
                 <div>
                   <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Equipment Number (ADS)</span>
-                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.adsNumber || 'N/A'}</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.assetNumber || exactMatchConflict.existingAsset?.adsNumber || 'N/A'}</span>
                 </div>
                 <div>
                   <span className="block text-[10px] font-bold text-red-700 uppercase tracking-wider">Account Asset Number (AA)</span>
-                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.assetNumber || 'N/A'}</span>
+                  <span className="font-mono font-bold text-gray-800">{exactMatchConflict.existingAsset?.adsNumber || exactMatchConflict.existingAsset?.assetNumber || 'N/A'}</span>
                 </div>
               </div>
 
@@ -4639,6 +5870,11 @@ export default function AdminRegistrationSuite({
                 <p className="font-semibold text-gray-700 leading-relaxed">
                   Located in <strong className="text-red-900 font-extrabold">{exactMatchConflict.existingAsset?.city || 'Regional'} ({getAssetArea(exactMatchConflict.existingAsset)})</strong> at <strong className="text-gray-900">{exactMatchConflict.existingAsset?.substationName || 'Unknown Substation'}</strong> (Row #{exactMatchConflict.rowNum} in CSV).
                 </p>
+                {exactMatchConflict.totalCount > 1 && (
+                  <span className="text-[11px] font-bold text-red-800 bg-red-100/80 px-2.5 py-1 rounded-lg mt-1 w-fit">
+                    Total identical records matching database: {exactMatchConflict.totalCount}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -4646,10 +5882,11 @@ export default function AdminRegistrationSuite({
               onClick={() => {
                 setShowExactMatchModal(false);
                 setExactMatchConflict(null);
+                handleExitScenarioUpload();
               }}
               className="w-full bg-gray-900 hover:bg-gray-800 text-white text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer shadow-md shadow-gray-900/10"
             >
-              Close and Stop Uploading
+              Close and Exit Uploading Process
             </button>
           </div>
         </div>
@@ -4658,7 +5895,7 @@ export default function AdminRegistrationSuite({
       {/* 2. PEA DUPLICATE OPTIONS CHOICE MODAL */}
       {showPeaDuplicateModal && peaDuplicateConflicts.length > 0 && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-55 p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl p-6 max-w-xl w-full border border-amber-100 shadow-2xl space-y-6 animate-in zoom-in-95 duration-150">
+          <div className={`bg-white rounded-3xl p-6 ${canUpdateAdsAaFromCsv ? 'max-w-2xl' : 'max-w-xl'} w-full border border-amber-100 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150`}>
             <div className="flex items-start gap-4">
               <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl shrink-0">
                 <AlertTriangle className="w-6 h-6" />
@@ -4674,14 +5911,35 @@ export default function AdminRegistrationSuite({
             <div className="max-h-48 overflow-y-auto border border-gray-100 rounded-2xl p-4 space-y-3 bg-slate-50/50">
               <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider pb-1.5 border-b border-gray-100">Conflict Details</span>
               {peaDuplicateConflicts.slice(0, 5).map((conflict, idx) => (
-                <div key={idx} className="flex justify-between items-center text-xs">
-                  <div>
-                    <span className="font-semibold text-gray-700">CSV Row #{conflict.rowNum}:</span>{' '}
-                    <span className="font-mono font-bold text-amber-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md">{conflict.value}</span>
+                <div key={idx} className="flex justify-between items-start text-xs border-b border-gray-100/70 pb-2 last:border-b-0 last:pb-0">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold text-gray-700">CSV Row #{conflict.rowNum}:</span>{' '}
+                      <span className="font-mono font-bold text-amber-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md">{conflict.value}</span>
+                    </div>
+                    {(conflict.csvAds || conflict.csvAa) && (
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        {conflict.csvAds && (
+                          <span className="bg-amber-100/90 text-amber-900 font-mono px-1.5 py-0.5 rounded border border-amber-200 font-bold">
+                            SAP ADS: {conflict.csvAds}
+                          </span>
+                        )}
+                        {conflict.csvAa && (
+                          <span className="bg-blue-100/90 text-blue-900 font-mono px-1.5 py-0.5 rounded border border-blue-200 font-bold">
+                            SAP AA: {conflict.csvAa}
+                          </span>
+                        )}
+                        {conflict.existingHasNoAdsAa && (
+                          <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
+                            Missing ADS/AA in Database
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {conflict.existingAsset && (
-                    <span className="text-[10px] text-gray-500 italic">
-                      Matches asset in {conflict.existingAsset.city || 'Regional'} ({conflict.existingAsset.substationName})
+                    <span className="text-[10px] text-gray-500 italic text-right max-w-[180px] truncate block shrink-0 ml-2">
+                      {conflict.existingAsset.city || 'Regional'} ({conflict.existingAsset.substationName})
                     </span>
                   )}
                 </div>
@@ -4693,10 +5951,22 @@ export default function AdminRegistrationSuite({
               )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+            {canUpdateAdsAaFromCsv && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 flex items-start gap-2.5 text-xs text-emerald-900">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-bold block text-emerald-950">SAP ADS & AA Numbers Detected</span>
+                  <p className="text-[11px] text-emerald-800 leading-relaxed">
+                    The uploaded CSV contains valid SAP Equipment (ADS) and Asset (AA) numbers for existing PEA records. Select <strong>"Update ADS & AA number"</strong> to update these records in the database.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className={`grid grid-cols-1 ${canUpdateAdsAaFromCsv ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3 pt-2`}>
               <button
                 onClick={handleResolvePeaStop}
-                className="w-full border-2 border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1"
+                className="w-full border-2 border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold py-3 px-3 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 text-center"
               >
                 <span className="font-extrabold">Stop Uploading</span>
                 <span className="text-[10px] font-normal text-gray-500">Change PEA number manually</span>
@@ -4704,11 +5974,26 @@ export default function AdminRegistrationSuite({
 
               <button
                 onClick={handleResolvePeaAutoGenerate}
-                className="w-full bg-purple-900 hover:bg-purple-800 text-white text-xs font-bold py-3 px-4 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-md shadow-purple-900/10 border-2 border-purple-900 hover:border-purple-800"
+                className="w-full bg-purple-900 hover:bg-purple-800 text-white text-xs font-bold py-3 px-3 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-md shadow-purple-900/10 border-2 border-purple-900 hover:border-purple-800 text-center"
               >
                 <span className="font-extrabold text-yellow-400">Automated PEA Number</span>
                 <span className="text-[10px] font-normal text-purple-200">Automatically generate unique PEAs</span>
               </button>
+
+              {canUpdateAdsAaFromCsv && (
+                <button
+                  onClick={handleResolvePeaUpdateAdsAa}
+                  className="w-full bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-3 px-3 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-md shadow-emerald-700/20 border-2 border-emerald-700 hover:border-emerald-800 text-center"
+                >
+                  <span className="font-extrabold text-white flex items-center justify-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5 text-yellow-300 shrink-0" />
+                    Update ADS & AA number
+                  </span>
+                  <span className="text-[10px] font-normal text-emerald-100">
+                    Apply SAP ADS & AA to existing PEA
+                  </span>
+                </button>
+              )}
             </div>
           </div>
         </div>

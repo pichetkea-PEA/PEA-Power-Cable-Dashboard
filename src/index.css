@@ -65,3 +65,61 @@
   animation: pdHaloPulse 2s ease-in-out infinite;
 }
 
+/* Performance & Accessibility Improvement: Scale font sizes and reduce empty space */
+:root {
+  font-size: 15px;
+}
+
+body {
+  font-size: 0.95rem;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+/* Enlarge micro-text across the entire application */
+.text-\[9px\] {
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+}
+
+.text-\[10px\] {
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+.text-\[11px\] {
+  font-size: 12.5px !important;
+  line-height: 1.4 !important;
+}
+
+.text-xs {
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+}
+
+.text-sm {
+  font-size: 14.5px !important;
+  line-height: 1.5 !important;
+}
+
+/* Compact layout to reduce empty white space */
+#registration-suite-root {
+  gap: 0.875rem !important;
+}
+
+#registration-suite-root .p-6 {
+  padding: 1.125rem !important;
+}
+
+#registration-suite-root .p-8 {
+  padding: 1.25rem !important;
+}
+
+#registration-suite-root .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.875rem !important;
+}
+
+#registration-suite-root .space-y-5 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.75rem !important;
+}
+
