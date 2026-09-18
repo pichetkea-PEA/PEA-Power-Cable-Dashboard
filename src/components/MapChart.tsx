@@ -15,11 +15,14 @@ import {
   Eye, 
   EyeOff,
   Sparkles,
-  Info
+  Info,
+  RotateCcw,
+  Filter
 } from 'lucide-react';
 
 export type HeatmapMode = 'all' | 'critical' | 'severe_pd' | 'warning' | 'healthy';
 export type MapViewMode = 'hybrid' | 'heatmap' | 'markers';
+export type MarkerFilterCategory = 'all' | 'severe_pd' | 'Red' | 'Orange' | 'Yellow' | 'Green';
 
 export interface SeverePdDetails {
   isSevere: boolean;
@@ -113,6 +116,7 @@ export default function MapChart({
   // Heatmap and View Mode States
   const [viewMode, setViewMode] = useState<MapViewMode>('hybrid');
   const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>(initialHeatmapMode);
+  const [selectedMarkerCategory, setSelectedMarkerCategory] = useState<MarkerFilterCategory>('all');
   const [showControls, setShowControls] = useState<boolean>(false);
   const [heatRadius, setHeatRadius] = useState<number>(30);
   const [heatBlur, setHeatBlur] = useState<number>(20);
@@ -120,10 +124,11 @@ export default function MapChart({
 
   // Initialize base Leaflet map once
   useEffect(() => {
-    if (!mapContainerRef.current) return;
+    const container = mapContainerRef.current;
+    if (!container) return;
 
     if (!mapRef.current) {
-      const map = L.map(mapContainerRef.current, {
+      const map = L.map(container, {
         preferCanvas: true,
         center: [13.7563, 100.5018],
         zoom: 6,
@@ -144,8 +149,20 @@ export default function MapChart({
       mapRef.current = map;
     }
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && container) {
+      resizeObserver = new ResizeObserver(() => {
+        if (mapRef.current) {
+          mapRef.current.invalidateSize();
+        }
+      });
+      resizeObserver.observe(container);
+    }
+
     return () => {
-      // Map cleanup on unmount if necessary
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
     };
   }, []);
 
@@ -398,49 +415,106 @@ export default function MapChart({
         const isOrange = group.worstHealthStatus === 'Orange';
         const hasSeverePd = group.hasSeverePd;
 
-        // Base Marker radius: slightly larger if multiple assets share the coordinate or has severe PD
-        let radius = isMultiple 
-          ? (isCritical ? 10 : isOrange ? 9 : 8) 
-          : (isCritical ? 8 : isOrange ? 7 : 5.5);
-
-        if (hasSeverePd) {
-          radius = Math.max(radius, 8.5);
+        // Filtering logic based on selectedMarkerCategory
+        let isMatch = true;
+        if (selectedMarkerCategory === 'severe_pd') {
+          isMatch = hasSeverePd;
+        } else if (selectedMarkerCategory === 'Red') {
+          isMatch = group.worstHealthStatus === 'Red' || group.assets.some(a => a.healthStatus === 'Red');
+        } else if (selectedMarkerCategory === 'Orange') {
+          isMatch = group.worstHealthStatus === 'Orange' || group.assets.some(a => a.healthStatus === 'Orange');
+        } else if (selectedMarkerCategory === 'Yellow') {
+          isMatch = group.worstHealthStatus === 'Yellow' || group.assets.some(a => a.healthStatus === 'Yellow');
+        } else if (selectedMarkerCategory === 'Green') {
+          isMatch = group.worstHealthStatus === 'Green' || group.assets.some(a => a.healthStatus === 'Green' || !a.healthStatus);
         }
 
-        // 1. If Severe Online PD is found, render an outer pulsing Electric Halo Bubble layer!
-        if (hasSeverePd) {
-          const pdHaloMarker = L.circleMarker([group.lat, group.lng], {
-            radius: radius + 5.5,
-            fillColor: '#d946ef',
-            color: '#9333ea',
-            weight: 2.2,
-            opacity: 0.95,
-            fillOpacity: 0.22,
-            dashArray: '3, 4',
-            className: 'leaflet-severe-pd-pulse'
-          });
-          markerGroup.addLayer(pdHaloMarker);
-        }
+        const isDimmed = selectedMarkerCategory !== 'all' && !isMatch;
 
-        // 2. Primary Marker
-        const marker = L.circleMarker([group.lat, group.lng], {
-          radius,
-          fillColor: hasSeverePd && !isCritical ? '#9333ea' : color,
-          color: hasSeverePd 
-            ? '#fdf4ff' 
-            : (isCritical ? '#7f1d1d' : (isMultiple ? '#4c1d95' : '#ffffff')),
-          weight: hasSeverePd ? 3 : (isMultiple ? 2.5 : (isCritical ? 2.5 : 1.5)),
-          opacity: 1,
-          fillOpacity: viewMode === 'hybrid' ? 0.92 : 0.98
-        });
+        let marker: L.Layer;
+
+        if (hasSeverePd) {
+          // Thunder Symbol Marker for Severe Online Partial Discharge
+          if (!isDimmed) {
+            // Vivid Active Thunder Symbol Icon
+            const thunderIcon = L.divIcon({
+              className: 'custom-thunder-div-icon',
+              html: `
+                <div style="position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+                  <div class="thunder-aura-pulse" style="position: absolute; width: 34px; height: 34px; border-radius: 50%; background: radial-gradient(circle, rgba(234, 179, 8, 0.45) 0%, rgba(168, 85, 247, 0.25) 60%, transparent 100%);"></div>
+                  <div style="position: relative; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #581c87 0%, #7e22ce 40%, #eab308 100%); border: 2.2px solid #ffffff; box-shadow: 0 3px 10px rgba(0,0,0,0.35), 0 0 12px rgba(234, 179, 8, 0.7); display: flex; align-items: center; justify-content: center;">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="#fef08a" stroke="#ca8a04" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" style="filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                    ${isMultiple ? `
+                      <span style="position: absolute; top: -5px; right: -5px; background: #dc2626; color: white; font-size: 8.5px; font-weight: 900; border-radius: 9999px; width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; border: 1.5px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.3); font-family: monospace;">${group.assets.length}</span>
+                    ` : ''}
+                  </div>
+                </div>
+              `,
+              iconSize: [34, 34],
+              iconAnchor: [17, 17],
+              popupAnchor: [0, -18]
+            });
+            marker = L.marker([group.lat, group.lng], { icon: thunderIcon, zIndexOffset: 1000 });
+          } else {
+            // Dimmed Gray Thunder Symbol
+            const dimmedThunderIcon = L.divIcon({
+              className: 'custom-thunder-div-icon',
+              html: `
+                <div style="position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0.35; filter: grayscale(100%);">
+                  <div style="width: 20px; height: 20px; border-radius: 50%; background: #9ca3af; border: 1.5px solid #6b7280; display: flex; align-items: center; justify-content: center;">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="#d1d5db" stroke="#4b5563" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                  </div>
+                </div>
+              `,
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+              popupAnchor: [0, -14]
+            });
+            marker = L.marker([group.lat, group.lng], { icon: dimmedThunderIcon, zIndexOffset: 100 });
+          }
+        } else {
+          // Standard circle marker for normal / non-severe PD assets
+          let radius = isMultiple 
+            ? (isCritical ? 10 : isOrange ? 9 : 8) 
+            : (isCritical ? 8 : isOrange ? 7 : 5.5);
+
+          if (!isDimmed) {
+            marker = L.circleMarker([group.lat, group.lng], {
+              radius,
+              fillColor: color,
+              color: isCritical ? '#7f1d1d' : (isMultiple ? '#4c1d95' : '#ffffff'),
+              weight: isMultiple ? 2.5 : (isCritical ? 2.5 : 1.5),
+              opacity: 1,
+              fillOpacity: viewMode === 'hybrid' ? 0.92 : 0.98
+            });
+          } else {
+            marker = L.circleMarker([group.lat, group.lng], {
+              radius: Math.max(radius - 1.5, 4.5),
+              fillColor: '#9ca3af',
+              color: '#6b7280',
+              weight: 1,
+              opacity: 0.4,
+              fillOpacity: 0.25
+            });
+          }
+        }
 
         // Tooltip hint on hover
         let tooltipHtml = `📍 <b>${escapeHtml(group.substationName || group.city || 'Location')}</b> (${group.assets.length} assets)`;
         if (hasSeverePd) {
           tooltipHtml += `<br/><span style="color:#d946ef; font-weight:bold;">⚡ Severe Online PD: ${escapeHtml(group.severePdTypes.join(', '))}</span>`;
+        } else {
+          tooltipHtml += `<br/><span style="color:${color}; font-weight:bold;">Status: ${group.worstHealthStatus} (${group.lowestHealthScore}%)</span>`;
         }
         if (isMultiple) {
           tooltipHtml += `<br/><span style="font-size:10px; color:#6b7280;">Click or hover to pick asset</span>`;
+        }
+        if (isDimmed) {
+          tooltipHtml += `<br/><span style="font-size:9.5px; color:#9ca3af;">(Filtered out - Gray)</span>`;
         }
 
         marker.bindTooltip(tooltipHtml, { direction: 'top', offset: [0, -8], opacity: 0.95 });
@@ -643,7 +717,7 @@ export default function MapChart({
     if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [35, 35], maxZoom: 14 });
     }
-  }, [assets, viewMode, heatmapMode, heatRadius, heatBlur, heatOpacity, onSelectAsset]);
+  }, [assets, viewMode, heatmapMode, heatRadius, heatBlur, heatOpacity, onSelectAsset, selectedMarkerCategory]);
 
   // Statistics calculation for the badge
   const validGpsAssets = assets.filter(a => {
@@ -661,10 +735,16 @@ export default function MapChart({
     })
   ).size;
 
-  const criticalCount = assets.filter(a => a.healthStatus === 'Red' || a.healthStatus === 'Orange').length;
+  const redCount = assets.filter(a => a.healthStatus === 'Red').length;
+  const orangeCount = assets.filter(a => a.healthStatus === 'Orange').length;
+  const criticalCount = redCount + orangeCount;
   const severePdCount = assets.filter(a => getAssetSeverePd(a).isSevere).length;
   const healthyCount = assets.filter(a => a.healthStatus === 'Green' || !a.healthStatus).length;
   const warningCount = assets.filter(a => a.healthStatus === 'Yellow').length;
+
+  const handleLegendClick = (category: MarkerFilterCategory) => {
+    setSelectedMarkerCategory(prev => (prev === category ? 'all' : category));
+  };
 
   return (
     <div className="relative w-full h-full rounded-2xl overflow-hidden border border-gray-200/80 shadow-xs bg-slate-50 flex flex-col">
@@ -894,21 +974,34 @@ export default function MapChart({
       <div ref={mapContainerRef} className="w-full h-full min-h-[480px] z-1" />
 
       {/* Bottom Floating Legend & Health Status Density Bar */}
-      <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-md p-3 rounded-2xl shadow-lg border border-gray-200/90 z-[1000] text-[11px] space-y-2 max-w-sm">
-        <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+      <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur-md p-3 rounded-2xl shadow-xl border border-gray-200/90 z-[1000] text-[11px] space-y-2.5 max-w-md">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-1.5 gap-2">
           <span className="font-bold text-gray-900 flex items-center gap-1.5">
             <Flame className="w-3.5 h-3.5 text-amber-500" />
             {viewMode === 'markers' ? 'Marker Health & PD Legend' : (
               heatmapMode === 'critical' ? 'Critical Hazard Density' :
-              heatmapMode === 'severe_pd' ? 'Severe Online PD Density (Internal/Surface/Void)' :
+              heatmapMode === 'severe_pd' ? 'Severe Online PD Density' :
               heatmapMode === 'warning' ? 'Monitoring Density' :
               heatmapMode === 'healthy' ? 'Healthy Assets Density' :
               'Health-Risk Density Heatmap'
             )}
           </span>
-          <span className="text-[10px] text-gray-500 font-mono">
-            {validGpsCount} Assets ({uniqueCoordinatesCount} Locations)
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 font-mono">
+              {validGpsCount} Assets ({uniqueCoordinatesCount} Locs)
+            </span>
+            {selectedMarkerCategory !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setSelectedMarkerCategory('all')}
+                className="px-1.5 py-0.5 rounded bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                title="Reset marker isolation"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Heatmap Density Spectrum Bar (shown when heatmap is enabled) */}
@@ -937,38 +1030,141 @@ export default function MapChart({
           </div>
         )}
 
-        {/* Individual Status Markers & Severe PD Bubble Legend (shown in Hybrid or Markers mode) */}
+        {/* Individual Status Markers & Severe PD Selectable Legend (shown in Hybrid or Markers mode) */}
         {viewMode !== 'heatmap' && (
-          <div className="space-y-1.5 pt-1">
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-800" />
-                <span className="text-gray-700 font-medium">Red: Critical ({criticalCount})</span>
+          <div className="space-y-2 pt-0.5">
+            {/* Active isolation alert banner if a marker type is isolated */}
+            {selectedMarkerCategory !== 'all' && (
+              <div className="px-2 py-1 rounded-lg bg-purple-50 border border-purple-200 text-purple-900 text-[10.5px] flex items-center justify-between gap-1">
+                <span className="flex items-center gap-1 font-semibold truncate">
+                  <Filter className="w-3 h-3 text-purple-700 shrink-0" />
+                  Showing only: <b>{
+                    selectedMarkerCategory === 'severe_pd' ? '⚡ Severe Online PD' :
+                    selectedMarkerCategory === 'Red' ? 'Critical (Red)' :
+                    selectedMarkerCategory === 'Orange' ? 'Alert (Orange)' :
+                    selectedMarkerCategory === 'Yellow' ? 'Monitor (Yellow)' :
+                    'Healthy (Green)'
+                  }</b>
+                </span>
+                <span className="text-[9.5px] text-gray-500 italic shrink-0">Others in gray</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-orange-500" />
-                <span className="text-gray-700 font-medium">Orange: Alert</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
-                <span className="text-gray-700 font-medium">Yellow: Monitor ({warningCount})</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                <span className="text-gray-700 font-medium">Green: Healthy ({healthyCount})</span>
-              </div>
-            </div>
+            )}
 
-            {/* Severe Online PD Bubble Index Indicator */}
-            <div className="flex items-center gap-1.5 pt-1.5 border-t border-gray-100">
-              <div className="relative flex items-center justify-center">
-                <div className="w-4 h-4 rounded-full bg-fuchsia-100 border border-purple-500 border-dashed animate-pulse flex items-center justify-center">
-                  <div className="w-2 h-2 rounded-full bg-purple-700" />
+            {/* Severe Online PD Selectable Chip / Button (Thunder Symbol) */}
+            <button
+              type="button"
+              onClick={() => handleLegendClick('severe_pd')}
+              className={`w-full p-1.5 rounded-xl border transition-all text-left flex items-center justify-between gap-2 cursor-pointer ${
+                selectedMarkerCategory === 'severe_pd'
+                  ? 'bg-purple-900 text-white border-purple-900 shadow-md ring-2 ring-purple-400'
+                  : 'bg-purple-50/70 hover:bg-purple-100 text-purple-950 border-purple-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <div className="relative w-6 h-6 rounded-full bg-linear-to-br from-purple-800 to-amber-500 border border-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Zap className={`w-3.5 h-3.5 ${selectedMarkerCategory === 'severe_pd' ? 'fill-yellow-300 text-yellow-300' : 'fill-yellow-300 text-yellow-400'}`} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-bold text-[11px] leading-tight flex items-center gap-1">
+                    Severe Online PD (⚡ Thunder)
+                  </span>
+                  <span className={`text-[9.5px] leading-tight ${selectedMarkerCategory === 'severe_pd' ? 'text-purple-200' : 'text-purple-700'}`}>
+                    Internal, Surface, Void, Floating
+                  </span>
                 </div>
               </div>
-              <span className="text-purple-900 font-bold text-[10px] leading-tight">
-                ⚡ Severe Online PD: Internal, Surface, Void, Floating ({severePdCount})
-              </span>
+              <div className="flex items-center gap-1">
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                  selectedMarkerCategory === 'severe_pd'
+                    ? 'bg-yellow-400 text-purple-950'
+                    : 'bg-purple-200/90 text-purple-950'
+                }`}>
+                  {severePdCount}
+                </span>
+              </div>
+            </button>
+
+            {/* Health Status Selectable Buttons Grid */}
+            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+              {/* Red: Critical */}
+              <button
+                type="button"
+                onClick={() => handleLegendClick('Red')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  selectedMarkerCategory === 'Red'
+                    ? 'bg-red-600 text-white border-red-700 shadow-xs ring-2 ring-red-300 font-bold'
+                    : selectedMarkerCategory !== 'all'
+                    ? 'bg-gray-50/70 opacity-60 hover:opacity-100 text-gray-700 border-gray-200'
+                    : 'bg-red-50/60 hover:bg-red-100 text-red-900 border-red-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-700 shrink-0" />
+                  <span className="truncate">Red: Critical</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({redCount})</span>
+              </button>
+
+              {/* Orange: Alert */}
+              <button
+                type="button"
+                onClick={() => handleLegendClick('Orange')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  selectedMarkerCategory === 'Orange'
+                    ? 'bg-orange-600 text-white border-orange-700 shadow-xs ring-2 ring-orange-300 font-bold'
+                    : selectedMarkerCategory !== 'all'
+                    ? 'bg-gray-50/70 opacity-60 hover:opacity-100 text-gray-700 border-gray-200'
+                    : 'bg-orange-50/60 hover:bg-orange-100 text-orange-900 border-orange-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <div className="w-2.5 h-2.5 rounded-full bg-orange-500 border border-orange-700 shrink-0" />
+                  <span className="truncate">Orange: Alert</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({orangeCount})</span>
+              </button>
+
+              {/* Yellow: Monitor */}
+              <button
+                type="button"
+                onClick={() => handleLegendClick('Yellow')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  selectedMarkerCategory === 'Yellow'
+                    ? 'bg-yellow-500 text-white border-yellow-600 shadow-xs ring-2 ring-yellow-200 font-bold'
+                    : selectedMarkerCategory !== 'all'
+                    ? 'bg-gray-50/70 opacity-60 hover:opacity-100 text-gray-700 border-gray-200'
+                    : 'bg-yellow-50/60 hover:bg-yellow-100 text-yellow-900 border-yellow-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500 border border-yellow-600 shrink-0" />
+                  <span className="truncate">Yellow: Monitor</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({warningCount})</span>
+              </button>
+
+              {/* Green: Healthy */}
+              <button
+                type="button"
+                onClick={() => handleLegendClick('Green')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  selectedMarkerCategory === 'Green'
+                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-300 font-bold'
+                    : selectedMarkerCategory !== 'all'
+                    ? 'bg-gray-50/70 opacity-60 hover:opacity-100 text-gray-700 border-gray-200'
+                    : 'bg-emerald-50/60 hover:bg-emerald-100 text-emerald-900 border-emerald-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-700 shrink-0" />
+                  <span className="truncate">Green: Healthy</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({healthyCount})</span>
+              </button>
+            </div>
+
+            <div className="text-[9.5px] text-gray-500 italic text-center pt-0.5">
+              💡 Click any legend item to isolate markers (other types will be grayed out)
             </div>
           </div>
         )}

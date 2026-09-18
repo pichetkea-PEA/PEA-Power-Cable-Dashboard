@@ -2064,8 +2064,8 @@ export default function App() {
           <div className="flex-1 pl-16 flex flex-col min-w-0">
             
             {/* Top Toolbar Header */}
-            <header className="bg-white border-b border-gray-100 px-6 py-3.5 sticky top-0 z-[5000] shadow-2xs">
-              <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+            <header className="bg-white border-b border-gray-100 px-4 sm:px-6 py-3.5 sticky top-0 z-[5000] shadow-2xs">
+              <div className="w-full flex flex-col sm:flex-row justify-between items-center gap-3">
                 
                 {/* Sector Information & Title */}
                 <div className="flex items-center gap-3">
@@ -2322,8 +2322,8 @@ export default function App() {
 
             {/* Firestore Quota Exceeded Warn Callout */}
             {firestoreQuotaExceeded && (
-              <div className="bg-yellow-50 border-b border-yellow-200 py-3 px-6 animate-fade-in">
-                <div className="max-w-7xl mx-auto text-xs text-yellow-800 font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="bg-yellow-50 border-b border-yellow-200 py-3 px-4 sm:px-6 animate-fade-in">
+                <div className="w-full text-xs text-yellow-800 font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5">
                     <ShieldAlert className="w-4 h-4 shrink-0 text-yellow-600" />
                     <div>
@@ -2349,8 +2349,8 @@ export default function App() {
 
             {/* Regional Sheets Offline Alert Banner */}
             {regionalSheetStatuses.some(s => s.status === 'error') && (
-              <div className="bg-amber-50 border-b border-amber-200 py-3 px-6 animate-fadeIn">
-                <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+              <div className="bg-amber-50 border-b border-amber-200 py-3 px-4 sm:px-6 animate-fadeIn">
+                <div className="w-full flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
                   <div className="flex items-start gap-2.5">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                     <div>
@@ -2390,8 +2390,8 @@ export default function App() {
 
             {/* Error Callout */}
             {errorMessage && (
-              <div className="bg-red-50 border-b border-red-100 py-2.5 px-6">
-                <div className="max-w-7xl mx-auto text-xs text-red-700 font-semibold flex items-center justify-between">
+              <div className="bg-red-50 border-b border-red-100 py-2.5 px-4 sm:px-6">
+                <div className="w-full text-xs text-red-700 font-semibold flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
                     <span>{errorMessage}</span>
@@ -2402,7 +2402,7 @@ export default function App() {
             )}
 
             {/* Main Content View */}
-            <main className="flex-grow max-w-7xl mx-auto w-full p-6">
+            <main className="flex-grow w-full px-3 sm:px-5 lg:px-6 py-4">
               
               {/* VIEW 1: BOARD/ADMINISTRATOR PORTFOLIO PAGE */}
               {activeTab === 'admin' && (user.role === 'Admin' || user.role === 'Manager') && (
@@ -2488,8 +2488,8 @@ export default function App() {
             </main>
 
             {/* Footer */}
-            <footer className="bg-white border-t border-gray-100 py-5 px-6 mt-12">
-              <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-[11px] text-gray-400 font-medium">
+            <footer className="bg-white border-t border-gray-100 py-4 px-4 sm:px-6 mt-12">
+              <div className="w-full flex flex-col md:flex-row justify-between items-center gap-4 text-[11px] text-gray-400 font-medium">
                 <span>&copy; {new Date().getFullYear()} Provincial Electricity Authority (PEA) Thailand. All rights reserved.</span>
                 <div className="flex gap-4">
                   <a href="https://www.pea.co.th" target="_blank" rel="noreferrer" className="hover:text-purple-700">PEA Thailand Official Portal</a>

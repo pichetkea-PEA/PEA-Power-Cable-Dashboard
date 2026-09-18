@@ -99,10 +99,11 @@ export default function WorldMapChart({ assets }: WorldMapChartProps) {
 
   // Initialize Map
   useEffect(() => {
-    if (!mapContainerRef.current) return;
+    const container = mapContainerRef.current;
+    if (!container) return;
 
     if (!mapRef.current) {
-      mapRef.current = L.map(mapContainerRef.current, {
+      mapRef.current = L.map(container, {
         preferCanvas: true,
         center: [20, 10],
         zoom: 2,
@@ -119,7 +120,20 @@ export default function WorldMapChart({ assets }: WorldMapChartProps) {
       layerGroupRef.current = L.layerGroup().addTo(mapRef.current);
     }
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && container) {
+      resizeObserver = new ResizeObserver(() => {
+        if (mapRef.current) {
+          mapRef.current.invalidateSize();
+        }
+      });
+      resizeObserver.observe(container);
+    }
+
     return () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;

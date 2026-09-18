@@ -61,8 +61,32 @@
   }
 }
 
+@keyframes thunderAuraPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.9;
+  }
+}
+
 .leaflet-severe-pd-pulse {
   animation: pdHaloPulse 2s ease-in-out infinite;
+}
+
+.thunder-aura-pulse {
+  animation: thunderAuraPulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.custom-thunder-div-icon {
+  background: transparent !important;
+  border: none !important;
 }
 
 /* Performance & Accessibility Improvement: Scale font sizes and reduce empty space */
