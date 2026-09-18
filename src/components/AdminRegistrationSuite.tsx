@@ -10,6 +10,7 @@ import {
   VOLTAGE_LEVELS,
   getEquipmentTypeAbbreviation,
   getManufacturersForEquipmentType,
+  getDefaultCountryForManufacturer,
   COUNTRIES_OF_ORIGIN,
   generateEquipmentId,
   getEquipmentConditionPrefix,
@@ -272,7 +273,7 @@ export default function AdminRegistrationSuite({
 
   // Computed available equipment types based on voltage level
   const availableEquipmentTypes = useMemo(() => {
-    if (filterVoltage === '115') {
+    if (filterVoltage === '115' || filterVoltage === '230') {
       return ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Slip-On Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t));
     } else {
       return ALL_EQUIPMENT_TYPES.filter(t => !['Air Break Switch', 'HV ATS'].includes(t));
@@ -281,7 +282,7 @@ export default function AdminRegistrationSuite({
 
   // Computed available location types based on voltage level
   const availableLocationTypes = useMemo(() => {
-    if (filterVoltage === '115') {
+    if (filterVoltage === '115' || filterVoltage === '230') {
       return ['Substation', 'Transmission Line'];
     } else {
       return ['Substation', 'Distribution Line'];
@@ -290,14 +291,15 @@ export default function AdminRegistrationSuite({
 
   // Computed available size options based on equipment type and location type
   const availableSizes = useMemo(() => {
-    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint', 'Submarine Cable'].includes(filterEquipmentType);
+    const isSubmarine = ['Submarine Power Cable', 'Submarine Cable'].includes(filterEquipmentType);
+    if (isSubmarine) {
+      return ['70 sq.mm', '90 sq.mm', '120 sq.mm', '185 sq.mm', '240 sq.mm', '300 sq.mm', '500 sq.mm', '800 sq.mm', 'Other'];
+    }
+    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint'].includes(filterEquipmentType);
     if (!cableOrTerm) {
       return ['Standard'];
     }
     const sizes = ['400 sq.mm', '240 sq.mm', '95 sq.mm', '500 sq.mm', '800 sq.mm', '35 sq.mm', '50 sq.mm', '300 sq.mm'];
-    if (filterEquipmentType === 'Submarine Cable') {
-      sizes.push('120 sq.mm', '70 sq.mm', '185 sq.mm');
-    }
     if (filterEquipmentType === 'Joint' && filterLocationType !== 'Substation') {
       sizes.push('Separate Joint', 'Straight Joint');
     }
@@ -306,13 +308,13 @@ export default function AdminRegistrationSuite({
 
   const handleVoltageChange = (newVal: string) => {
     setFilterVoltage(newVal);
-    const newEquips = newVal === '115' 
+    const newEquips = (newVal === '115' || newVal === '230')
       ? ALL_EQUIPMENT_TYPES.filter(t => !['Heat Shrink Termination', 'Slip-On Termination', 'Ring Main Unit', 'Unit Substation', 'LV ATS', 'Distribution Circuit'].includes(t))
       : ALL_EQUIPMENT_TYPES.filter(t => !['Air Break Switch', 'HV ATS'].includes(t));
     if (!newEquips.includes(filterEquipmentType)) {
       setFilterEquipmentType(newEquips[0]);
     }
-    const newLocs = newVal === '115' ? ['Substation', 'Transmission Line'] : ['Substation', 'Distribution Line'];
+    const newLocs = (newVal === '115' || newVal === '230') ? ['Substation', 'Transmission Line'] : ['Substation', 'Distribution Line'];
     if (!newLocs.includes(filterLocationType)) {
       setFilterLocationType('Substation' as LocationType);
     }
@@ -320,12 +322,19 @@ export default function AdminRegistrationSuite({
 
   const handleEquipmentTypeChange = (newEq: EquipmentType) => {
     setFilterEquipmentType(newEq);
-    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint', 'Submarine Cable'].includes(newEq);
+    const isSubmarine = ['Submarine Power Cable', 'Submarine Cable'].includes(newEq);
+    if (isSubmarine) {
+      const sbSizes = ['70 sq.mm', '90 sq.mm', '120 sq.mm', '185 sq.mm', '240 sq.mm', '300 sq.mm', '500 sq.mm', '800 sq.mm', 'Other'];
+      if (!sbSizes.includes(filterSize)) {
+        setFilterSize('70 sq.mm');
+      }
+      return;
+    }
+    const cableOrTerm = ['Underground Cable', 'Oil Insulated Termination', 'Dry Type Termination', 'Heat Shrink Termination', 'Plug in Termination', 'Slip-On Termination', 'Cold Shrink Termination', 'Joint'].includes(newEq);
     if (!cableOrTerm) {
       setFilterSize('Standard');
     } else {
       const sizes = ['400 sq.mm', '240 sq.mm', '95 sq.mm', '500 sq.mm', '800 sq.mm', '35 sq.mm', '50 sq.mm', '300 sq.mm'];
-      if (newEq === 'Submarine Cable') sizes.push('120 sq.mm', '70 sq.mm', '185 sq.mm');
       if (newEq === 'Joint' && filterLocationType !== 'Substation') sizes.push('Separate Joint', 'Straight Joint');
       if (!sizes.includes(filterSize)) {
         setFilterSize(sizes[0]);
@@ -371,7 +380,7 @@ export default function AdminRegistrationSuite({
         prefix = 'TM';
       } else if (filterEquipmentType === 'Lightning Arrester') {
         prefix = 'LA';
-      } else if (filterEquipmentType === 'Submarine Cable') {
+      } else if (filterEquipmentType === 'Submarine Power Cable' || filterEquipmentType === 'Submarine Cable') {
         prefix = 'SB';
       } else if (filterEquipmentType === 'Underground Cable') {
         prefix = 'UG';
@@ -394,12 +403,23 @@ export default function AdminRegistrationSuite({
       else if (filterVoltage === '33') x1 = '3';
       else if (filterVoltage === '69') x1 = '4';
       else if (filterVoltage === '115') x1 = '5';
+      else if (filterVoltage === '230') x1 = '6';
 
       let x2 = '0';
       const s = (filterSize || '').toLowerCase();
       const loc = (filterLocationType || '').toLowerCase();
 
-      if (prefix === 'TM') {
+      if (prefix === 'SB') {
+        if (s.includes('70')) x2 = '1';
+        else if (s.includes('90') || s.includes('95')) x2 = '2';
+        else if (s.includes('120')) x2 = '3';
+        else if (s.includes('185')) x2 = '4';
+        else if (s.includes('240')) x2 = '5';
+        else if (s.includes('300')) x2 = '6';
+        else if (s.includes('500')) x2 = '7';
+        else if (s.includes('800')) x2 = '8';
+        else x2 = '9';
+      } else if (prefix === 'TM') {
         if (loc.includes('substation')) {
           if (s.includes('95')) x2 = '1';
           else if (s.includes('240')) x2 = '2';
@@ -441,17 +461,6 @@ export default function AdminRegistrationSuite({
           else if (s.includes('straight')) x2 = '5';
           else x2 = '0';
         }
-      } else if (prefix === 'SB') {
-        if (s.includes('95')) x2 = '1';
-        else if (s.includes('240')) x2 = '2';
-        else if (s.includes('400')) x2 = '3';
-        else if (s.includes('500')) x2 = '4';
-        else if (s.includes('800')) x2 = '5';
-        else if (s.includes('120')) x2 = '6';
-        else if (s.includes('70')) x2 = '7';
-        else if (s.includes('300')) x2 = '8';
-        else if (s.includes('185')) x2 = '9';
-        else x2 = '0';
       }
 
       const patternPrefix = `${prefix}${yy}-${x1}${x2}`;
@@ -1906,16 +1915,27 @@ export default function AdminRegistrationSuite({
 
     let x1 = '5';
     const vStr = String(volt || '').trim();
-    if (vStr.includes('22')) x1 = '2';
-    else if (vStr.includes('33')) x1 = '3';
-    else if (vStr.includes('69')) x1 = '4';
+    if (vStr.includes('230')) x1 = '6';
     else if (vStr.includes('115')) x1 = '5';
+    else if (vStr.includes('69')) x1 = '4';
+    else if (vStr.includes('33')) x1 = '3';
+    else if (vStr.includes('22')) x1 = '2';
 
     let x2 = '0';
     const s = (sz || '').toLowerCase();
     const loc = (locType || '').toLowerCase();
 
-    if (prefix === 'TM') {
+    if (prefix === 'SB') {
+      if (s.includes('70')) x2 = '1';
+      else if (s.includes('90') || s.includes('95')) x2 = '2';
+      else if (s.includes('120')) x2 = '3';
+      else if (s.includes('185')) x2 = '4';
+      else if (s.includes('240')) x2 = '5';
+      else if (s.includes('300')) x2 = '6';
+      else if (s.includes('500')) x2 = '7';
+      else if (s.includes('800')) x2 = '8';
+      else x2 = '9';
+    } else if (prefix === 'TM') {
       if (loc.includes('substation')) {
         if (s.includes('95')) x2 = '1';
         else if (s.includes('240')) x2 = '2';
@@ -1957,17 +1977,6 @@ export default function AdminRegistrationSuite({
         else if (s.includes('straight')) x2 = '5';
         else x2 = '0';
       }
-    } else if (prefix === 'SB') {
-      if (s.includes('95')) x2 = '1';
-      else if (s.includes('240')) x2 = '2';
-      else if (s.includes('400')) x2 = '3';
-      else if (s.includes('500')) x2 = '4';
-      else if (s.includes('800')) x2 = '5';
-      else if (s.includes('120')) x2 = '6';
-      else if (s.includes('70')) x2 = '7';
-      else if (s.includes('300')) x2 = '8';
-      else if (s.includes('185')) x2 = '9';
-      else x2 = '0';
     }
 
     const patternPrefix = `${prefix}${yy}-${x1}${x2}`;
@@ -2131,7 +2140,7 @@ export default function AdminRegistrationSuite({
         const serialNumber = (cols[11] || '').trim();
         const manufacturer = (cols[12] || '').trim();
         const model = (cols[13] || '').trim();
-        const country = (cols[14] || '').trim();
+        const country = (cols[14] || '').trim() || getDefaultCountryForManufacturer(manufacturer) || '';
         const productionMonth = (cols[15] || '').trim();
         const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
         const substationName = (cols[17] || '').trim();
@@ -3032,7 +3041,7 @@ export default function AdminRegistrationSuite({
         const serialNumber = (cols[11] || '').trim();
         const manufacturer = (cols[12] || '').trim();
         const model = (cols[13] || '').trim();
-        const country = (cols[14] || '').trim();
+        const country = (cols[14] || '').trim() || getDefaultCountryForManufacturer(manufacturer) || '';
         const productionMonth = (cols[15] || '').trim();
         const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
         const substationName = (cols[17] || '').trim();
@@ -3852,6 +3861,7 @@ export default function AdminRegistrationSuite({
                   onChange={e => handleVoltageChange(e.target.value)}
                   className="bg-white border border-purple-200 rounded-xl py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600"
                 >
+                  <option value="230">230 kV</option>
                   <option value="115">115 kV</option>
                   <option value="33">33 kV</option>
                   <option value="22">22 kV</option>
@@ -4661,7 +4671,18 @@ export default function AdminRegistrationSuite({
                 <input
                   type="text"
                   value={editingOption1Item.data.manufacturer || ''}
-                  onChange={e => setEditingOption1Item({ ...editingOption1Item, data: { ...editingOption1Item.data, manufacturer: e.target.value } })}
+                  onChange={e => {
+                    const newM = e.target.value;
+                    const defC = getDefaultCountryForManufacturer(newM);
+                    setEditingOption1Item({
+                      ...editingOption1Item,
+                      data: {
+                        ...editingOption1Item.data,
+                        manufacturer: newM,
+                        country: editingOption1Item.data.country || defC || ''
+                      }
+                    });
+                  }}
                   className="w-full bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-3 font-semibold text-gray-700 focus:outline-hidden focus:border-purple-600 focus:bg-white"
                 />
               </div>

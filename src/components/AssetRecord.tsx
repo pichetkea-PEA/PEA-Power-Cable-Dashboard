@@ -37,6 +37,7 @@ import {
   generateEquipmentId,
   getAvailableEquipmentTypes,
   getManufacturersForEquipmentType,
+  getDefaultCountryForManufacturer,
   formatShortUrl,
   getAssetArea
 } from '../utils/peaData';
@@ -2417,7 +2418,14 @@ export default function AssetRecord({
                         {renderFieldLabel('Manufacturer', 'manufacturer')}
                         <select
                           value={editManufacturer}
-                          onChange={e => setEditManufacturer(e.target.value)}
+                          onChange={e => {
+                            const newM = e.target.value;
+                            setEditManufacturer(newM);
+                            const defaultCountry = getDefaultCountryForManufacturer(newM);
+                            if (defaultCountry) {
+                              setEditCountry(defaultCountry);
+                            }
+                          }}
                           disabled={!isEditing}
                           className={getInputClassName('manufacturer', true)}
                         >

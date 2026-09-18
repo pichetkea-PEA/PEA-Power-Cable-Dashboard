@@ -417,6 +417,9 @@ export function normalizeEquipmentType(
   }
 
   // Check 3: Other equipment types
+  if (clean.includes('submarine') || clean.includes('subsea') || clean.includes('sb cable') || clean.includes('sb power cable')) {
+    return 'Submarine Power Cable';
+  }
   if (clean.includes('unit substation') || clean.includes('compact unit') || clean.includes('substation') || clean.includes('cus')) {
     return 'Unit Substation';
   }
@@ -552,6 +555,7 @@ export function normalizeInstallationDate(rawDate: string): string {
 
 export const ALL_EQUIPMENT_TYPES: EquipmentType[] = [
   'Underground Cable',
+  'Submarine Power Cable',
   'Oil Insulated Termination',
   'Joint',
   'GND Link box',
@@ -582,7 +586,7 @@ export const EXCLUDED_115KV_TYPES: EquipmentType[] = [
 
 export function getAvailableEquipmentTypes(voltageLevel: string): EquipmentType[] {
   const normVolt = normalizeVoltageLevel(voltageLevel);
-  if (normVolt === '115') {
+  if (normVolt === '115' || normVolt === '230') {
     return ALL_EQUIPMENT_TYPES.filter(t => !EXCLUDED_115KV_TYPES.includes(t));
   }
   if (normVolt === '22' || normVolt === '33') {
@@ -592,9 +596,73 @@ export function getAvailableEquipmentTypes(voltageLevel: string): EquipmentType[
   return ALL_EQUIPMENT_TYPES.filter(t => t !== 'Slip-On Termination');
 }
 
+export interface ManufacturerOrigin {
+  brand: string;
+  country: string;
+}
+
+export const SUBMARINE_CABLE_MANUFACTURERS: ManufacturerOrigin[] = [
+  { brand: 'Nexans', country: 'Norway' },
+  { brand: 'NKT', country: 'Denmark' },
+  { brand: 'Alcatel', country: 'France' },
+  { brand: 'Exsym', country: 'Japan' },
+  { brand: 'Sumitomo Electric', country: 'Japan' },
+  { brand: 'Furukawa Electric', country: 'Japan' },
+  { brand: 'Showa Electric', country: 'Japan' },
+  { brand: 'Draka', country: 'China' },
+  { brand: 'CYG', country: 'China' },
+  { brand: 'Hengthong Cable', country: 'China' },
+  { brand: 'Ningbo Oriented Cable', country: 'China' },
+  { brand: 'LS Cable', country: 'South Korea' },
+  { brand: 'Viscas cable', country: 'Japan' },
+  { brand: 'Prysmian Group', country: 'Italy' },
+  { brand: 'ZTT Group', country: 'China' },
+  { brand: 'Hanwha Group', country: 'South Korea' },
+];
+
 export const MANUFACTURERS_BY_EQUIPMENT_TYPE: Record<string, string[]> = {
   'Underground Cable': [
     'Bangkok Cable (BCC)', 'Phelps Dodge (PHD)', 'Venine (V9)', 'Charoong Thai Wire and Cable (CTW)', 'Thai Yazaki (TYZ)', 'Erawan (ERW)', 'NKT', 'Others', 'Unknown'
+  ],
+  'Submarine Power Cable': [
+    'Nexans',
+    'NKT',
+    'Alcatel',
+    'Exsym',
+    'Sumitomo Electric',
+    'Furukawa Electric',
+    'Showa Electric',
+    'Draka',
+    'CYG',
+    'Hengthong Cable',
+    'Ningbo Oriented Cable',
+    'LS Cable',
+    'Viscas cable',
+    'Prysmian Group',
+    'ZTT Group',
+    'Hanwha Group',
+    'Others',
+    'Unknown'
+  ],
+  'Submarine Cable': [
+    'Nexans',
+    'NKT',
+    'Alcatel',
+    'Exsym',
+    'Sumitomo Electric',
+    'Furukawa Electric',
+    'Showa Electric',
+    'Draka',
+    'CYG',
+    'Hengthong Cable',
+    'Ningbo Oriented Cable',
+    'LS Cable',
+    'Viscas cable',
+    'Prysmian Group',
+    'ZTT Group',
+    'Hanwha Group',
+    'Others',
+    'Unknown'
   ],
   'Oil Insulated Termination': [
     'PFISTERER', 'Tyco Raychem', 'G&W', 'Arkasil', 'NKT', 'Brugg', 'Changlan', 'Sudkabel', 'Centuray', 'Joslyn', 'ABB Kabeldon', 'BICC', 'Pirelli', 'ATPIAS', 'CCC', 'Fujian', 'Nexans', 'Sumitomo', 'Others', 'Unknown'
@@ -642,6 +710,99 @@ export const MANUFACTURERS_BY_EQUIPMENT_TYPE: Record<string, string[]> = {
     'Combine Product', 'Others', 'Unknown'
   ]
 };
+
+export const MANUFACTURER_DEFAULT_COUNTRY: Record<string, string> = {
+  // Submarine Power Cable manufacturers
+  'Nexans': 'Norway',
+  'NKT': 'Denmark',
+  'Alcatel': 'France',
+  'Exsym': 'Japan',
+  'Sumitomo Electric': 'Japan',
+  'Sumitomo': 'Japan',
+  'Furukawa Electric': 'Japan',
+  'Furukawa': 'Japan',
+  'Showa Electric': 'Japan',
+  'Showa': 'Japan',
+  'Draka': 'China',
+  'CYG': 'China',
+  'Hengthong Cable': 'China',
+  'Hengtong Cable': 'China',
+  'Hengtong': 'China',
+  'Ningbo Oriented Cable': 'China',
+  'Orient Cable': 'China',
+  'LS Cable': 'South Korea',
+  'Viscas cable': 'Japan',
+  'Viscas': 'Japan',
+  'Prysmian Group': 'Italy',
+  'Prysmian': 'Italy',
+  'ZTT Group': 'China',
+  'ZTT': 'China',
+  'Hanwha Group': 'South Korea',
+  'Hanwha': 'South Korea',
+
+  // Other equipment manufacturers
+  'Bangkok Cable (BCC)': 'Thailand',
+  'Phelps Dodge (PHD)': 'Thailand',
+  'Venine (V9)': 'Thailand',
+  'Charoong Thai Wire and Cable (CTW)': 'Thailand',
+  'Thai Yazaki (TYZ)': 'Thailand',
+  'Erawan (ERW)': 'Thailand',
+  'PFISTERER': 'Germany',
+  'Tyco Raychem': 'United States',
+  'G&W': 'United States',
+  'Arkasil': 'Russia',
+  'Brugg': 'Switzerland',
+  'Changlan': 'China',
+  'Sudkabel': 'Germany',
+  'Südkabel': 'Germany',
+  'Centuray': 'China',
+  'CENTURAY': 'China',
+  'Joslyn': 'United States',
+  'ABB Kabeldon': 'Sweden',
+  'ABB': 'Switzerland',
+  'BICC': 'United Kingdom',
+  'Pirelli': 'Italy',
+  'ATPIAS': 'Thailand',
+  'CCC': 'China',
+  'Fujian': 'China',
+  'ELASTIMOLD': 'United States',
+  'Emeleg': 'Thailand',
+  'U-Electric': 'Thailand',
+  'Ormazabal': 'Spain',
+  'Siemens': 'Germany',
+  'Gunkul': 'Thailand',
+  'TRIDELTA': 'Germany',
+  'ELPRO': 'Germany',
+  'Ikebana': 'India',
+  'Euromold': 'Belgium',
+  '3M': 'United States',
+  'Chardon': 'Taiwan',
+  'COELME': 'Italy',
+  'Hapam': 'Netherlands',
+  'S&C': 'United States',
+  'Schneider Electric': 'France',
+  'U-Tah': 'Thailand',
+  'U-ELECTRIC': 'Thailand',
+  'Lahmeyer': 'Germany',
+  'LUCY': 'United Kingdom',
+  'PMK': 'Thailand',
+  'AVATAR': 'Thailand',
+  'Combine Product': 'Thailand'
+};
+
+export function getDefaultCountryForManufacturer(manufacturer: string): string | undefined {
+  if (!manufacturer) return undefined;
+  const direct = MANUFACTURER_DEFAULT_COUNTRY[manufacturer];
+  if (direct) return direct;
+  const mLower = manufacturer.toLowerCase().trim();
+  for (const [k, v] of Object.entries(MANUFACTURER_DEFAULT_COUNTRY)) {
+    if (mLower === k.toLowerCase()) return v;
+  }
+  for (const [k, v] of Object.entries(MANUFACTURER_DEFAULT_COUNTRY)) {
+    if (mLower.includes(k.toLowerCase()) || k.toLowerCase().includes(mLower)) return v;
+  }
+  return undefined;
+}
 
 export function getManufacturersForEquipmentType(equipmentType: string): string[] {
   return MANUFACTURERS_BY_EQUIPMENT_TYPE[equipmentType] || [
@@ -1038,6 +1199,7 @@ export function parseEquipmentIdDetails(equipmentId: string): ParsedEquipmentIdD
     const eqCode = stdMatch[4].toUpperCase();
     result.equipmentTypeCode = eqCode;
     if (eqCode === 'UG') result.equipmentType = 'Underground Cable';
+    else if (eqCode === 'SB') result.equipmentType = 'Submarine Power Cable';
     else if (eqCode === 'TM') result.equipmentType = 'Cold Shrink Termination';
     else if (eqCode === 'JO') result.equipmentType = 'Joint';
     else if (eqCode === 'GB') result.equipmentType = 'GND Link box';
@@ -1090,6 +1252,9 @@ export function parseEquipmentIdDetails(equipmentId: string): ParsedEquipmentIdD
     if (/TM/i.test(clean) || /Termination/i.test(clean)) {
       result.equipmentType = 'Cold Shrink Termination';
       result.equipmentTypeCode = 'TM';
+    } else if (/SB/i.test(clean) || /Submarine/i.test(clean)) {
+      result.equipmentType = 'Submarine Power Cable';
+      result.equipmentTypeCode = 'SB';
     } else if (/UG/i.test(clean) || /Underground/i.test(clean)) {
       result.equipmentType = 'Underground Cable';
       result.equipmentTypeCode = 'UG';
@@ -1159,6 +1324,7 @@ export function getLocationTypeAbbreviation(locType: string): string {
 
 export function getEquipmentTypeAbbreviation2(eqType: string): string {
   const norm = (eqType || '').toLowerCase().trim();
+  if (norm.includes('submarine') || norm === 'sb') return 'SB';
   if (norm.includes('underground cable') || norm === 'ug') return 'UG';
   if (norm.includes('oil insulated termination') || norm.includes('dry type termination') || norm.includes('heat shrink termination') || norm.includes('plug in termination') || norm.includes('slip-on termination') || norm.includes('slip on termination') || norm.includes('cold shrink termination') || norm.includes('termination') || norm === 'tm') return 'TM';
   if (norm.includes('joint') || norm === 'jo') return 'JO';
@@ -1207,6 +1373,8 @@ export function getPea6Digits(peaNumber: string): string {
 }
 
 export const EQUIPMENT_TYPE_ABBREVIATIONS: Record<string, string> = {
+  'Submarine Power Cable': 'SB',
+  'Submarine Cable': 'SB',
   'Underground Cable': 'UG',
   'Oil Insulated Termination': 'TM',
   'Dry Type Termination': 'TM',
@@ -1224,6 +1392,98 @@ export const EQUIPMENT_TYPE_ABBREVIATIONS: Record<string, string> = {
   'HV ATS': 'HS',
   'LV ATS': 'LS'
 };
+
+/**
+ * Submarine Power Cable PEA Number Specification:
+ * 1. Starts with 2 letters: "SB"
+ * 2. 2-digit number after 2 letters: year of asset registration (last 2 digits of Buddhist Era e.g. 2567 -> 67).
+ * 3. 6-digit number after "-":
+ *    (1) Digit 1 of 6: Voltage level (2 for 22 kV, 3 for 33 kV, 5 for 115 kV, 6 for 230 kV)
+ *    (2) Digit 2 of 6: Size of submarine cable (1 for 70 sq.mm, 2 for 90 sq.mm, 3 for 120 sq.mm, 4 for 185 sq.mm, 5 for 240 sq.mm, 6 for 300 sq.mm, 7 for 500 sq.mm, 8 for 800 sq.mm, 9 for other)
+ *    (3) Digits 3 to 6: 4-digit running number in that year of registration (e.g. 0007 for 7th equipment)
+ * Example: "SB67-210007"
+ */
+export function getSubmarineVoltageDigit(voltage: string): string {
+  const norm = String(voltage || '').trim().toLowerCase();
+  if (norm.includes('230')) return '6';
+  if (norm.includes('115')) return '5';
+  if (norm.includes('33')) return '3';
+  if (norm.includes('22')) return '2';
+  if (norm.includes('69')) return '4';
+  return '2';
+}
+
+export function getSubmarineSizeDigit(size: string): string {
+  const s = String(size || '').trim().toLowerCase();
+  if (s.includes('70')) return '1';
+  if (s.includes('90') || s.includes('95')) return '2';
+  if (s.includes('120')) return '3';
+  if (s.includes('185')) return '4';
+  if (s.includes('240')) return '5';
+  if (s.includes('300')) return '6';
+  if (s.includes('500')) return '7';
+  if (s.includes('800')) return '8';
+  return '9'; // other
+}
+
+export function generateSubmarinePeaNumber(params: {
+  year?: number | string;
+  voltage?: string;
+  size?: string;
+  runningNumber: number;
+}): string {
+  const rawYr = params.year ?? new Date().getFullYear();
+  let yrNum = typeof rawYr === 'number' ? rawYr : parseInt(String(rawYr).replace(/\D/g, ''), 10) || new Date().getFullYear();
+  const beYr = yrNum > 2500 ? yrNum : yrNum + 543;
+  const yy = String(beYr).slice(-2);
+  const vCode = getSubmarineVoltageDigit(params.voltage || '22');
+  const sCode = getSubmarineSizeDigit(params.size || '70');
+  const runCode = String(params.runningNumber || 1).padStart(4, '0');
+  return `SB${yy}-${vCode}${sCode}${runCode}`;
+}
+
+export function parseSubmarinePeaNumber(peaNumber: string) {
+  if (!peaNumber || typeof peaNumber !== 'string') return null;
+  const match = peaNumber.trim().match(/^SB(\d{2})-(\d)(\d)(\d{4})$/i);
+  if (!match) return null;
+  const yy = parseInt(match[1], 10);
+  const beYear = 2500 + yy;
+  const ceYear = beYear - 543;
+
+  const vDigit = match[2];
+  let voltage = '22 kV';
+  if (vDigit === '2') voltage = '22 kV';
+  else if (vDigit === '3') voltage = '33 kV';
+  else if (vDigit === '5') voltage = '115 kV';
+  else if (vDigit === '6') voltage = '230 kV';
+
+  const sDigit = match[3];
+  let size = 'Other';
+  if (sDigit === '1') size = '70 sq.mm';
+  else if (sDigit === '2') size = '90 sq.mm';
+  else if (sDigit === '3') size = '120 sq.mm';
+  else if (sDigit === '4') size = '185 sq.mm';
+  else if (sDigit === '5') size = '240 sq.mm';
+  else if (sDigit === '6') size = '300 sq.mm';
+  else if (sDigit === '7') size = '500 sq.mm';
+  else if (sDigit === '8') size = '800 sq.mm';
+  else if (sDigit === '9') size = 'Other';
+
+  const runningNumber = parseInt(match[4], 10);
+
+  return {
+    prefix: 'SB',
+    yy: match[1],
+    beYear,
+    ceYear,
+    voltageDigit: vDigit,
+    voltage,
+    sizeDigit: sDigit,
+    size,
+    runningNumber,
+    raw: peaNumber.trim().toUpperCase()
+  };
+}
 
 export function getEquipmentTypeAbbreviation(type: string): string {
   return getEquipmentTypeAbbreviation2(type);

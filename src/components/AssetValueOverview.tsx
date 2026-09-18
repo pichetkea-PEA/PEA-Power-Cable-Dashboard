@@ -51,6 +51,7 @@ interface AssetValueOverviewProps {
 // Color palette for charts
 const ASSET_TYPE_COLORS: Record<string, string> = {
   'Underground Cable': '#4f46e5', // Indigo
+  'Submarine Power Cable': '#06b6d4', // Cyan
   'Submarine Cable': '#06b6d4', // Cyan
   'Oil Insulated Termination': '#8b5cf6', // Purple
   'Joint': '#f59e0b', // Amber
@@ -714,6 +715,7 @@ export default function AssetValueOverview({
             >
               <option value="All">All Asset Types</option>
               <option value="Underground Cable">Underground Cable</option>
+              <option value="Submarine Power Cable">Submarine Power Cable</option>
               <option value="Submarine Cable">Submarine Cable</option>
               <option value="Joint">Joint</option>
               <option value="Oil Insulated Termination">Oil Insulated Termination</option>

@@ -22,6 +22,7 @@ import {
   getLatestEquipmentRunningNumber,
   getAvailableEquipmentTypes,
   getManufacturersForEquipmentType,
+  getDefaultCountryForManufacturer,
   getAreaFromCity,
   parseEquipmentIdDetails,
   CITY_ABBREVIATION_TO_NAME
@@ -238,7 +239,12 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   useEffect(() => {
     const availableBrands = getManufacturersForEquipmentType(eqType);
     if (!brand || !availableBrands.includes(brand)) {
-      setBrand(availableBrands[0] || 'Others');
+      const defaultBrand = availableBrands[0] || 'Others';
+      setBrand(defaultBrand);
+      const defaultCountry = getDefaultCountryForManufacturer(defaultBrand);
+      if (defaultCountry) {
+        setCountry(defaultCountry);
+      }
     }
   }, [eqType]);
 
@@ -246,7 +252,12 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   useEffect(() => {
     const availableBrands = getManufacturersForEquipmentType(eqType);
     if (!brand && availableBrands.length > 0) {
-      setBrand(availableBrands[0]);
+      const defaultBrand = availableBrands[0];
+      setBrand(defaultBrand);
+      const defaultCountry = getDefaultCountryForManufacturer(defaultBrand);
+      if (defaultCountry) {
+        setCountry(defaultCountry);
+      }
     }
     if (!country && COUNTRIES_OF_ORIGIN.length > 0) {
       setCountry(COUNTRIES_OF_ORIGIN[0]);
@@ -1406,7 +1417,14 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                   </label>
                   <select
                     value={brand}
-                    onChange={e => setBrand(e.target.value)}
+                    onChange={e => {
+                      const newB = e.target.value;
+                      setBrand(newB);
+                      const defaultCountry = getDefaultCountryForManufacturer(newB);
+                      if (defaultCountry) {
+                        setCountry(defaultCountry);
+                      }
+                    }}
                     className="bg-white border border-gray-300 rounded-lg py-2 px-3 text-xs font-medium text-gray-800 focus:outline-hidden focus:border-purple-600 focus:ring-1 focus:ring-purple-600 shadow-xs"
                   >
                     {getManufacturersForEquipmentType(eqType).map(m => (

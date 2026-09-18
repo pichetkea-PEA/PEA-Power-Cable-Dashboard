@@ -15,6 +15,7 @@ export type LocationType = 'Transmission Line' | 'Substation' | 'Distribution Li
 
 export type EquipmentType =
   | 'Underground Cable'
+  | 'Submarine Power Cable'
   | 'Oil Insulated Termination'
   | 'Joint'
   | 'GND Link box'
