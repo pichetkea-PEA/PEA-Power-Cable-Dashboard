@@ -15,6 +15,7 @@ import {
   generateEquipmentId,
   getEquipmentConditionPrefix,
   getLatestEquipmentRunningNumber,
+  getDefaultClassForEquipmentType,
   normalizeVoltageLevel,
   normalizeEquipmentType,
   normalizeLocationType,
@@ -1192,7 +1193,7 @@ export default function AdminRegistrationSuite({
           getValForSheetCol(19, existing.businessType || ''),
           getValForSheetCol(20, existing.costCenter || ''),
           getValForSheetCol(21, existing.gistag || ''),
-          getValForSheetCol(22, existing.class || ''),
+          getValForSheetCol(22, (existing.class === 'Z_RU' || !existing.class) ? getDefaultClassForEquipmentType(existing.equipmentType || '') : existing.class),
           getValForSheetCol(23, existing.contractNumber || ''),
           getValForSheetCol(24, existing.feeder || ''),
           getValForSheetCol(25, existing.substationId || ''),
@@ -2153,7 +2154,7 @@ export default function AdminRegistrationSuite({
         const businessType = (cols[24] || '').trim();
         const costCenter = (cols[25] || '').trim();
         const gistag = (cols[26] || '').trim();
-        const cls = (cols[27] || '').trim();
+        const rawCls = (cols[27] || '').trim();
         const contractNumber = (cols[28] || '').trim();
         const assetValue = (cols[29] || '').trim(); // Col AD
         const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
@@ -2162,6 +2163,7 @@ export default function AdminRegistrationSuite({
         // Smart Normalizations
         const volt = normalizeVoltageLevel(rawVolt, rawEqType);
         const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, volt);
+        const cls = (rawCls === 'Z_RU' || !rawCls) ? getDefaultClassForEquipmentType(eqType) : rawCls;
         const locationType = normalizeLocationType(rawLoc, volt);
         const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
         const area = derivedArea || rawArea || 'N1';
@@ -2507,7 +2509,8 @@ export default function AdminRegistrationSuite({
       const anws = '';
       const proid = rec.wbs || origRow[22] || '';
       const klart = '002';
-      const class1 = rec.class || origRow[27] || '';
+      const rawClass1 = (rec.class || origRow[27] || '').trim();
+      const class1 = (rawClass1 === 'Z_RU' || !rawClass1) ? getDefaultClassForEquipmentType(rec.equipmentType || origRow[7] || '') : rawClass1;
       const zcontract = rec.contractNumber || origRow[28] || '';
 
       const row = [

@@ -204,6 +204,8 @@ Health Status Grade,,Green,Score 85 - 100: Normal Condition
 Health Status Grade,,Yellow,Score 70 - 84: Moderate Aging / Monitor
 Health Status Grade,,Orange,Score 50 - 69: Warning / Schedule Maintenance
 Health Status Grade,,Red,Score < 50: Critical / Immediate Action
+Equipment Class,Ring Main Unit,Z_RU_DL,SAP Equipment Class for Ring Main Unit (DL distribution)
+Equipment Class,Unit Substation,Z_RU_DL,SAP Equipment Class for Unit Substation (DL distribution)
 User Role,,Local Operator,Field engineer / Data registrar
 User Role,,Manager,Regional manager / Approver
 User Role,,Admin,System administrator

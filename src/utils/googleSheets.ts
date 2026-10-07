@@ -1,5 +1,5 @@
 import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformation, PDDiagnosticInformation, EquipmentType, LocationType, PDResultType, TanDeltaResult } from '../types';
-import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, PEA_AREA_CITIES, getCityGpsCenter, parseEquipmentIdDetails, CITY_ABBREVIATION_TO_NAME } from './peaData';
+import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, PEA_AREA_CITIES, getCityGpsCenter, parseEquipmentIdDetails, CITY_ABBREVIATION_TO_NAME, getDefaultClassForEquipmentType } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
 
@@ -166,7 +166,10 @@ export async function fetchFastRegionalIdentifiers(
                   const businessType = (row[19] || '').toString().trim(); // Column T
                   const costCenter = (row[20] || '').toString().trim(); // Column U
                   const gistag = (row[21] || '').toString().trim(); // Column V
-                  const cls = (row[22] || '').toString().trim(); // Column W
+                  let cls = (row[22] || '').toString().trim(); // Column W
+                  if (cls === 'Z_RU' || !cls) {
+                    cls = getDefaultClassForEquipmentType(resolvedEqType);
+                  }
                   const contractNumber = (row[23] || '').toString().trim(); // Column X
                   const feeder = (row[24] || '').toString().trim(); // Column Y
                   const substationId = (row[25] || '').toString().trim(); // Column Z
@@ -859,7 +862,13 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     if (norm === 'businesstype' || (headers.length >= 30 && idx === 19)) return data.businessType ?? defaultValues[idx] ?? '';
     if (norm === 'costcenter' || (headers.length >= 30 && idx === 20)) return data.costCenter ?? defaultValues[idx] ?? '';
     if (norm === 'gistag' || (headers.length >= 30 && idx === 21)) return data.gistag ?? defaultValues[idx] ?? '';
-    if (norm === 'class' || (headers.length >= 30 && idx === 22)) return data.class ?? defaultValues[idx] ?? '';
+    if (norm === 'class' || (headers.length >= 30 && idx === 22)) {
+      let val = data.class ?? defaultValues[idx] ?? '';
+      if (val === 'Z_RU' || !val) {
+        val = getDefaultClassForEquipmentType(data.equipmentType || '');
+      }
+      return val;
+    }
     if (norm === 'contractnumber' || (headers.length >= 30 && idx === 23)) return data.contractNumber ?? defaultValues[idx] ?? '';
     if (norm === 'feeder' || (headers.length >= 30 && idx === 24)) return data.feeder ?? defaultValues[idx] ?? '';
     if (norm === 'substationid' || (headers.length >= 30 && idx === 25)) return data.substationId ?? defaultValues[idx] ?? '';
@@ -1216,7 +1225,10 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     const businessType = getVal('businesstype') || cleanStr(row[19]);
     const costCenter = getVal('costcenter') || cleanStr(row[20]);
     const gistag = getVal('gistag') || cleanStr(row[21]);
-    const cls = getVal('class') || cleanStr(row[22]);
+    let cls = getVal('class') || cleanStr(row[22]);
+    if (cls === 'Z_RU' || !cls) {
+      cls = getDefaultClassForEquipmentType(resolvedEqType);
+    }
     const contractNumber = getVal('contractnumber') || cleanStr(row[23]);
     const feeder = getVal('feeder') || cleanStr(row[24]);
     const substationId = getVal('substationid') || cleanStr(row[25]);

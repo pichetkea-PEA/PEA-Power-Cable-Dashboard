@@ -279,6 +279,21 @@ PEA CABLE ASSET MONITORING SYSTEM - MASTER DROPDOWN LISTS DICTIONARY
 • Red     (Score < 50)     : Critical / Immediate Maintenance
 
 
+11. EQUIPMENT CLASS SAP CLASSIFICATIONS (COLUMN W)
+--------------------------------------------------------------------------------
+• Ring Main Unit : Z_RU_DL (Updated from Z_RU)
+• Unit Substation : Z_RU_DL (Updated from Z_RU)
+• Cold Shrink / Heat Shrink / Oil Insulated Termination : Z_TM_TL
+• Lightning Arrester : Z_LA_TL
+• Underground Cable : Z_UG_TL
+• Submarine Power Cable : Z_SB_TL
+• Joint : Z_JO_TL
+• GND Link box : Z_GB_TL
+• Air Break Switch : Z_AB_TL
+• Distribution Circuit : Z_DC_DL
+
+
+
 11. USER ACCESS ROLES
 --------------------------------------------------------------------------------
 • Local Operator

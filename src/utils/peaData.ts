@@ -1393,6 +1393,46 @@ export const EQUIPMENT_TYPE_ABBREVIATIONS: Record<string, string> = {
   'LV ATS': 'LS'
 };
 
+export const EQUIPMENT_TYPE_CLASSES: Record<string, string> = {
+  'Submarine Power Cable': 'Z_SB_TL',
+  'Submarine Cable': 'Z_SB_TL',
+  'Underground Cable': 'Z_UG_TL',
+  'Oil Insulated Termination': 'Z_TM_TL',
+  'Dry Type Termination': 'Z_TM_TL',
+  'Heat Shrink Termination': 'Z_TM_TL',
+  'Plug in Termination': 'Z_TM_TL',
+  'Slip-On Termination': 'Z_TM_TL',
+  'Cold Shrink Termination': 'Z_TM_TL',
+  'Joint': 'Z_JO_TL',
+  'GND Link box': 'Z_GB_TL',
+  'Lightning Arrester': 'Z_LA_TL',
+  'Air Break Switch': 'Z_AB_TL',
+  'Ring Main Unit': 'Z_RU_DL',
+  'Unit Substation': 'Z_RU_DL',
+  'Distribution Circuit': 'Z_DC_DL',
+  'HV ATS': 'Z_HS_DL',
+  'LV ATS': 'Z_LS_DL'
+};
+
+export function getDefaultClassForEquipmentType(type: string): string {
+  const norm = (type || '').toLowerCase().trim();
+  if (norm.includes('ring main unit') || norm.includes('unit substation') || norm === 'ru' || norm === 'rmu' || norm === 'uss') {
+    return 'Z_RU_DL';
+  }
+  if (norm.includes('submarine') || norm === 'sb') return 'Z_SB_TL';
+  if (norm.includes('underground') || norm === 'ug') return 'Z_UG_TL';
+  if (norm.includes('termination') || norm === 'tm') return 'Z_TM_TL';
+  if (norm.includes('lightning') || norm.includes('arrester') || norm === 'la') return 'Z_LA_TL';
+  if (norm.includes('joint') || norm === 'jo') return 'Z_JO_TL';
+  if (norm.includes('gnd link box') || norm.includes('ground box') || norm === 'gb') return 'Z_GB_TL';
+  if (norm.includes('air break switch') || norm === 'ab') return 'Z_AB_TL';
+  if (norm.includes('distribution circuit') || norm === 'dc') return 'Z_DC_DL';
+  if (norm.includes('hv ats') || norm === 'hs') return 'Z_HS_DL';
+  if (norm.includes('lv ats') || norm === 'ls') return 'Z_LS_DL';
+  
+  return EQUIPMENT_TYPE_CLASSES[type] || 'Z_UG_TL';
+}
+
 /**
  * Submarine Power Cable PEA Number Specification:
  * 1. Starts with 2 letters: "SB"
