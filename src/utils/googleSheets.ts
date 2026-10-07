@@ -166,10 +166,6 @@ export async function fetchFastRegionalIdentifiers(
                   const businessType = (row[19] || '').toString().trim(); // Column T
                   const costCenter = (row[20] || '').toString().trim(); // Column U
                   const gistag = (row[21] || '').toString().trim(); // Column V
-                  let cls = (row[22] || '').toString().trim(); // Column W
-                  if (cls === 'Z_RU' || !cls) {
-                    cls = getDefaultClassForEquipmentType(resolvedEqType);
-                  }
                   const contractNumber = (row[23] || '').toString().trim(); // Column X
                   const feeder = (row[24] || '').toString().trim(); // Column Y
                   const substationId = (row[25] || '').toString().trim(); // Column Z
@@ -200,6 +196,11 @@ export async function fetchFastRegionalIdentifiers(
                   const resolvedLocType = ((row[8] || '').toString().trim() || parsedEq.locationType || 'Distribution Line') as LocationType;
                   const resolvedEqType = ((row[5] || '').toString().trim() || parsedEq.equipmentType || 'Cold Shrink Termination') as EquipmentType;
                   const resolvedYear = parseInt(row[12], 10) || parsedEq.year || new Date().getFullYear();
+
+                  let cls = (row[22] || '').toString().trim(); // Column W
+                  if (cls === 'Z_RU' || !cls) {
+                    cls = getDefaultClassForEquipmentType(resolvedEqType);
+                  }
 
                   parsed.push({
                     number: parseInt(row[0], 10) || idx + 1,
@@ -1225,10 +1226,7 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     const businessType = getVal('businesstype') || cleanStr(row[19]);
     const costCenter = getVal('costcenter') || cleanStr(row[20]);
     const gistag = getVal('gistag') || cleanStr(row[21]);
-    let cls = getVal('class') || cleanStr(row[22]);
-    if (cls === 'Z_RU' || !cls) {
-      cls = getDefaultClassForEquipmentType(resolvedEqType);
-    }
+    const rawClass = getVal('class') || cleanStr(row[22]);
     const contractNumber = getVal('contractnumber') || cleanStr(row[23]);
     const feeder = getVal('feeder') || cleanStr(row[24]);
     const substationId = getVal('substationid') || cleanStr(row[25]);
@@ -1281,6 +1279,11 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     const resolvedLocType = (locationType || parsedEq.locationType || 'Substation') as LocationType;
     const resolvedEqType = (equipmentType || parsedEq.equipmentType || 'Underground Cable') as EquipmentType;
     const resolvedYear = yearOfRegistration || parsedEq.year || new Date().getFullYear();
+
+    let cls = rawClass;
+    if (cls === 'Z_RU' || !cls) {
+      cls = getDefaultClassForEquipmentType(resolvedEqType);
+    }
 
     // Now gather all other columns that do NOT match standard headers into customFields
     const standardKeys = [

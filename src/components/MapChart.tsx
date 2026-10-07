@@ -2,6 +2,45 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
+
+// Robust Prototype Patch for Leaflet.heat to prevent IndexSizeError when canvas dimension is 0
+if (typeof L !== 'undefined') {
+  const HeatLayerClass = (L as any).HeatLayer;
+  if (HeatLayerClass && HeatLayerClass.prototype) {
+    const heatProto = HeatLayerClass.prototype;
+    if (!heatProto._safePatched) {
+      const origReset = heatProto._reset;
+      heatProto._reset = function () {
+        if (!this._map || !this._canvas) return;
+        const size = this._map.getSize();
+        if (!size || size.x <= 0 || size.y <= 0) {
+          return;
+        }
+        try {
+          if (origReset) origReset.apply(this);
+        } catch (e: any) {
+          // Suppress canvas 0-dimension drawing errors
+        }
+      };
+
+      const origRedraw = heatProto._redraw;
+      heatProto._redraw = function (...args: any[]) {
+        if (!this._map || !this._canvas) return this;
+        const size = this._map.getSize();
+        if (!size || size.x <= 0 || size.y <= 0 || this._canvas.width <= 0 || this._canvas.height <= 0) {
+          return this;
+        }
+        try {
+          if (origRedraw) return origRedraw.apply(this, args);
+        } catch (e: any) {
+          return this;
+        }
+        return this;
+      };
+      heatProto._safePatched = true;
+    }
+  }
+}
 import { CableAsset, HealthStatus } from '../types';
 import { 
   Flame, 
@@ -152,8 +191,12 @@ export default function MapChart({
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined' && container) {
       resizeObserver = new ResizeObserver(() => {
-        if (mapRef.current) {
-          mapRef.current.invalidateSize();
+        if (mapRef.current && container && container.clientWidth > 0 && container.clientHeight > 0) {
+          try {
+            mapRef.current.invalidateSize();
+          } catch (err) {
+            console.warn('Map invalidateSize skipped:', err);
+          }
         }
       });
       resizeObserver.observe(container);
@@ -303,9 +346,33 @@ export default function MapChart({
             blur: heatBlur,
             maxZoom: 16,
             max: 1.0,
-            minOpacity: 0.2,
+            minOpacity: Math.max(heatOpacity * 0.4, 0.3),
             gradient: customGradient
           });
+          // Direct safety wrapping on instance
+          if (heatLayer) {
+            const origReset = heatLayer._reset;
+            heatLayer._reset = function () {
+              if (!this._map || !this._canvas) return;
+              const size = this._map.getSize();
+              if (!size || size.x <= 0 || size.y <= 0) return;
+              try {
+                if (origReset) origReset.apply(this);
+              } catch (err) {}
+            };
+            const origRedraw = heatLayer._redraw;
+            heatLayer._redraw = function (...args: any[]) {
+              if (!this._map || !this._canvas) return this;
+              const size = this._map.getSize();
+              if (!size || size.x <= 0 || size.y <= 0 || this._canvas.width <= 0 || this._canvas.height <= 0) return this;
+              try {
+                if (origRedraw) return origRedraw.apply(this, args);
+              } catch (err) {
+                return this;
+              }
+              return this;
+            };
+          }
           heatLayer.addTo(map);
           heatLayerRef.current = heatLayer;
         } catch (e) {
@@ -1027,6 +1094,112 @@ export default function MapChart({
                   : 'linear-gradient(to right, #34d399 15%, #60a5fa 35%, #facc15 55%, #f97316 75%, #ef4444 100%)'
               }}
             />
+          </div>
+        )}
+
+        {/* Heatmap Density Mode Filter Buttons in Legend (shown when viewMode === 'heatmap') */}
+        {viewMode === 'heatmap' && (
+          <div className="space-y-1.5 pt-1">
+            <div className="text-[10px] text-gray-500 font-bold uppercase tracking-wider flex items-center justify-between">
+              <span>Select Heatmap Density Filter:</span>
+              <span className="text-purple-700 font-semibold">{
+                heatmapMode === 'all' ? 'All Assets' :
+                heatmapMode === 'critical' ? 'Critical Hazards' :
+                heatmapMode === 'severe_pd' ? 'Severe PD Hotspots' :
+                heatmapMode === 'warning' ? 'Monitoring' : 'Healthy'
+              }</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+              {/* All Risk-Weighted */}
+              <button
+                type="button"
+                onClick={() => setHeatmapMode('all')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer col-span-2 ${
+                  heatmapMode === 'all'
+                    ? 'bg-amber-500 text-white border-amber-600 shadow-xs ring-2 ring-amber-300 font-bold'
+                    : 'bg-amber-50/60 hover:bg-amber-100 text-amber-950 border-amber-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <Flame className="w-3.5 h-3.5" />
+                  <span className="truncate">All Density (Risk-Weighted)</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({validGpsCount})</span>
+              </button>
+
+              {/* Severe Online PD */}
+              <button
+                type="button"
+                onClick={() => setHeatmapMode('severe_pd')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer col-span-2 ${
+                  heatmapMode === 'severe_pd'
+                    ? 'bg-purple-900 text-white border-purple-900 shadow-xs ring-2 ring-purple-400 font-bold'
+                    : 'bg-purple-50/70 hover:bg-purple-100 text-purple-950 border-purple-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300 shrink-0" />
+                  <span className="truncate">⚡ Severe Online PD Hotspots</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({severePdCount})</span>
+              </button>
+
+              {/* Critical Hazards */}
+              <button
+                type="button"
+                onClick={() => setHeatmapMode('critical')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  heatmapMode === 'critical'
+                    ? 'bg-red-600 text-white border-red-700 shadow-xs ring-2 ring-red-300 font-bold'
+                    : 'bg-red-50/60 hover:bg-red-100 text-red-900 border-red-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <ShieldAlert className="w-3 h-3 text-red-500 shrink-0" />
+                  <span className="truncate">Critical Hotspots</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({criticalCount})</span>
+              </button>
+
+              {/* Warning / Monitoring */}
+              <button
+                type="button"
+                onClick={() => setHeatmapMode('warning')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                  heatmapMode === 'warning'
+                    ? 'bg-amber-600 text-white border-amber-700 shadow-xs ring-2 ring-amber-300 font-bold'
+                    : 'bg-yellow-50/60 hover:bg-yellow-100 text-yellow-900 border-yellow-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                  <span className="truncate">Warning Clusters</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({warningCount})</span>
+              </button>
+
+              {/* Healthy */}
+              <button
+                type="button"
+                onClick={() => setHeatmapMode('healthy')}
+                className={`p-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer col-span-2 ${
+                  heatmapMode === 'healthy'
+                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-300 font-bold'
+                    : 'bg-emerald-50/60 hover:bg-emerald-100 text-emerald-900 border-emerald-200 font-medium'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                  <span className="truncate">Healthy Assets Distribution</span>
+                </div>
+                <span className="font-bold font-mono shrink-0">({healthyCount})</span>
+              </button>
+            </div>
+
+            <div className="text-[9.5px] text-gray-500 italic text-center pt-0.5">
+              💡 Click any category above to re-render heatmap density for that subset
+            </div>
           </div>
         )}
 
