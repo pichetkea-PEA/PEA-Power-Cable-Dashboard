@@ -21,7 +21,19 @@ import {
   normalizeLocationType,
   normalizeCity,
   normalizeInstallationDate,
-  getAssetArea
+  getAssetArea,
+  VALID_CSV_LOCATION_TYPES,
+  VALID_CSV_PRODUCTION_MONTHS,
+  VALID_CSV_GREGORIAN_YEARS,
+  validateCsvPeaArea,
+  validateCsvVoltageLevel,
+  validateCsvLocationType,
+  validateAndTransformCsvGps,
+  validateCsvCityForArea,
+  validateCsvProductionMonth,
+  validateAndTransformCsvRegistrationYear,
+  validateAndTransformCsvInstallationDate,
+  evaluateCsvRecordIntegrity
 } from '../utils/peaData';
 import { 
   ShieldAlert, 
@@ -1687,18 +1699,39 @@ export default function AdminRegistrationSuite({
         // 1. Check if all cells in the row are empty or whitespace
         const isAllCellsEmpty = row.every(cell => !cell || cell.trim() === '');
 
-        // 2. Check if the first column (Voltage Level / Col A) is empty or blank
-        const isFirstColEmpty = !row[0] || row[0].trim() === '';
+        // 2. Check if all essential identifier columns (Col A Voltage, Col B Area, Col C City, Col H EqType) are blank
+        const isCoreDataEmpty = !row[0]?.trim() && !row[1]?.trim() && !row[2]?.trim() && !row[7]?.trim();
 
-        // 3. Check if all essential identifier columns (Col A Voltage, Col B Area, Col H EqType) are blank
-        const isCoreDataEmpty = !row[0]?.trim() && !row[1]?.trim() && !row[7]?.trim();
-
-        if (isAllCellsEmpty || isFirstColEmpty || isCoreDataEmpty) {
+        if (isAllCellsEmpty || isCoreDataEmpty) {
           console.log(`[CSV Asset Count Check] Empty row encountered at row #${i + 2}. Stopping row count. Successfully detected ${validDataRows.length} valid asset records.`);
           break;
         }
 
-        validDataRows.push(row);
+        // Background Data Integrity Auto-Transformation Process during CSV upload:
+        // - Rule 4 (GPS, Col D / index 3): Convert DMS / DDM / UTM to Decimal Degrees (Latitude, Longitude)
+        // - Rule 7 (Year of Registration, Col Q / index 16): Convert Buddhist calendar year to Gregorian calendar year
+        // - Rule 8 (Installation Date, Col V / index 21): Convert text-style date (e.g. "19082024") to "DD/MM/YYYY" (e.g. "19/8/2024")
+        const transformedRow = [...row];
+        if (transformedRow[3] !== undefined && transformedRow[3].trim() !== '') {
+          const gpsCheck = validateAndTransformCsvGps(transformedRow[3]);
+          if (gpsCheck.isValid) {
+            transformedRow[3] = gpsCheck.value;
+          }
+        }
+        if (transformedRow[16] !== undefined && transformedRow[16].trim() !== '') {
+          const yrCheck = validateAndTransformCsvRegistrationYear(transformedRow[16]);
+          if (yrCheck.isValid) {
+            transformedRow[16] = yrCheck.value;
+          }
+        }
+        if (transformedRow[21] !== undefined && transformedRow[21].trim() !== '') {
+          const dtCheck = validateAndTransformCsvInstallationDate(transformedRow[21]);
+          if (dtCheck.isValid) {
+            transformedRow[21] = dtCheck.value;
+          }
+        }
+
+        validDataRows.push(transformedRow);
       }
 
       if (validDataRows.length === 0) {
@@ -2128,10 +2161,10 @@ export default function AdminRegistrationSuite({
         // Col AB (27): Class
         // Col AC (28): Contract Number
 
-        const rawVolt = (cols[0] || '115').trim();
-        const rawArea = (cols[1] || 'N1').trim();
-        const rawCity = (cols[2] || rawArea).trim();
-        const gps = (cols[3] || '').trim();
+        const rawVolt = (cols[0] || '').trim();
+        const rawArea = (cols[1] || '').trim();
+        const rawCity = (cols[2] || '').trim();
+        const rawGps = (cols[3] || '').trim();
         const rawLoc = (cols[4] || '').trim();
         const adsNumber = (cols[5] || '').trim(); // Col F
         const assetNumber = (cols[6] || '').trim(); // Col G
@@ -2142,13 +2175,13 @@ export default function AdminRegistrationSuite({
         const manufacturer = (cols[12] || '').trim();
         const model = (cols[13] || '').trim();
         const country = (cols[14] || '').trim() || getDefaultCountryForManufacturer(manufacturer) || '';
-        const productionMonth = (cols[15] || '').trim();
-        const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
+        const rawProdMonth = (cols[15] || '').trim();
+        const rawYearOfReg = (cols[16] || '').trim();
         const substationName = (cols[17] || '').trim();
         const substationId = (cols[18] || '').trim();
         const feeder = (cols[19] || '').trim();
         const landmark = (cols[20] || '').trim();
-        const rawInstDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
+        const rawInstDate = (cols[21] || '').trim();
         const wbs = (cols[22] || '').trim();
         const workOrder = (cols[23] || '').trim();
         const businessType = (cols[24] || '').trim();
@@ -2160,28 +2193,54 @@ export default function AdminRegistrationSuite({
         const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
         const qrDocument = (cols[31] || '').trim(); // Col AF (QR Document)
 
-        // Smart Normalizations
-        const volt = normalizeVoltageLevel(rawVolt, rawEqType);
-        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, volt);
+        // Data Integrity Checks & Auto-Transformations (8 Rules)
+        const areaCheck = validateCsvPeaArea(rawArea);
+        const area = areaCheck.value;
+
+        const voltCheck = validateCsvVoltageLevel(rawVolt);
+        const volt = voltCheck.value;
+
+        const locCheck = validateCsvLocationType(rawLoc);
+        const locationType = locCheck.value;
+
+        const gpsCheck = validateAndTransformCsvGps(rawGps);
+        const gps = gpsCheck.isValid ? gpsCheck.value : '';
+
+        const cityCheck = validateCsvCityForArea(rawCity, area);
+        const city = cityCheck.value;
+
+        const prodMonthCheck = validateCsvProductionMonth(rawProdMonth);
+        const productionMonth = prodMonthCheck.value;
+
+        const yearRegCheck = validateAndTransformCsvRegistrationYear(rawYearOfReg);
+        const yearOfRegistration = yearRegCheck.value;
+
+        const instDateCheck = validateAndTransformCsvInstallationDate(rawInstDate);
+        const installationDate = instDateCheck.value;
+
+        // Safe fallbacks solely for PEA number & Equipment ID generation when a cell is currently invalid
+        const safeVoltForCalc = voltCheck.isValid ? volt : normalizeVoltageLevel(rawVolt || '22', rawEqType);
+        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, safeVoltForCalc);
         const cls = (rawCls === 'Z_RU' || !rawCls) ? getDefaultClassForEquipmentType(eqType) : rawCls;
-        const locationType = normalizeLocationType(rawLoc, volt);
-        const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
-        const area = derivedArea || rawArea || 'N1';
-        const installationDate = normalizeInstallationDate(rawInstDate);
+        const safeLocForCalc = locCheck.isValid ? locationType : normalizeLocationType(rawLoc, safeVoltForCalc);
+        const safeAreaForCalc = areaCheck.isValid ? area : 'N1';
+        const safeCityForCalc = cityCheck.isValid ? city : (PEA_AREA_CITIES[safeAreaForCalc]?.[0] || 'Chiang Mai');
+        const safeInstDateForCalc = instDateCheck.isValid ? installationDate : normalizeInstallationDate(rawInstDate || new Date().toISOString().split('T')[0]);
+        const safeYearForCalc = yearRegCheck.isValid ? yearOfRegistration : String(new Date().getFullYear());
 
         // Automatically assign latest PEA number searching sheet data using Col B, A, H, I and Installation Date (Col R)
-        const autoPea = generateAutoPeaForCsvRow(volt, eqType, locationType, size, allCollectedAssets, installationDate, yearOfRegistration, usedSeqMap);
+        const autoPea = generateAutoPeaForCsvRow(safeVoltForCalc, eqType, safeLocForCalc, size, allCollectedAssets, safeInstDateForCalc, safeYearForCalc, usedSeqMap);
         if (autoPea) {
-          allCollectedAssets.push({ pea: autoPea, area });
+          allCollectedAssets.push({ pea: autoPea, area: safeAreaForCalc });
         }
 
         const condParams = {
-          area,
-          voltage: volt,
-          year: yearOfRegistration || new Date().getFullYear(),
-          locationType,
+          area: safeAreaForCalc,
+          voltage: safeVoltForCalc,
+          year: safeYearForCalc,
+          locationType: safeLocForCalc,
           equipmentType: eqType,
-          city
+          city: safeCityForCalc
         };
         const prefix = getEquipmentConditionPrefix(condParams);
         if (batchConditionCounters[prefix] === undefined) {
@@ -2201,6 +2260,7 @@ export default function AdminRegistrationSuite({
           area,
           city,
           gps,
+          rawGps,
           voltageLevel: volt,
           equipmentType: eqType,
           manufacturer,
@@ -2213,6 +2273,7 @@ export default function AdminRegistrationSuite({
           assetNumber,
           adsNumber,
           equipmentId: inputEqId || autoEqId,
+          inputEquipmentId: inputEqId,
           productionMonth,
           installationDate,
           wbs,
@@ -2294,10 +2355,13 @@ export default function AdminRegistrationSuite({
           newRow[0] = rec.voltageLevel || newRow[0];
           newRow[1] = rec.area || newRow[1];
           newRow[2] = rec.city || newRow[2];
+          newRow[3] = rec.gps || newRow[3];
           newRow[4] = rec.locationType || newRow[4];
           newRow[7] = rec.equipmentType || newRow[7];
           const isDistCircuit = (rec.equipmentType || newRow[7] || '').toLowerCase().includes('distribution circuit');
           newRow[9] = isDistCircuit ? '' : (rec.peaNumber || newRow[9]);
+          newRow[15] = rec.productionMonth || newRow[15];
+          newRow[16] = rec.yearOfRegistration || newRow[16];
           newRow[21] = rec.installationDate || newRow[21];
           if (rec.equipmentId) {
             while (newRow.length <= 30) newRow.push('');
@@ -2871,7 +2935,12 @@ export default function AdminRegistrationSuite({
             locationType: rec.locationType,
             substationName: rec.substationName,
             landmark: rec.landmark || 'Primary Feeder Line',
-            gps: { lat: 13.7563, lng: 100.5018 },
+            gps: (() => {
+              const parts = String(rec.gps || '').split(',').map((s: string) => parseFloat(s.trim()));
+              return parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])
+                ? { lat: parts[0], lng: parts[1] }
+                : { lat: 13.7563, lng: 100.5018 };
+            })(),
             yearOfRegistration: rec.yearOfRegistration || new Date().getFullYear(),
             peaNumber: rec.peaNumber,
             assetNumber: rec.adsNumber || '',
@@ -3030,10 +3099,10 @@ export default function AdminRegistrationSuite({
       const batchConditionCounters2: Record<string, number> = {};
       for (let i = 0; i < dataRows.length; i++) {
         const cols = dataRows[i];
-        const rawVolt = (cols[0] || '115').trim();
-        const rawArea = (cols[1] || 'N1').trim();
-        const rawCity = (cols[2] || rawArea).trim();
-        const gps = (cols[3] || '').trim();
+        const rawVolt = (cols[0] || '').trim();
+        const rawArea = (cols[1] || '').trim();
+        const rawCity = (cols[2] || '').trim();
+        const rawGps = (cols[3] || '').trim();
         const rawLoc = (cols[4] || '').trim();
         const adsNumber = (cols[5] || '').trim(); // Col F: Equipment Number ADS
         const assetNumber = (cols[6] || '').trim(); // Col G: Account Asset Number AA
@@ -3045,13 +3114,13 @@ export default function AdminRegistrationSuite({
         const manufacturer = (cols[12] || '').trim();
         const model = (cols[13] || '').trim();
         const country = (cols[14] || '').trim() || getDefaultCountryForManufacturer(manufacturer) || '';
-        const productionMonth = (cols[15] || '').trim();
-        const yearOfRegistration = (cols[16] || String(new Date().getFullYear())).trim();
+        const rawProdMonth = (cols[15] || '').trim();
+        const rawYearOfReg = (cols[16] || '').trim();
         const substationName = (cols[17] || '').trim();
         const substationId = (cols[18] || '').trim();
         const feeder = (cols[19] || '').trim();
         const landmark = (cols[20] || '').trim();
-        const rawInstDate = (cols[21] || new Date().toISOString().split('T')[0]).trim();
+        const rawInstDate = (cols[21] || '').trim();
         const wbs = (cols[22] || '').trim();
         const workOrder = (cols[23] || '').trim();
         const businessType = (cols[24] || '').trim();
@@ -3063,21 +3132,46 @@ export default function AdminRegistrationSuite({
         const inputEqId = (cols[30] || '').trim(); // Col AE (Equipment ID)
         const qrDocument = (cols[31] || '').trim(); // Col AF (QR Document)
 
-        // Smart Normalizations
-        const volt = normalizeVoltageLevel(rawVolt, rawEqType);
-        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, volt);
-        const locationType = normalizeLocationType(rawLoc, volt);
-        const { city, area: derivedArea } = normalizeCity(rawCity, rawArea);
-        const area = derivedArea || rawArea || 'N1';
-        const installationDate = normalizeInstallationDate(rawInstDate);
+        // Data Integrity Checks & Auto-Transformations (8 Rules)
+        const areaCheck = validateCsvPeaArea(rawArea);
+        const area = areaCheck.value;
+
+        const voltCheck = validateCsvVoltageLevel(rawVolt);
+        const volt = voltCheck.value;
+
+        const locCheck = validateCsvLocationType(rawLoc);
+        const locationType = locCheck.value;
+
+        const gpsCheck = validateAndTransformCsvGps(rawGps);
+        const gps = gpsCheck.isValid ? gpsCheck.value : '';
+
+        const cityCheck = validateCsvCityForArea(rawCity, area);
+        const city = cityCheck.value;
+
+        const prodMonthCheck = validateCsvProductionMonth(rawProdMonth);
+        const productionMonth = prodMonthCheck.value;
+
+        const yearRegCheck = validateAndTransformCsvRegistrationYear(rawYearOfReg);
+        const yearOfRegistration = yearRegCheck.value;
+
+        const instDateCheck = validateAndTransformCsvInstallationDate(rawInstDate);
+        const installationDate = instDateCheck.value;
+
+        // Safe fallbacks solely for Equipment ID calculation when a cell is currently invalid
+        const safeVoltForCalc = voltCheck.isValid ? volt : normalizeVoltageLevel(rawVolt || '22', rawEqType);
+        const eqType = normalizeEquipmentType(rawEqType, manufacturer, model, safeVoltForCalc);
+        const safeLocForCalc = locCheck.isValid ? locationType : normalizeLocationType(rawLoc, safeVoltForCalc);
+        const safeAreaForCalc = areaCheck.isValid ? area : 'N1';
+        const safeCityForCalc = cityCheck.isValid ? city : (PEA_AREA_CITIES[safeAreaForCalc]?.[0] || 'Chiang Mai');
+        const safeYearForCalc = yearRegCheck.isValid ? yearOfRegistration : String(new Date().getFullYear());
 
         const condParams = {
-          area,
-          voltage: volt,
-          year: yearOfRegistration || new Date().getFullYear(),
-          locationType,
+          area: safeAreaForCalc,
+          voltage: safeVoltForCalc,
+          year: safeYearForCalc,
+          locationType: safeLocForCalc,
           equipmentType: eqType,
-          city
+          city: safeCityForCalc
         };
         const prefix = getEquipmentConditionPrefix(condParams);
         if (batchConditionCounters2[prefix] === undefined) {
@@ -3097,6 +3191,7 @@ export default function AdminRegistrationSuite({
           area,
           city,
           gps,
+          rawGps,
           voltageLevel: volt,
           equipmentType: eqType,
           manufacturer,
@@ -3346,21 +3441,21 @@ export default function AdminRegistrationSuite({
             existing.number,
             existing.timestamp ? getBangkokTimestamp(existing.timestamp) : getBangkokTimestamp(),
             existing.operatorName || 'Option 2 Update',
-            existing.voltageLevel,
-            existing.city,
-            existing.equipmentType,
-            existing.manufacturer,
-            existing.country,
-            existing.locationType,
-            existing.substationName,
-            existing.landmark || 'Primary Feeder Line',
-            existing.gps ? `${existing.gps.lat}, ${existing.gps.lng}` : '13.7563, 100.5018',
-            existing.yearOfRegistration,
+            item.voltageLevel || existing.voltageLevel,
+            item.city || existing.city,
+            item.equipmentType || existing.equipmentType,
+            item.manufacturer || existing.manufacturer,
+            item.country || existing.country,
+            item.locationType || existing.locationType,
+            item.substationName || existing.substationName,
+            item.landmark || existing.landmark || 'Primary Feeder Line',
+            item.gps ? item.gps : (existing.gps ? `${existing.gps.lat}, ${existing.gps.lng}` : '13.7563, 100.5018'),
+            item.yearOfRegistration || existing.yearOfRegistration,
             existing.peaNumber,
             updatedAds,
             updatedAa,
-            existing.productionMonth || '',
-            existing.installationDate || '',
+            item.productionMonth || existing.productionMonth || '',
+            item.installationDate || existing.installationDate || '',
             existing.wbs || '',
             existing.businessType || '',
             existing.costCenter || '',
@@ -3992,238 +4087,1094 @@ export default function AdminRegistrationSuite({
             </div>
 
             {/* Option 1 Review Panel */}
-            {selectedCsvOption === 1 && (
-              <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <h4 className="text-xs font-black text-gray-900 uppercase">Option 1: New Asset Data Review Panel (31 Data Details)</h4>
-                    <p className="text-[10px] text-gray-400">Verify extracted attributes & generated PEA numbers from uploaded file. Click "Check & Edit" to adjust any field.</p>
-                  </div>
-                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
-                    {isLoadingOption1Review ? (
-                      <>
-                        <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
-                        Evaluating PEA Rules...
-                      </>
-                    ) : (
-                      `${option1ReviewList.length} assets ready`
-                    )}
-                  </span>
-                </div>
+            {selectedCsvOption === 1 && (() => {
+              const option1IntegrityList = option1ReviewList.map(rec => evaluateCsvRecordIntegrity(rec));
+              const totalOption1Errors = option1IntegrityList.reduce((sum, item) => sum + item.errorCount, 0);
+              const rowsWithOption1Errors = option1IntegrityList.filter(item => item.hasErrors).length;
 
-                {isLoadingOption1Review ? (
-                  <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
-                    <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+              const updateOption1FieldInline = (rIdx: number, fieldKey: string, rawNewVal: string) => {
+                setOption1ReviewList(prev => {
+                  const updated = [...prev];
+                  const target = { ...updated[rIdx] };
+
+                  if (fieldKey === 'gps') {
+                    const gpsRes = validateAndTransformCsvGps(rawNewVal);
+                    target.gps = gpsRes.isValid ? gpsRes.value : rawNewVal;
+                    target.rawGps = rawNewVal;
+                  } else if (fieldKey === 'yearOfRegistration') {
+                    const yrRes = validateAndTransformCsvRegistrationYear(rawNewVal);
+                    target.yearOfRegistration = yrRes.isValid ? yrRes.value : rawNewVal;
+                  } else if (fieldKey === 'installationDate') {
+                    const dtRes = validateAndTransformCsvInstallationDate(rawNewVal);
+                    target.installationDate = dtRes.isValid ? dtRes.value : rawNewVal;
+                  } else {
+                    target[fieldKey] = rawNewVal;
+                  }
+
+                  // Recalculate PEA number & Equipment ID if a core attribute changed and is valid
+                  const areaOk = validateCsvPeaArea(target.area).isValid;
+                  const voltOk = validateCsvVoltageLevel(target.voltageLevel).isValid;
+                  const locOk = validateCsvLocationType(target.locationType).isValid;
+                  const cityOk = validateCsvCityForArea(target.city, target.area).isValid;
+                  const yearOk = validateAndTransformCsvRegistrationYear(target.yearOfRegistration).isValid;
+                  const dateOk = validateAndTransformCsvInstallationDate(target.installationDate).isValid;
+
+                  const safeArea = areaOk ? target.area : 'N1';
+                  const safeVolt = voltOk ? target.voltageLevel : '22';
+                  const safeLoc = locOk ? target.locationType : 'Distribution Line';
+                  const safeCity = cityOk ? target.city : (PEA_AREA_CITIES[safeArea]?.[0] || 'Chiang Mai');
+                  const safeYear = yearOk ? target.yearOfRegistration : String(new Date().getFullYear());
+                  const safeDate = dateOk ? target.installationDate : normalizeInstallationDate(new Date().toISOString().split('T')[0]);
+
+                  if (['voltageLevel', 'locationType', 'installationDate', 'yearOfRegistration'].includes(fieldKey)) {
+                    const existingPool: { pea: string; area: string }[] = [];
+                    assets.forEach(a => {
+                      if (a.peaNumber) existingPool.push({ pea: a.peaNumber.trim(), area: getAssetArea(a) || 'N1' });
+                    });
+                    updated.forEach((otherRec, idx) => {
+                      if (idx !== rIdx && otherRec.peaNumber) {
+                        existingPool.push({ pea: otherRec.peaNumber, area: otherRec.area || 'N1' });
+                      }
+                    });
+                    target.peaNumber = generateAutoPeaForCsvRow(
+                      safeVolt,
+                      target.equipmentType,
+                      safeLoc,
+                      target.size,
+                      existingPool,
+                      safeDate,
+                      safeYear
+                    );
+                  }
+
+                  if (!target.inputEquipmentId) {
+                    const condParams = {
+                      area: safeArea,
+                      voltage: safeVolt,
+                      year: safeYear,
+                      locationType: safeLoc,
+                      equipmentType: target.equipmentType,
+                      city: safeCity
+                    };
+                    const runningNum = getLatestEquipmentRunningNumber(assets, condParams) + 1;
+                    target.equipmentId = generateEquipmentId({
+                      ...condParams,
+                      cityIndex: runningNum,
+                      peaNumber: target.peaNumber
+                    });
+                  }
+
+                  updated[rIdx] = target;
+                  return updated;
+                });
+
+                // Also sync back to csvParsedRows (row index rIdx + 1 because row 0 is header)
+                setCsvParsedRows(prevRows => {
+                  if (!prevRows || prevRows.length <= rIdx + 1) return prevRows;
+                  const nextRows = [...prevRows];
+                  const rowCopy = [...(nextRows[rIdx + 1] || [])];
+                  while (rowCopy.length <= 29) rowCopy.push('');
+                  if (fieldKey === 'voltageLevel') rowCopy[0] = rawNewVal;
+                  if (fieldKey === 'area') rowCopy[1] = rawNewVal;
+                  if (fieldKey === 'city') rowCopy[2] = rawNewVal;
+                  if (fieldKey === 'gps') {
+                    const gpsRes = validateAndTransformCsvGps(rawNewVal);
+                    rowCopy[3] = gpsRes.isValid ? gpsRes.value : rawNewVal;
+                  }
+                  if (fieldKey === 'locationType') rowCopy[4] = rawNewVal;
+                  if (fieldKey === 'productionMonth') rowCopy[15] = rawNewVal;
+                  if (fieldKey === 'yearOfRegistration') {
+                    const yrRes = validateAndTransformCsvRegistrationYear(rawNewVal);
+                    rowCopy[16] = yrRes.isValid ? yrRes.value : rawNewVal;
+                  }
+                  if (fieldKey === 'installationDate') {
+                    const dtRes = validateAndTransformCsvInstallationDate(rawNewVal);
+                    rowCopy[21] = dtRes.isValid ? dtRes.value : rawNewVal;
+                  }
+                  nextRows[rIdx + 1] = rowCopy;
+                  return nextRows;
+                });
+              };
+
+              return (
+                <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
                     <div>
-                      <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Scanning Google Sheets & Evaluating PEA Rules</h5>
-                      <p className="text-[10px] text-purple-800/80 mt-1">Extracting 30 data details and auto-assigning next incremental PEA running numbers...</p>
+                      <h4 className="text-xs font-black text-gray-900 uppercase">Option 1: New Asset Data Review Panel (31 Data Details)</h4>
+                      <p className="text-[10px] text-gray-400">Verify extracted attributes & generated PEA numbers from uploaded file. Click "Check & Edit" to adjust any field.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isLoadingOption1Review && totalOption1Errors > 0 && (
+                        <span className="text-[10px] bg-red-100 text-red-700 border border-red-300 font-black px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+                          {totalOption1Errors} Integrity {totalOption1Errors === 1 ? 'Error' : 'Errors'} ({rowsWithOption1Errors} {rowsWithOption1Errors === 1 ? 'Row' : 'Rows'})
+                        </span>
+                      )}
+                      {!isLoadingOption1Review && option1ReviewList.length > 0 && totalOption1Errors === 0 && (
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3 text-emerald-600" />
+                          Data Integrity Verified
+                        </span>
+                      )}
+                      <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                        {isLoadingOption1Review ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
+                            Evaluating PEA Rules...
+                          </>
+                        ) : (
+                          `${option1ReviewList.length} assets ready`
+                        )}
+                      </span>
                     </div>
                   </div>
-                ) : option1ReviewList.length > 0 ? (
-                  <>
-                    <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
-                      {option1ReviewList.map((rec, rIdx) => (
-                        <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
-                          {/* Top Bar */}
-                          <div className="flex justify-between items-center border-b border-gray-100 pb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
-                              <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
-                              <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
-                            </div>
-                            <button
-                              onClick={() => setEditingOption1Item({ index: rIdx, data: { ...rec } })}
-                              className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                            >
-                              <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
-                            </button>
-                          </div>
 
-                          {/* 30 Data Details Grid */}
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
-                            <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
-                            <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">5. Assigned PEA No:</span> <span className="font-bold text-purple-900 font-mono">{rec.peaNumber}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700">{rec.adsNumber || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700">{rec.assetNumber || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">10. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">11. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">12. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">17. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">18. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">22. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
-                            <div className="col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
-                          </div>
-                        </div>
-                      ))}
+                  {isLoadingOption1Review ? (
+                    <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
+                      <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+                      <div>
+                        <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Scanning Google Sheets & Evaluating PEA Rules</h5>
+                        <p className="text-[10px] text-purple-800/80 mt-1">Running background data integrity check and auto-assigning next incremental PEA running numbers...</p>
+                      </div>
                     </div>
+                  ) : option1ReviewList.length > 0 ? (
+                    <>
+                      <div className="max-h-[440px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
+                        {option1ReviewList.map((rec, rIdx) => {
+                          const integrity = option1IntegrityList[rIdx];
+                          const validCitiesForArea = PEA_AREA_CITIES[rec.area] || [];
 
-                    <button
-                      onClick={() => setShowCsvModal(true)}
-                      disabled={isProcessingOption1}
-                      className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                    >
-                      {isProcessingOption1 ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          Registering New Assets...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-4 h-4 text-yellow-400" />
-                          Register New Assets ({option1ReviewList.length} Records)
-                        </>
-                      )}
-                    </button>
+                          return (
+                            <div
+                              key={rIdx}
+                              className={`bg-white border p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs transition-all ${
+                                integrity.hasErrors ? 'border-red-300 ring-1 ring-red-200' : 'border-gray-100'
+                              }`}
+                            >
+                              {/* Top Bar */}
+                              <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
+                                  <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
+                                  <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel || 'N/A'} kV</span>
+                                  {integrity.hasErrors && (
+                                    <span className="bg-red-50 text-red-600 border border-red-200 px-2 py-0.5 rounded font-bold text-[9px] flex items-center gap-1">
+                                      <AlertTriangle className="w-3 h-3 text-red-500" />
+                                      {integrity.errorCount} field{integrity.errorCount > 1 ? 's' : ''} require correction
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => setEditingOption1Item({ index: rIdx, data: { ...rec } })}
+                                  className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                >
+                                  <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
+                                </button>
+                              </div>
 
-                    <button
-                      onClick={handleCancelCsvUpload}
-                      type="button"
-                      className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
-                    >
-                      <XCircle className="w-4 h-4 text-red-500" />
-                      Cancel Upload & Clear
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            )}
+                              {/* 31 Data Details Grid */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
+                                {/* 1. PEA Area (Rule 1: 12 PEA Areas only) */}
+                                <div className={!integrity.areaValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">1. PEA Area:</span>
+                                    {!integrity.areaValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.areaValid ? (
+                                    <span className="font-bold text-gray-800">{rec.area}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'area', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.area ? `Invalid: "${rec.area}" — Select 12 PEA Area` : '-- Select 12 PEA Area --'}
+                                      </option>
+                                      {PEA_AREAS.map((areaCode) => (
+                                        <option key={areaCode} value={areaCode}>
+                                          {areaCode} ({PEA_AREA_NAMES[areaCode] || areaCode})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 2. Voltage Level (Rule 2: 4 Voltage Levels only) */}
+                                <div className={!integrity.voltageLevelValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">2. Voltage Level:</span>
+                                    {!integrity.voltageLevelValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.voltageLevelValid ? (
+                                    <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'voltageLevel', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.voltageLevel ? `Invalid: "${rec.voltageLevel}" — Select Voltage Level` : '-- Select Voltage Level --'}
+                                      </option>
+                                      {VOLTAGE_LEVELS.map((v) => (
+                                        <option key={v} value={v}>
+                                          {v} kV
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 3. Equipment Type */}
+                                <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
+                                {/* 4. Size */}
+                                <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
+                                {/* 5. Assigned PEA No */}
+                                <div><span className="text-gray-400 font-semibold block">5. Assigned PEA No:</span> <span className="font-bold text-purple-900 font-mono">{rec.peaNumber}</span></div>
+                                {/* 6. Equip No (ADS) */}
+                                <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700">{rec.adsNumber || '[Blank]'}</span></div>
+                                {/* 7. Account Asset (AA) */}
+                                <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700">{rec.assetNumber || '[Blank]'}</span></div>
+                                {/* 8. Manufacturer */}
+                                <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
+                                {/* 9. Substation Name */}
+                                <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
+
+                                {/* 10. Location Type (Rule 3: 3 values only) */}
+                                <div className={!integrity.locationTypeValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">10. Location Type:</span>
+                                    {!integrity.locationTypeValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.locationTypeValid ? (
+                                    <span className="font-bold text-gray-800">{rec.locationType}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'locationType', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.locationType ? `Invalid: "${rec.locationType}" — Select Location Type` : '-- Select Location Type --'}
+                                      </option>
+                                      {VALID_CSV_LOCATION_TYPES.map((loc) => (
+                                        <option key={loc} value={loc}>
+                                          {loc}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 11. GPS (Rule 4: Auto-converted from DMS/DDM/UTM; if invalid, leave cell empty for manual input) */}
+                                <div className={!integrity.gpsValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">11. GPS:</span>
+                                    {!integrity.gpsValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.gpsValid ? (
+                                    <span className="font-mono text-gray-700">{rec.gps}</span>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={rec.gps || ''}
+                                      placeholder="Enter Lat, Lng (e.g. 13.7563, 100.5018)"
+                                      onChange={(e) => updateOption1FieldInline(rIdx, 'gps', e.target.value)}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-mono font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                    />
+                                  )}
+                                </div>
+
+                                {/* 12. City (Rule 5: Dependent on 12 PEA Area) */}
+                                <div className={!integrity.cityValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">12. City:</span>
+                                    {!integrity.cityValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.cityValid ? (
+                                    <span className="font-bold text-gray-800">{rec.city}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'city', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.city
+                                          ? `Invalid: "${rec.city}" — Select City in ${integrity.areaValid ? rec.area : 'PEA Area'}`
+                                          : `-- Select City in ${integrity.areaValid ? rec.area : 'PEA Area'} --`}
+                                      </option>
+                                      {validCitiesForArea.length > 0
+                                        ? validCitiesForArea.map((cityName) => (
+                                            <option key={cityName} value={cityName}>
+                                              {cityName}
+                                            </option>
+                                          ))
+                                        : PEA_AREAS.map((areaCode) => (
+                                            <optgroup key={areaCode} label={`Area ${areaCode}`}>
+                                              {(PEA_AREA_CITIES[areaCode] || []).map((cityName) => (
+                                                <option key={`${areaCode}-${cityName}`} value={cityName}>
+                                                  {cityName} ({areaCode})
+                                                </option>
+                                              ))}
+                                            </optgroup>
+                                          ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 13. Operate ID */}
+                                <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
+                                {/* 14. Serial No */}
+                                <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
+                                {/* 15. Model */}
+                                <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
+                                {/* 16. Country of Origin */}
+                                <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
+
+                                {/* 17. Production Month (Rule 6: 13 values N/A, 1..12) */}
+                                <div className={!integrity.productionMonthValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">17. Production Month:</span>
+                                    {!integrity.productionMonthValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.productionMonthValid ? (
+                                    <span className="font-bold text-gray-800">{rec.productionMonth}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'productionMonth', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.productionMonth ? `Invalid: "${rec.productionMonth}" — Select Month` : '-- Select Production Month --'}
+                                      </option>
+                                      {VALID_CSV_PRODUCTION_MONTHS.map((m) => (
+                                        <option key={m} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 18. Year of Registration (Rule 7: Gregorian calendar format; Buddhist auto-converted) */}
+                                <div className={!integrity.yearOfRegistrationValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">18. Year of Registration:</span>
+                                    {!integrity.yearOfRegistrationValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.yearOfRegistrationValid ? (
+                                    <span className="font-bold text-gray-800">{rec.yearOfRegistration}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption1FieldInline(rIdx, 'yearOfRegistration', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.yearOfRegistration ? `Invalid: "${rec.yearOfRegistration}" — Select Gregorian Year` : '-- Select Gregorian Year --'}
+                                      </option>
+                                      {VALID_CSV_GREGORIAN_YEARS.map((yr) => (
+                                        <option key={yr} value={yr}>
+                                          {yr}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 19. Substation ID */}
+                                <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
+                                {/* 20. Feeder */}
+                                <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
+                                {/* 21. Landmark Location */}
+                                <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
+
+                                {/* 22. Installation Date (Rule 8: High-priority DD/MM/YYYY format; text-style e.g. 19082024 auto-converted) */}
+                                <div className={!integrity.installationDateValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">22. Installation Date:</span>
+                                    {!integrity.installationDateValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.installationDateValid ? (
+                                    <span className="font-bold text-gray-800">{rec.installationDate}</span>
+                                  ) : (
+                                    <div className="mt-1 flex items-center gap-1">
+                                      <input
+                                        type="date"
+                                        onChange={(e) => {
+                                          if (e.target.value) {
+                                            const [y, m, d] = e.target.value.split('-').map(Number);
+                                            if (y && m && d) {
+                                              updateOption1FieldInline(rIdx, 'installationDate', `${d}/${m}/${y}`);
+                                            }
+                                          }
+                                        }}
+                                        className="w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                      />
+                                      <input
+                                        type="text"
+                                        defaultValue={rec.installationDate || ''}
+                                        placeholder="DD/MM/YYYY"
+                                        onBlur={(e) => {
+                                          if (e.target.value.trim()) {
+                                            updateOption1FieldInline(rIdx, 'installationDate', e.target.value.trim());
+                                          }
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            const val = (e.target as HTMLInputElement).value.trim();
+                                            if (val) updateOption1FieldInline(rIdx, 'installationDate', val);
+                                          }
+                                        }}
+                                        className="w-24 bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* 23. WBS */}
+                                <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
+                                {/* 24. Work Order */}
+                                <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
+                                {/* 25. Business Type */}
+                                <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
+                                {/* 26. Cost Center */}
+                                <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
+                                {/* 27. GISTAG */}
+                                <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
+                                {/* 28. Class */}
+                                <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
+                                {/* 29. Contract Number */}
+                                <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                                {/* 30. Asset Value (Col AD) */}
+                                <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                                {/* 31. QR Document (Col AF) */}
+                                <div className="col-span-1 sm:col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (totalOption1Errors > 0) {
+                            alert(
+                              `Data Integrity Check Warning:\n\nThere are ${totalOption1Errors} incorrect data value(s) across ${rowsWithOption1Errors} row(s) highlighted in red.\n\nPlease select or input the correct value in every red-highlighted box before registering new assets.`
+                            );
+                            return;
+                          }
+                          setShowCsvModal(true);
+                        }}
+                        disabled={isProcessingOption1}
+                        className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                      >
+                        {isProcessingOption1 ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Registering New Assets...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4 text-yellow-400" />
+                            Register New Assets ({option1ReviewList.length} Records)
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={handleCancelCsvUpload}
+                        type="button"
+                        className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
+                      >
+                        <XCircle className="w-4 h-4 text-red-500" />
+                        Cancel Upload & Clear
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })()}
 
             {/* Option 2 Review Panel */}
-            {selectedCsvOption === 2 && (
-              <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <h4 className="text-xs font-black text-gray-900 uppercase">Option 2: ADS & AA Update Review Panel ({option2ReviewList.length} Records)</h4>
-                    <p className="text-[10px] text-gray-400">Verify extracted attributes, PEA numbers (Col J), Equipment Code ADS (Col F), and Account Asset AA (Col G) before updating.</p>
-                  </div>
-                  <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
-                    {isLoadingOption2Review ? (
-                      <>
-                        <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
-                        Validating Records...
-                      </>
-                    ) : (
-                      `${option2ReviewList.length} assets ready for update`
-                    )}
-                  </span>
-                </div>
+            {selectedCsvOption === 2 && (() => {
+              const option2IntegrityList = option2ReviewList.map(rec => evaluateCsvRecordIntegrity(rec));
+              const totalOption2Errors = option2IntegrityList.reduce((sum, item) => sum + item.errorCount, 0);
+              const rowsWithOption2Errors = option2IntegrityList.filter(item => item.hasErrors).length;
 
-                {isLoadingOption2Review ? (
-                  <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
-                    <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+              const updateOption2FieldInline = (rIdx: number, fieldKey: string, rawNewVal: string) => {
+                setOption2ReviewList(prev => {
+                  const updated = [...prev];
+                  const target = { ...updated[rIdx] };
+
+                  if (fieldKey === 'gps') {
+                    const gpsRes = validateAndTransformCsvGps(rawNewVal);
+                    target.gps = gpsRes.isValid ? gpsRes.value : rawNewVal;
+                    target.rawGps = rawNewVal;
+                  } else if (fieldKey === 'yearOfRegistration') {
+                    const yrRes = validateAndTransformCsvRegistrationYear(rawNewVal);
+                    target.yearOfRegistration = yrRes.isValid ? yrRes.value : rawNewVal;
+                  } else if (fieldKey === 'installationDate') {
+                    const dtRes = validateAndTransformCsvInstallationDate(rawNewVal);
+                    target.installationDate = dtRes.isValid ? dtRes.value : rawNewVal;
+                  } else {
+                    target[fieldKey] = rawNewVal;
+                  }
+
+                  if (!target.inputEquipmentId) {
+                    const areaOk = validateCsvPeaArea(target.area).isValid;
+                    const voltOk = validateCsvVoltageLevel(target.voltageLevel).isValid;
+                    const locOk = validateCsvLocationType(target.locationType).isValid;
+                    const cityOk = validateCsvCityForArea(target.city, target.area).isValid;
+                    const yearOk = validateAndTransformCsvRegistrationYear(target.yearOfRegistration).isValid;
+
+                    const safeArea = areaOk ? target.area : 'N1';
+                    const safeVolt = voltOk ? target.voltageLevel : '22';
+                    const safeLoc = locOk ? target.locationType : 'Distribution Line';
+                    const safeCity = cityOk ? target.city : (PEA_AREA_CITIES[safeArea]?.[0] || 'Chiang Mai');
+                    const safeYear = yearOk ? target.yearOfRegistration : String(new Date().getFullYear());
+
+                    const condParams = {
+                      area: safeArea,
+                      voltage: safeVolt,
+                      year: safeYear,
+                      locationType: safeLoc,
+                      equipmentType: target.equipmentType,
+                      city: safeCity
+                    };
+                    const runningNum = getLatestEquipmentRunningNumber(assets, condParams) + 1;
+                    target.equipmentId = generateEquipmentId({
+                      ...condParams,
+                      cityIndex: runningNum,
+                      peaNumber: target.peaNumber
+                    });
+                  }
+
+                  updated[rIdx] = target;
+                  return updated;
+                });
+
+                // Also sync back to csvParsedRows
+                setCsvParsedRows(prevRows => {
+                  if (!prevRows || prevRows.length <= rIdx + 1) return prevRows;
+                  const nextRows = [...prevRows];
+                  const rowCopy = [...(nextRows[rIdx + 1] || [])];
+                  while (rowCopy.length <= 29) rowCopy.push('');
+                  if (fieldKey === 'voltageLevel') rowCopy[0] = rawNewVal;
+                  if (fieldKey === 'area') rowCopy[1] = rawNewVal;
+                  if (fieldKey === 'city') rowCopy[2] = rawNewVal;
+                  if (fieldKey === 'gps') {
+                    const gpsRes = validateAndTransformCsvGps(rawNewVal);
+                    rowCopy[3] = gpsRes.isValid ? gpsRes.value : rawNewVal;
+                  }
+                  if (fieldKey === 'locationType') rowCopy[4] = rawNewVal;
+                  if (fieldKey === 'productionMonth') rowCopy[15] = rawNewVal;
+                  if (fieldKey === 'yearOfRegistration') {
+                    const yrRes = validateAndTransformCsvRegistrationYear(rawNewVal);
+                    rowCopy[16] = yrRes.isValid ? yrRes.value : rawNewVal;
+                  }
+                  if (fieldKey === 'installationDate') {
+                    const dtRes = validateAndTransformCsvInstallationDate(rawNewVal);
+                    rowCopy[21] = dtRes.isValid ? dtRes.value : rawNewVal;
+                  }
+                  nextRows[rIdx + 1] = rowCopy;
+                  return nextRows;
+                });
+              };
+
+              return (
+                <div className="mt-6 pt-6 border-t border-gray-100 space-y-4">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
                     <div>
-                      <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Validating File Integrity & PEA Records</h5>
-                      <p className="text-[10px] text-purple-800/80 mt-1">Cross-checking Column J PEA IDs against sector databases...</p>
+                      <h4 className="text-xs font-black text-gray-900 uppercase">Option 2: ADS & AA Update Review Panel ({option2ReviewList.length} Records)</h4>
+                      <p className="text-[10px] text-gray-400">Verify extracted attributes, PEA numbers (Col J), Equipment Code ADS (Col F), and Account Asset AA (Col G) before updating.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isLoadingOption2Review && totalOption2Errors > 0 && (
+                        <span className="text-[10px] bg-red-100 text-red-700 border border-red-300 font-black px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+                          {totalOption2Errors} Integrity {totalOption2Errors === 1 ? 'Error' : 'Errors'} ({rowsWithOption2Errors} {rowsWithOption2Errors === 1 ? 'Row' : 'Rows'})
+                        </span>
+                      )}
+                      {!isLoadingOption2Review && option2ReviewList.length > 0 && totalOption2Errors === 0 && (
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3 text-emerald-600" />
+                          Data Integrity Verified
+                        </span>
+                      )}
+                      <span className="text-[10px] bg-purple-100 text-purple-900 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                        {isLoadingOption2Review ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin text-purple-800" />
+                            Validating Records...
+                          </>
+                        ) : (
+                          `${option2ReviewList.length} assets ready for update`
+                        )}
+                      </span>
                     </div>
                   </div>
-                ) : option2ReviewList.length > 0 ? (
-                  <>
-                    <div className="max-h-[360px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
-                      {option2ReviewList.map((rec, rIdx) => (
-                        <div key={rIdx} className="bg-white border border-gray-100 p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs">
-                          {/* Top Bar */}
-                          <div className="flex justify-between items-center border-b border-gray-100 pb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
-                              <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
-                              <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel} kV</span>
-                            </div>
-                            <button
-                              onClick={() => setEditingOption2Item({ index: rIdx, data: { ...rec } })}
-                              className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                            >
-                              <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
-                            </button>
-                          </div>
 
-                          {/* 30 Data Details Grid */}
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
-                            <div><span className="text-gray-400 font-semibold block">1. PEA Area:</span> <span className="font-bold text-gray-800">{rec.area || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">2. Voltage Level:</span> <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span></div>
-                            <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">5. PEA Number (Col J):</span> <span className="font-bold text-purple-900 font-mono bg-purple-100 px-1.5 py-0.5 rounded">{rec.peaNumber}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.adsNumber || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.assetNumber || '[Blank]'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">10. Location Type:</span> <span className="font-bold text-gray-800">{rec.locationType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">11. GPS:</span> <span className="font-mono text-gray-700">{rec.gps || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">12. City:</span> <span className="font-bold text-gray-800">{rec.city || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">17. Production Month:</span> <span className="font-bold text-gray-800">{rec.productionMonth || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">18. Year of Registration:</span> <span className="font-bold text-gray-800">{rec.yearOfRegistration || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">22. Installation Date:</span> <span className="font-bold text-gray-800">{rec.installationDate || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
-                            <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
-                            <div className="col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
-                          </div>
-                        </div>
-                      ))}
+                  {isLoadingOption2Review ? (
+                    <div className="border border-purple-200 rounded-2xl p-10 bg-purple-50/40 flex flex-col items-center justify-center text-center space-y-3">
+                      <Loader2 className="w-9 h-9 text-purple-800 animate-spin" />
+                      <div>
+                        <h5 className="text-xs font-black text-purple-950 uppercase tracking-wider">Validating File Integrity & PEA Records</h5>
+                        <p className="text-[10px] text-purple-800/80 mt-1">Running background data integrity check and cross-checking Column J PEA IDs against sector databases...</p>
+                      </div>
                     </div>
+                  ) : option2ReviewList.length > 0 ? (
+                    <>
+                      <div className="max-h-[440px] overflow-y-auto space-y-3 border border-purple-100 rounded-2xl p-3 bg-purple-50/20">
+                        {option2ReviewList.map((rec, rIdx) => {
+                          const integrity = option2IntegrityList[rIdx];
+                          const validCitiesForArea = PEA_AREA_CITIES[rec.area] || [];
 
-                    <button
-                      onClick={() => setShowCsvModal(true)}
-                      disabled={isProcessingOption2}
-                      className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                    >
-                      {isProcessingOption2 ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          Updating ADS & AA Numbers...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-4 h-4 text-yellow-400" />
-                          Update ADS & AA Numbers ({option2ReviewList.length} Records)
-                        </>
-                      )}
-                    </button>
+                          return (
+                            <div
+                              key={rIdx}
+                              className={`bg-white border p-3.5 rounded-2xl text-[10px] space-y-2.5 shadow-2xs transition-all ${
+                                integrity.hasErrors ? 'border-red-300 ring-1 ring-red-200' : 'border-gray-100'
+                              }`}
+                            >
+                              {/* Top Bar */}
+                              <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded font-black">Row #{rec.rowNum}</span>
+                                  <span className="font-black text-gray-900 text-xs">{rec.equipmentType || 'N/A'}</span>
+                                  <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">{rec.voltageLevel || 'N/A'} kV</span>
+                                  {integrity.hasErrors && (
+                                    <span className="bg-red-50 text-red-600 border border-red-200 px-2 py-0.5 rounded font-bold text-[9px] flex items-center gap-1">
+                                      <AlertTriangle className="w-3 h-3 text-red-500" />
+                                      {integrity.errorCount} field{integrity.errorCount > 1 ? 's' : ''} require correction
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => setEditingOption2Item({ index: rIdx, data: { ...rec } })}
+                                  className="bg-purple-900 hover:bg-purple-800 text-white px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                >
+                                  <Edit className="w-3 h-3 text-yellow-400" /> Check & Edit
+                                </button>
+                              </div>
 
-                    <button
-                      onClick={handleCancelCsvUpload}
-                      type="button"
-                      className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
-                    >
-                      <XCircle className="w-4 h-4 text-red-500" />
-                      Cancel Upload & Clear
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            )}
+                              {/* 31 Data Details Grid */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50/70 p-2.5 rounded-xl border border-gray-100 text-[10px]">
+                                {/* 1. PEA Area (Rule 1: 12 PEA Areas only) */}
+                                <div className={!integrity.areaValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">1. PEA Area:</span>
+                                    {!integrity.areaValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.areaValid ? (
+                                    <span className="font-bold text-gray-800">{rec.area}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'area', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.area ? `Invalid: "${rec.area}" — Select 12 PEA Area` : '-- Select 12 PEA Area --'}
+                                      </option>
+                                      {PEA_AREAS.map((areaCode) => (
+                                        <option key={areaCode} value={areaCode}>
+                                          {areaCode} ({PEA_AREA_NAMES[areaCode] || areaCode})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 2. Voltage Level (Rule 2: 4 Voltage Levels only) */}
+                                <div className={!integrity.voltageLevelValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">2. Voltage Level:</span>
+                                    {!integrity.voltageLevelValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.voltageLevelValid ? (
+                                    <span className="font-bold text-gray-800">{rec.voltageLevel} kV</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'voltageLevel', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.voltageLevel ? `Invalid: "${rec.voltageLevel}" — Select Voltage Level` : '-- Select Voltage Level --'}
+                                      </option>
+                                      {VOLTAGE_LEVELS.map((v) => (
+                                        <option key={v} value={v}>
+                                          {v} kV
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 3. Equipment Type */}
+                                <div><span className="text-gray-400 font-semibold block">3. Equipment Type:</span> <span className="font-bold text-gray-800">{rec.equipmentType || 'N/A'}</span></div>
+                                {/* 4. Size */}
+                                <div><span className="text-gray-400 font-semibold block">4. Size:</span> <span className="font-bold text-gray-800">{rec.size || '[Blank]'}</span></div>
+                                {/* 5. PEA Number (Col J) */}
+                                <div><span className="text-gray-400 font-semibold block">5. PEA Number (Col J):</span> <span className="font-bold text-purple-900 font-mono bg-purple-100 px-1.5 py-0.5 rounded">{rec.peaNumber}</span></div>
+                                {/* 6. Equip No (ADS) */}
+                                <div><span className="text-gray-400 font-semibold block">6. Equip No (ADS):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.adsNumber || '[Blank]'}</span></div>
+                                {/* 7. Account Asset (AA) */}
+                                <div><span className="text-gray-400 font-semibold block">7. Account Asset (AA):</span> <span className="font-bold text-amber-700 font-mono bg-amber-50 px-1.5 py-0.5 rounded">{rec.assetNumber || '[Blank]'}</span></div>
+                                {/* 8. Manufacturer */}
+                                <div><span className="text-gray-400 font-semibold block">8. Manufacturer:</span> <span className="font-bold text-gray-800">{rec.manufacturer || 'N/A'}</span></div>
+                                {/* 9. Substation Name */}
+                                <div><span className="text-gray-400 font-semibold block">9. Substation Name:</span> <span className="font-bold text-gray-800">{rec.substationName || 'N/A'}</span></div>
+
+                                {/* 10. Location Type (Rule 3: 3 values only) */}
+                                <div className={!integrity.locationTypeValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">10. Location Type:</span>
+                                    {!integrity.locationTypeValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.locationTypeValid ? (
+                                    <span className="font-bold text-gray-800">{rec.locationType}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'locationType', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.locationType ? `Invalid: "${rec.locationType}" — Select Location Type` : '-- Select Location Type --'}
+                                      </option>
+                                      {VALID_CSV_LOCATION_TYPES.map((loc) => (
+                                        <option key={loc} value={loc}>
+                                          {loc}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 11. GPS (Rule 4: Auto-converted from DMS/DDM/UTM; if invalid, leave cell empty for manual input) */}
+                                <div className={!integrity.gpsValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">11. GPS:</span>
+                                    {!integrity.gpsValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.gpsValid ? (
+                                    <span className="font-mono text-gray-700">{rec.gps}</span>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={rec.gps || ''}
+                                      placeholder="Enter Lat, Lng (e.g. 13.7563, 100.5018)"
+                                      onChange={(e) => updateOption2FieldInline(rIdx, 'gps', e.target.value)}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-mono font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                    />
+                                  )}
+                                </div>
+
+                                {/* 12. City (Rule 5: Dependent on 12 PEA Area) */}
+                                <div className={!integrity.cityValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">12. City:</span>
+                                    {!integrity.cityValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.cityValid ? (
+                                    <span className="font-bold text-gray-800">{rec.city}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'city', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.city
+                                          ? `Invalid: "${rec.city}" — Select City in ${integrity.areaValid ? rec.area : 'PEA Area'}`
+                                          : `-- Select City in ${integrity.areaValid ? rec.area : 'PEA Area'} --`}
+                                      </option>
+                                      {validCitiesForArea.length > 0
+                                        ? validCitiesForArea.map((cityName) => (
+                                            <option key={cityName} value={cityName}>
+                                              {cityName}
+                                            </option>
+                                          ))
+                                        : PEA_AREAS.map((areaCode) => (
+                                            <optgroup key={areaCode} label={`Area ${areaCode}`}>
+                                              {(PEA_AREA_CITIES[areaCode] || []).map((cityName) => (
+                                                <option key={`${areaCode}-${cityName}`} value={cityName}>
+                                                  {cityName} ({areaCode})
+                                                </option>
+                                              ))}
+                                            </optgroup>
+                                          ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 13. Operate ID */}
+                                <div><span className="text-gray-400 font-semibold block">13. Operate ID:</span> <span className="font-bold text-gray-800">{rec.operateId || 'N/A'}</span></div>
+                                {/* 14. Serial No */}
+                                <div><span className="text-gray-400 font-semibold block">14. Serial No:</span> <span className="font-mono text-gray-800">{rec.serialNumber || 'N/A'}</span></div>
+                                {/* 15. Model */}
+                                <div><span className="text-gray-400 font-semibold block">15. Model:</span> <span className="font-bold text-gray-800">{rec.model || 'N/A'}</span></div>
+                                {/* 16. Country of Origin */}
+                                <div><span className="text-gray-400 font-semibold block">16. Country of Origin:</span> <span className="font-bold text-gray-800">{rec.country || 'N/A'}</span></div>
+
+                                {/* 17. Production Month (Rule 6: 13 values N/A, 1..12) */}
+                                <div className={!integrity.productionMonthValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">17. Production Month:</span>
+                                    {!integrity.productionMonthValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.productionMonthValid ? (
+                                    <span className="font-bold text-gray-800">{rec.productionMonth}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'productionMonth', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.productionMonth ? `Invalid: "${rec.productionMonth}" — Select Month` : '-- Select Production Month --'}
+                                      </option>
+                                      {VALID_CSV_PRODUCTION_MONTHS.map((m) => (
+                                        <option key={m} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 18. Year of Registration (Rule 7: Gregorian calendar format; Buddhist auto-converted) */}
+                                <div className={!integrity.yearOfRegistrationValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">18. Year of Registration:</span>
+                                    {!integrity.yearOfRegistrationValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.yearOfRegistrationValid ? (
+                                    <span className="font-bold text-gray-800">{rec.yearOfRegistration}</span>
+                                  ) : (
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        if (e.target.value) updateOption2FieldInline(rIdx, 'yearOfRegistration', e.target.value);
+                                      }}
+                                      className="mt-1 w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                    >
+                                      <option value="">
+                                        {rec.yearOfRegistration ? `Invalid: "${rec.yearOfRegistration}" — Select Gregorian Year` : '-- Select Gregorian Year --'}
+                                      </option>
+                                      {VALID_CSV_GREGORIAN_YEARS.map((yr) => (
+                                        <option key={yr} value={yr}>
+                                          {yr}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+
+                                {/* 19. Substation ID */}
+                                <div><span className="text-gray-400 font-semibold block">19. Substation ID:</span> <span className="font-bold text-gray-800">{rec.substationId || 'N/A'}</span></div>
+                                {/* 20. Feeder */}
+                                <div><span className="text-gray-400 font-semibold block">20. Feeder:</span> <span className="font-bold text-gray-800">{rec.feeder || 'N/A'}</span></div>
+                                {/* 21. Landmark Location */}
+                                <div><span className="text-gray-400 font-semibold block">21. Landmark Location:</span> <span className="font-bold text-gray-800">{rec.landmark || 'N/A'}</span></div>
+
+                                {/* 22. Installation Date (Rule 8: High-priority DD/MM/YYYY format; text-style e.g. 19082024 auto-converted) */}
+                                <div className={!integrity.installationDateValid ? 'border-2 border-red-500 bg-red-50/90 rounded-lg p-2 shadow-2xs' : ''}>
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-gray-400 font-semibold block">22. Installation Date:</span>
+                                    {!integrity.installationDateValid && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-white/95 border border-red-200 px-1.5 py-0.5 rounded text-right leading-tight">
+                                        Incorrect data value. Please select the correct value
+                                      </span>
+                                    )}
+                                  </div>
+                                  {integrity.installationDateValid ? (
+                                    <span className="font-bold text-gray-800">{rec.installationDate}</span>
+                                  ) : (
+                                    <div className="mt-1 flex items-center gap-1">
+                                      <input
+                                        type="date"
+                                        onChange={(e) => {
+                                          if (e.target.value) {
+                                            const [y, m, d] = e.target.value.split('-').map(Number);
+                                            if (y && m && d) {
+                                              updateOption2FieldInline(rIdx, 'installationDate', `${d}/${m}/${y}`);
+                                            }
+                                          }
+                                        }}
+                                        className="w-full bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
+                                      />
+                                      <input
+                                        type="text"
+                                        defaultValue={rec.installationDate || ''}
+                                        placeholder="DD/MM/YYYY"
+                                        onBlur={(e) => {
+                                          if (e.target.value.trim()) {
+                                            updateOption2FieldInline(rIdx, 'installationDate', e.target.value.trim());
+                                          }
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            const val = (e.target as HTMLInputElement).value.trim();
+                                            if (val) updateOption2FieldInline(rIdx, 'installationDate', val);
+                                          }
+                                        }}
+                                        className="w-24 bg-white border border-red-400 text-red-900 font-bold text-[10px] rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* 23. WBS */}
+                                <div><span className="text-gray-400 font-semibold block">23. WBS:</span> <span className="font-bold text-gray-800">{rec.wbs || 'N/A'}</span></div>
+                                {/* 24. Work Order */}
+                                <div><span className="text-gray-400 font-semibold block">24. Work Order:</span> <span className="font-bold text-gray-800">{rec.workOrder || 'N/A'}</span></div>
+                                {/* 25. Business Type */}
+                                <div><span className="text-gray-400 font-semibold block">25. Business Type:</span> <span className="font-bold text-gray-800">{rec.businessType || 'N/A'}</span></div>
+                                {/* 26. Cost Center */}
+                                <div><span className="text-gray-400 font-semibold block">26. Cost Center:</span> <span className="font-bold text-gray-800">{rec.costCenter || 'N/A'}</span></div>
+                                {/* 27. GISTAG */}
+                                <div><span className="text-gray-400 font-semibold block">27. GISTAG:</span> <span className="font-bold text-gray-800">{rec.gistag || 'N/A'}</span></div>
+                                {/* 28. Class */}
+                                <div><span className="text-gray-400 font-semibold block">28. Class:</span> <span className="font-bold text-gray-800">{rec.class || 'N/A'}</span></div>
+                                {/* 29. Contract Number */}
+                                <div><span className="text-gray-400 font-semibold block">29. Contract Number:</span> <span className="font-bold text-gray-800">{rec.contractNumber || 'N/A'}</span></div>
+                                {/* 30. Asset Value (Col AD) */}
+                                <div><span className="text-gray-400 font-semibold block">30. Asset Value (Col AD):</span> <span className="font-bold text-emerald-700 font-mono">{rec.assetValue || '[Blank]'}</span></div>
+                                {/* 31. QR Document (Col AF) */}
+                                <div className="col-span-1 sm:col-span-2 md:col-span-3"><span className="text-gray-400 font-semibold block">31. QR Document (Col AF):</span> <span className="font-bold text-blue-700 truncate block">{rec.qrDocument || '[Blank]'}</span></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (totalOption2Errors > 0) {
+                            alert(
+                              `Data Integrity Check Warning:\n\nThere are ${totalOption2Errors} incorrect data value(s) across ${rowsWithOption2Errors} row(s) highlighted in red.\n\nPlease select or input the correct value in every red-highlighted box before updating ADS & AA numbers.`
+                            );
+                            return;
+                          }
+                          setShowCsvModal(true);
+                        }}
+                        disabled={isProcessingOption2}
+                        className="w-full bg-purple-900 hover:bg-purple-800 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors disabled:bg-purple-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                      >
+                        {isProcessingOption2 ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Updating ADS & AA Numbers...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4 text-yellow-400" />
+                            Update ADS & AA Numbers ({option2ReviewList.length} Records)
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={handleCancelCsvUpload}
+                        type="button"
+                        className="w-full bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-2"
+                      >
+                        <XCircle className="w-4 h-4 text-red-500" />
+                        Cancel Upload & Clear
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })()}
           </div>
 
             {/* Right Side CSV Bulk Importer */}

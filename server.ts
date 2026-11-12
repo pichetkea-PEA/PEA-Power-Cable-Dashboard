@@ -1318,14 +1318,36 @@ Only output valid JSON.`;
   res.json({ success: true, estimations });
 });
 
+// Prevent unhandled errors from crashing the dev server process
+process.on('uncaughtException', (err) => {
+  console.error('[Server] Uncaught Exception (kept alive):', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled Rejection (kept alive):', reason);
+});
+
 // Vite Middleware integration for development / Static Serving for Production
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
+    const vitePromise = createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null
+      },
       appType: 'spa'
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        console.error('[Server] Vite middleware error:', err);
+        next(err);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -1334,9 +1356,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Server] Running at http://localhost:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Server] Running at http://0.0.0.0:${PORT}`);
+  });
+
+  server.on('error', (err: any) => {
+    console.error('[Server] HTTP server error:', err);
   });
 }
 
 startServer();
+
+

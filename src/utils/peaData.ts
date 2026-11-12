@@ -509,49 +509,136 @@ export function normalizeCity(rawCity: string, currentArea?: string): { city: st
   return { city: cleanCity, area: finalArea };
 }
 
+export function getDaysInCalendarMonth(month: number, year: number): number {
+  if (month < 1 || month > 12) return 0;
+  return new Date(year, month, 0).getDate();
+}
+
+export function validateAndTransformCsvInstallationDate(rawDate: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+  wasConverted: boolean;
+} {
+  const raw = (rawDate || '').trim();
+  if (!raw || ['n/a', 'na', '-', '[blank]', 'null', 'none', 'unknown'].includes(raw.toLowerCase())) {
+    return { value: '', isValid: false, rawValue: raw, wasConverted: false };
+  }
+
+  const normalizeYear = (yNum: number): number | null => {
+    if (yNum >= 2493 && yNum <= 2600) {
+      return yNum - 543; // Buddhist Era -> Gregorian
+    }
+    if (yNum >= 1950 && yNum <= 2050) {
+      return yNum;
+    }
+    return null;
+  };
+
+  const buildValidDate = (dNum: number, mNum: number, yRaw: number, originalStr: string) => {
+    const yNum = normalizeYear(yRaw);
+    if (!yNum) return null;
+    if (mNum < 1 || mNum > 12) return null;
+    const maxDays = getDaysInCalendarMonth(mNum, yNum);
+    if (dNum < 1 || dNum > maxDays) return null;
+    const formatted = `${dNum}/${mNum}/${yNum}`;
+    return {
+      value: formatted,
+      isValid: true,
+      rawValue: raw,
+      wasConverted: formatted !== originalStr
+    };
+  };
+
+  // 1. 8-digit continuous text-style date (e.g. "19082024" -> 19/8/2024, "01122024" -> 1/12/2024, or "20240819")
+  if (/^\d{8}$/.test(raw)) {
+    // Priority A: DDMMYYYY (Check if last 4 digits are a valid Gregorian or Buddhist year)
+    const d1 = parseInt(raw.substring(0, 2), 10);
+    const m1 = parseInt(raw.substring(2, 4), 10);
+    const y1 = parseInt(raw.substring(4, 8), 10);
+    const resDDMMYYYY = buildValidDate(d1, m1, y1, raw);
+    if (resDDMMYYYY) return { ...resDDMMYYYY, wasConverted: true };
+
+    // Priority B: YYYYMMDD (Check if first 4 digits are a valid year)
+    const y2 = parseInt(raw.substring(0, 4), 10);
+    const m2 = parseInt(raw.substring(4, 6), 10);
+    const d2 = parseInt(raw.substring(6, 8), 10);
+    const resYYYYMMDD = buildValidDate(d2, m2, y2, raw);
+    if (resYYYYMMDD) return { ...resYYYYMMDD, wasConverted: true };
+
+    return { value: raw, isValid: false, rawValue: raw, wasConverted: false };
+  }
+
+  // 2. 7-digit continuous text-style date (e.g. "1122024" -> 1/12/2024 or "1452025" -> 14/5/2025)
+  if (/^\d{7}$/.test(raw)) {
+    const y = parseInt(raw.substring(3, 7), 10);
+    // Try 1-digit day + 2-digit month (DMMYYYY)
+    const dA = parseInt(raw.substring(0, 1), 10);
+    const mA = parseInt(raw.substring(1, 3), 10);
+    const resA = buildValidDate(dA, mA, y, raw);
+    if (resA) return { ...resA, wasConverted: true };
+
+    // Try 2-digit day + 1-digit month (DDMYYYY)
+    const dB = parseInt(raw.substring(0, 2), 10);
+    const mB = parseInt(raw.substring(2, 3), 10);
+    const resB = buildValidDate(dB, mB, y, raw);
+    if (resB) return { ...resB, wasConverted: true };
+
+    return { value: raw, isValid: false, rawValue: raw, wasConverted: false };
+  }
+
+  // 3. 6-digit continuous text-style date (e.g. "152024" -> 1/5/2024)
+  if (/^\d{6}$/.test(raw)) {
+    const d = parseInt(raw.substring(0, 1), 10);
+    const m = parseInt(raw.substring(1, 2), 10);
+    const y = parseInt(raw.substring(2, 6), 10);
+    const res6 = buildValidDate(d, m, y, raw);
+    if (res6) return { ...res6, wasConverted: true };
+  }
+
+  // 4. Delimited dates (e.g. "1/12/2024", "01/12/2024", "14/5/2025", "2024-08-19", "19-08-2024", "19.08.2024", "19/8/2567")
+  const datePartOnly = raw.split('T')[0].trim();
+  if (/^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/.test(datePartOnly)) {
+    const parts = datePartOnly.split(/[/\-.]/);
+    if (parts.length === 3) {
+      let dNum: number;
+      let mNum: number;
+      let yNum: number;
+
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD or YYYY/MM/DD
+        yNum = parseInt(parts[0], 10);
+        mNum = parseInt(parts[1], 10);
+        dNum = parseInt(parts[2], 10);
+      } else {
+        // DD/MM/YYYY or D/M/YYYY
+        dNum = parseInt(parts[0], 10);
+        mNum = parseInt(parts[1], 10);
+        yNum = parseInt(parts[2], 10);
+        if (parts[2].length === 2) {
+          yNum = yNum >= 60 ? 2500 + yNum : 2000 + yNum;
+        }
+      }
+
+      const resDelim = buildValidDate(dNum, mNum, yNum, raw);
+      if (resDelim) return resDelim;
+    }
+  }
+
+  return { value: raw, isValid: false, rawValue: raw, wasConverted: false };
+}
+
 export function normalizeInstallationDate(rawDate: string): string {
   if (!rawDate) {
     return new Date().toISOString().split('T')[0];
   }
-
-  const clean = rawDate.trim();
-
-  if (/^\d{8}$/.test(clean)) {
-    if (clean.startsWith('19') || clean.startsWith('20')) {
-      const year = clean.substring(0, 4);
-      const month = clean.substring(4, 6);
-      const day = clean.substring(6, 8);
-      return `${day}/${month}/${year}`;
-    } else {
-      const day = clean.substring(0, 2);
-      const month = clean.substring(2, 4);
-      const year = clean.substring(4, 8);
-      return `${day}/${month}/${year}`;
-    }
+  const checked = validateAndTransformCsvInstallationDate(rawDate);
+  if (checked.isValid && checked.value) {
+    return checked.value;
   }
-
-  if (clean.includes('-')) {
-    const parts = clean.split('-');
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        return `${parts[2]}/${parts[1]}/${parts[0]}`;
-      }
-      return parts.join('/');
-    }
-  }
-
-  if (clean.includes('.')) {
-    const parts = clean.split('.');
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        return `${parts[2]}/${parts[1]}/${parts[0]}`;
-      }
-      return parts.join('/');
-    }
-  }
-
-  return clean;
+  return rawDate.trim();
 }
+
 
 export const ALL_EQUIPMENT_TYPES: EquipmentType[] = [
   'Underground Cable',
@@ -2162,3 +2249,543 @@ export function formatShortUrl(url?: string, maxLength = 32): string {
     return clean.substring(0, maxLength - 3) + '...';
   }
 }
+
+// ============================================================================
+// CSV BULK IMPORT DATA INTEGRITY CHECKING & AUTO-TRANSFORMATION ENGINE
+// ============================================================================
+
+export const VALID_CSV_LOCATION_TYPES = [
+  'Substation',
+  'Distribution Line',
+  'Transmission Line'
+] as const;
+
+export const VALID_CSV_PRODUCTION_MONTHS = [
+  'N/A',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+  '10',
+  '11',
+  '12'
+] as const;
+
+export const VALID_CSV_GREGORIAN_YEARS: string[] = (() => {
+  const maxYear = new Date().getFullYear() + 1;
+  const years: string[] = [];
+  for (let y = maxYear; y >= 1950; y--) {
+    years.push(String(y));
+  }
+  return years;
+})();
+
+/**
+ * Rule 1: PEA Area — Reserved only for the 12 PEA Areas (N1..S3)
+ */
+export function validateCsvPeaArea(rawArea: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+} {
+  const raw = (rawArea || '').trim();
+  const clean = raw.toUpperCase();
+  if ((PEA_AREAS as readonly string[]).includes(clean)) {
+    return { value: clean, isValid: true, rawValue: raw };
+  }
+  return { value: raw, isValid: false, rawValue: raw };
+}
+
+/**
+ * Rule 2: Voltage Level — Reserved only for the 4 Voltage Levels (115, 33, 22, 0.4)
+ */
+export function validateCsvVoltageLevel(rawVolt: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+} {
+  const raw = (rawVolt || '').trim();
+  if (!raw) {
+    return { value: '', isValid: false, rawValue: raw };
+  }
+  const clean = raw.toLowerCase().replace(/\s+/g, '');
+  if (clean === '115' || clean === '115kv' || clean === '115.0' || clean === '115.0kv' || clean === '115000' || clean === '115000v') {
+    return { value: '115', isValid: true, rawValue: raw };
+  }
+  if (clean === '33' || clean === '33kv' || clean === '33.0' || clean === '33.0kv' || clean === '33000' || clean === '33000v') {
+    return { value: '33', isValid: true, rawValue: raw };
+  }
+  if (clean === '22' || clean === '22kv' || clean === '22.0' || clean === '22.0kv' || clean === '22000' || clean === '22000v') {
+    return { value: '22', isValid: true, rawValue: raw };
+  }
+  if (
+    clean === '0.4' ||
+    clean === '0.4kv' ||
+    clean === '.4' ||
+    clean === '.4kv' ||
+    clean === '400v' ||
+    clean === '0.4/0.23' ||
+    clean === '0.4/0.23kv' ||
+    clean === '230/400v' ||
+    clean === 'แรงต่ำ' ||
+    clean === 'lv'
+  ) {
+    return { value: '0.4', isValid: true, rawValue: raw };
+  }
+  return { value: raw.replace(/\s*kv$/i, '').trim(), isValid: false, rawValue: raw };
+}
+
+/**
+ * Rule 3: Location Type — Reserved only for 3 values (Substation, Distribution Line, Transmission Line)
+ */
+export function validateCsvLocationType(rawLoc: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+} {
+  const raw = (rawLoc || '').trim();
+  if (!raw) {
+    return { value: '', isValid: false, rawValue: raw };
+  }
+  const clean = raw.toLowerCase().replace(/\s+/g, ' ');
+  if (clean === 'substation' || clean === 'สถานีไฟฟ้า') {
+    return { value: 'Substation', isValid: true, rawValue: raw };
+  }
+  if (clean === 'distribution line' || clean === 'distribution' || clean === 'ระบบจำหน่าย') {
+    return { value: 'Distribution Line', isValid: true, rawValue: raw };
+  }
+  if (clean === 'transmission line' || clean === 'transmission' || clean === 'สายส่ง') {
+    return { value: 'Transmission Line', isValid: true, rawValue: raw };
+  }
+  return { value: raw, isValid: false, rawValue: raw };
+}
+
+/**
+ * Converts WGS84 UTM coordinates (zone 1..60, hemisphere, easting, northing) to Decimal Degrees (lat, lng).
+ */
+export function utmToLatLng(
+  zone: number,
+  isNorthernHemisphere: boolean,
+  easting: number,
+  northing: number
+): { lat: number; lng: number } | null {
+  if (zone < 1 || zone > 60 || easting < 100000 || easting > 900000 || northing < 0 || northing > 10000000) {
+    return null;
+  }
+
+  const a = 6378137.0; // WGS84 major axis
+  const eccSquared = 0.00669437999014; // WGS84 eccentricity squared
+  const k0 = 0.9996;
+
+  const e1 = (1 - Math.sqrt(1 - eccSquared)) / (1 + Math.sqrt(1 - eccSquared));
+  const x = easting - 500000.0;
+  const y = isNorthernHemisphere ? northing : northing - 10000000.0;
+
+  const longOrigin = (zone - 1) * 6 - 180 + 3;
+  const eccPrimeSquared = eccSquared / (1 - eccSquared);
+
+  const M = y / k0;
+  const mu =
+    M /
+    (a *
+      (1 -
+        eccSquared / 4 -
+        (3 * eccSquared * eccSquared) / 64 -
+        (5 * Math.pow(eccSquared, 3)) / 256));
+
+  const phi1Rad =
+    mu +
+    ((3 * e1) / 2 - (27 * Math.pow(e1, 3)) / 32) * Math.sin(2 * mu) +
+    ((21 * e1 * e1) / 16 - (55 * Math.pow(e1, 4)) / 32) * Math.sin(4 * mu) +
+    ((151 * Math.pow(e1, 3)) / 96) * Math.sin(6 * mu) +
+    ((1097 * Math.pow(e1, 4)) / 512) * Math.sin(8 * mu);
+
+  const N1 = a / Math.sqrt(1 - eccSquared * Math.sin(phi1Rad) * Math.sin(phi1Rad));
+  const T1 = Math.tan(phi1Rad) * Math.tan(phi1Rad);
+  const C1 = eccPrimeSquared * Math.cos(phi1Rad) * Math.cos(phi1Rad);
+  const R1 = (a * (1 - eccSquared)) / Math.pow(1 - eccSquared * Math.sin(phi1Rad) * Math.sin(phi1Rad), 1.5);
+  const D = x / (N1 * k0);
+
+  let lat =
+    phi1Rad -
+    ((N1 * Math.tan(phi1Rad)) / R1) *
+      ((D * D) / 2 -
+        ((5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * eccPrimeSquared) * Math.pow(D, 4)) / 24 +
+        ((61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * eccPrimeSquared - 3 * C1 * C1) * Math.pow(D, 6)) / 720);
+  lat = (lat * 180.0) / Math.PI;
+
+  let lng =
+    (D -
+      ((1 + 2 * T1 + C1) * Math.pow(D, 3)) / 6 +
+      ((5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * eccPrimeSquared + 24 * T1 * T1) * Math.pow(D, 5)) / 120) /
+    Math.cos(phi1Rad);
+  lng = longOrigin + (lng * 180.0) / Math.PI;
+
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function isValidGeographicCoord(lat: number, lng: number): boolean {
+  if (!isFinite(lat) || !isFinite(lng) || isNaN(lat) || isNaN(lng)) return false;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false;
+  if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return false;
+  // Valid geographic bounds for Thailand / PEA grid region (4.5°N - 22.0°N, 96.5°E - 107.0°E)
+  if (lat >= 4.5 && lat <= 22.0 && lng >= 96.5 && lng <= 107.0) {
+    return true;
+  }
+  return false;
+}
+
+function formatDecimalDeg(val: number): string {
+  return Number(val.toFixed(6)).toString();
+}
+
+/**
+ * Rule 4: GPS — Preferred format is Decimal Degrees (Latitude, Longitude).
+ * Automatically converts from Degrees Minutes Seconds (DMS), Degrees Decimal Minutes (DDM), or UTM.
+ * If invalid, returns { value: '', isValid: false } so the cell is left empty for manual user input.
+ */
+export function validateAndTransformCsvGps(
+  rawGps: string,
+  areaHint?: string
+): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+  convertedFrom: 'DD' | 'DMS' | 'DDM' | 'UTM' | null;
+  lat?: number;
+  lng?: number;
+} {
+  const raw = (rawGps || '').trim();
+  if (!raw || ['n/a', 'na', '-', '[blank]', 'null', 'none', 'unknown'].includes(raw.toLowerCase())) {
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // 1. Check Explicit UTM with Zone (e.g. "47N 662345 1521234", "47P 662345 1521234", "UTM 48N E234567 N1654321")
+  const explicitUtmMatch = raw.match(
+    /^(?:UTM\s*)?(?:ZONE\s*)?(\d{1,2})\s*([C-XNS])?[,;\s/-]+(?:E(?:ASTING)?[:\s=]*)?(\d{5,7}(?:\.\d+)?)\s*(?:m|E)?[,;\s/-]+(?:N(?:ORTHING)?[:\s=]*)?(\d{6,8}(?:\.\d+)?)\s*(?:m|N)?$/i
+  );
+  if (explicitUtmMatch) {
+    const zone = parseInt(explicitUtmMatch[1], 10);
+    const bandLetter = (explicitUtmMatch[2] || 'N').toUpperCase();
+    // In MGRS/UTM latitude bands, C..M are Southern hemisphere, N..X are Northern hemisphere
+    const isNorthern = bandLetter >= 'N';
+    const easting = parseFloat(explicitUtmMatch[3]);
+    const northing = parseFloat(explicitUtmMatch[4]);
+    const converted = utmToLatLng(zone, isNorthern, easting, northing);
+    if (converted && isValidGeographicCoord(converted.lat, converted.lng)) {
+      return {
+        value: `${formatDecimalDeg(converted.lat)}, ${formatDecimalDeg(converted.lng)}`,
+        isValid: true,
+        rawValue: raw,
+        convertedFrom: 'UTM',
+        lat: converted.lat,
+        lng: converted.lng
+      };
+    }
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // 2. Check Implicit UTM Easting/Northing without zone (e.g. "662345, 1521234" or "E 662345 N 1521234")
+  const implicitUtmMatch = raw.match(
+    /^(?:UTM\s*)?(?:E(?:ASTING)?[:\s=]*)?(\d{6}(?:\.\d+)?)\s*(?:m|E)?[,;\s/-]+(?:N(?:ORTHING)?[:\s=]*)?(\d{6,7}(?:\.\d+)?)\s*(?:m|N)?$/i
+  );
+  if (implicitUtmMatch) {
+    const easting = parseFloat(implicitUtmMatch[1]);
+    const northing = parseFloat(implicitUtmMatch[2]);
+    const preferZone48 = areaHint && ['NE1', 'NE2', 'NE3'].includes(areaHint.toUpperCase());
+    const zonesToTry = preferZone48 ? [48, 47] : [47, 48];
+    for (const z of zonesToTry) {
+      const converted = utmToLatLng(z, true, easting, northing);
+      if (converted && isValidGeographicCoord(converted.lat, converted.lng)) {
+        return {
+          value: `${formatDecimalDeg(converted.lat)}, ${formatDecimalDeg(converted.lng)}`,
+          isValid: true,
+          rawValue: raw,
+          convertedFrom: 'UTM',
+          lat: converted.lat,
+          lng: converted.lng
+        };
+      }
+    }
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // Reject strings containing unexpected words (that are not coordinate markers like N, S, E, W, deg, d, m, s, lat, lon, lng)
+  const strippedMarkers = raw
+    .replace(/\b(lat|latitude|lon|lng|longitude|deg|degrees|min|minutes|sec|seconds)\b/gi, '')
+    .replace(/[0-9.,;/:\-+°'"’′”″\sNSEWnsew()dDmMsS]/g, '');
+  if (strippedMarkers.length > 0) {
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // Determine hemisphere overrides if S or W are present
+  const hasSouth = /S/i.test(raw.replace(/sec|seconds/gi, ''));
+  const hasWest = /W/i.test(raw);
+
+  // Extract all numeric tokens (including negative sign if present)
+  const numTokens = raw.match(/[+-]?\d+(?:\.\d+)?/g);
+  if (!numTokens) {
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // 3. Degrees, Minutes, Seconds (DMS) -> 6 numeric tokens: deg1, min1, sec1, deg2, min2, sec2
+  if (numTokens.length === 6) {
+    const deg1 = parseFloat(numTokens[0]);
+    const min1 = parseFloat(numTokens[1]);
+    const sec1 = parseFloat(numTokens[2]);
+    const deg2 = parseFloat(numTokens[3]);
+    const min2 = parseFloat(numTokens[4]);
+    const sec2 = parseFloat(numTokens[5]);
+
+    if (
+      Number.isInteger(deg1) &&
+      Number.isInteger(deg2) &&
+      min1 >= 0 &&
+      min1 < 60 &&
+      sec1 >= 0 &&
+      sec1 < 60 &&
+      min2 >= 0 &&
+      min2 < 60 &&
+      sec2 >= 0 &&
+      sec2 < 60
+    ) {
+      const sign1 = deg1 < 0 || hasSouth ? -1 : 1;
+      const sign2 = deg2 < 0 || hasWest ? -1 : 1;
+      const lat = sign1 * (Math.abs(deg1) + min1 / 60 + sec1 / 3600);
+      const lng = sign2 * (Math.abs(deg2) + min2 / 60 + sec2 / 3600);
+      if (isValidGeographicCoord(lat, lng)) {
+        return {
+          value: `${formatDecimalDeg(lat)}, ${formatDecimalDeg(lng)}`,
+          isValid: true,
+          rawValue: raw,
+          convertedFrom: 'DMS',
+          lat,
+          lng
+        };
+      }
+    }
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // 4. Degrees, Decimal Minutes (DDM) -> 4 numeric tokens: deg1, decMin1, deg2, decMin2
+  if (numTokens.length === 4) {
+    const deg1 = parseFloat(numTokens[0]);
+    const min1 = parseFloat(numTokens[1]);
+    const deg2 = parseFloat(numTokens[2]);
+    const min2 = parseFloat(numTokens[3]);
+
+    if (
+      Number.isInteger(deg1) &&
+      Number.isInteger(deg2) &&
+      min1 >= 0 &&
+      min1 < 60 &&
+      min2 >= 0 &&
+      min2 < 60
+    ) {
+      const sign1 = deg1 < 0 || hasSouth ? -1 : 1;
+      const sign2 = deg2 < 0 || hasWest ? -1 : 1;
+      const lat = sign1 * (Math.abs(deg1) + min1 / 60);
+      const lng = sign2 * (Math.abs(deg2) + min2 / 60);
+      if (isValidGeographicCoord(lat, lng)) {
+        return {
+          value: `${formatDecimalDeg(lat)}, ${formatDecimalDeg(lng)}`,
+          isValid: true,
+          rawValue: raw,
+          convertedFrom: 'DDM',
+          lat,
+          lng
+        };
+      }
+    }
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  // 5. Decimal Degrees (DD) -> 2 numeric tokens: lat, lng
+  if (numTokens.length === 2) {
+    let lat = parseFloat(numTokens[0]);
+    let lng = parseFloat(numTokens[1]);
+    if (hasSouth && lat > 0) lat = -lat;
+    if (hasWest && lng > 0) lng = -lng;
+
+    if (isValidGeographicCoord(lat, lng)) {
+      return {
+        value: `${formatDecimalDeg(lat)}, ${formatDecimalDeg(lng)}`,
+        isValid: true,
+        rawValue: raw,
+        convertedFrom: 'DD',
+        lat,
+        lng
+      };
+    }
+    return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+  }
+
+  return { value: '', isValid: false, rawValue: raw, convertedFrom: null };
+}
+
+/**
+ * Rule 5: City — 12 Area dependent. The city inside this cell must belong to the row's PEA Area.
+ */
+export function validateCsvCityForArea(
+  rawCity: string,
+  area: string
+): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+} {
+  const raw = (rawCity || '').trim();
+  if (!raw || ['n/a', 'na', '-', '[blank]', 'null', 'none'].includes(raw.toLowerCase())) {
+    return { value: raw, isValid: false, rawValue: raw };
+  }
+
+  let canonicalCity = raw;
+
+  // 1. Check Thai city translation
+  for (const [thai, eng] of Object.entries(THAI_CITY_TRANSLATIONS)) {
+    if (canonicalCity === thai || canonicalCity.includes(thai)) {
+      canonicalCity = eng;
+      break;
+    }
+  }
+
+  // 2. Match against canonical English city names in PEA_AREA_CITIES.ALL
+  const compactInput = canonicalCity.toLowerCase().replace(/\s+/g, '');
+  for (const stdCity of PEA_AREA_CITIES.ALL) {
+    const stdCompact = stdCity.toLowerCase().replace(/\s+/g, '');
+    if (stdCompact === compactInput) {
+      canonicalCity = stdCity;
+      break;
+    }
+  }
+
+  // Common English aliases
+  if (compactInput === 'ayutthaya') canonicalCity = 'Phra Nakhon Si Ayutthaya';
+  else if (compactInput === 'korat' || compactInput === 'nakhonratchasima') canonicalCity = 'Nakhon Ratchasima';
+
+  // 3. Verify that area is a valid 12 PEA Area AND canonicalCity is in PEA_AREA_CITIES[area]
+  const cleanArea = (area || '').trim().toUpperCase();
+  const allowedCitiesInArea = PEA_AREA_CITIES[cleanArea];
+  if (!allowedCitiesInArea || cleanArea === 'ALL') {
+    return { value: canonicalCity, isValid: false, rawValue: raw };
+  }
+
+  const matchedInArea = allowedCitiesInArea.find(
+    c => c.toLowerCase() === canonicalCity.toLowerCase()
+  );
+  if (matchedInArea) {
+    return { value: matchedInArea, isValid: true, rawValue: raw };
+  }
+
+  return { value: canonicalCity, isValid: false, rawValue: raw };
+}
+
+/**
+ * Rule 6: Production Month — Reserved only for 13 values (N/A, 1, 2, 3, ..., 12)
+ */
+export function validateCsvProductionMonth(rawMonth: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+} {
+  const raw = (rawMonth || '').trim();
+  if (!raw || raw.toUpperCase() === 'N/A' || raw.toUpperCase() === 'NA' || raw === '-' || raw.toLowerCase() === '[blank]') {
+    return { value: 'N/A', isValid: true, rawValue: raw };
+  }
+  if (/^(0?[1-9]|1[0-2])$/.test(raw)) {
+    return { value: String(parseInt(raw, 10)), isValid: true, rawValue: raw };
+  }
+  return { value: raw, isValid: false, rawValue: raw };
+}
+
+/**
+ * Rule 7: Year of Registration — Gregorian calendar year only.
+ * If a Buddhist calendar year (B.E.) is filled, automatically converts it to Gregorian (year - 543).
+ */
+export function validateAndTransformCsvRegistrationYear(rawYear: string): {
+  value: string;
+  isValid: boolean;
+  rawValue: string;
+  convertedFromBuddhist: boolean;
+} {
+  const raw = (rawYear || '').trim();
+  if (!raw || !/^\d{4}$/.test(raw)) {
+    return { value: raw, isValid: false, rawValue: raw, convertedFromBuddhist: false };
+  }
+
+  const yr = parseInt(raw, 10);
+  const maxGregorianYear = new Date().getFullYear() + 1;
+  const minGregorianYear = 1950;
+
+  // Gregorian range (1950 .. currentYear + 1)
+  if (yr >= minGregorianYear && yr <= maxGregorianYear) {
+    return { value: String(yr), isValid: true, rawValue: raw, convertedFromBuddhist: false };
+  }
+
+  // Buddhist Era range (2493 .. (currentYear + 1) + 543) -> Convert to Gregorian
+  if (yr >= minGregorianYear + 543 && yr <= maxGregorianYear + 543) {
+    const gregorian = yr - 543;
+    return { value: String(gregorian), isValid: true, rawValue: raw, convertedFromBuddhist: true };
+  }
+
+  return { value: raw, isValid: false, rawValue: raw, convertedFromBuddhist: false };
+}
+
+export interface CsvRecordIntegrityStatus {
+  areaValid: boolean;
+  voltageLevelValid: boolean;
+  locationTypeValid: boolean;
+  gpsValid: boolean;
+  cityValid: boolean;
+  productionMonthValid: boolean;
+  yearOfRegistrationValid: boolean;
+  installationDateValid: boolean;
+  hasAnyError: boolean;
+  errorCount: number;
+  errorFields: string[];
+}
+
+/**
+ * Evaluates all 8 data integrity rules on a parsed Option 1 or Option 2 review record.
+ */
+export function evaluateCsvRecordIntegrity(rec: any): CsvRecordIntegrityStatus {
+  const areaCheck = validateCsvPeaArea(String(rec?.area ?? ''));
+  const voltCheck = validateCsvVoltageLevel(String(rec?.voltageLevel ?? ''));
+  const locCheck = validateCsvLocationType(String(rec?.locationType ?? ''));
+  const gpsCheck = validateAndTransformCsvGps(String(rec?.gps ?? ''), areaCheck.isValid ? areaCheck.value : undefined);
+  const cityCheck = validateCsvCityForArea(String(rec?.city ?? ''), areaCheck.isValid ? areaCheck.value : String(rec?.area ?? ''));
+  const monthCheck = validateCsvProductionMonth(String(rec?.productionMonth ?? ''));
+  const yearCheck = validateAndTransformCsvRegistrationYear(String(rec?.yearOfRegistration ?? ''));
+  const instDateCheck = validateAndTransformCsvInstallationDate(String(rec?.installationDate ?? ''));
+
+  const errorFields: string[] = [];
+  if (!areaCheck.isValid) errorFields.push('1. PEA Area');
+  if (!voltCheck.isValid) errorFields.push('2. Voltage Level');
+  if (!locCheck.isValid) errorFields.push('10. Location Type');
+  if (!gpsCheck.isValid) errorFields.push('11. GPS');
+  if (!cityCheck.isValid) errorFields.push('12. City');
+  if (!monthCheck.isValid) errorFields.push('17. Production Month');
+  if (!yearCheck.isValid) errorFields.push('18. Year of Registration');
+  if (!instDateCheck.isValid) errorFields.push('22. Installation Date');
+
+  return {
+    areaValid: areaCheck.isValid,
+    voltageLevelValid: voltCheck.isValid,
+    locationTypeValid: locCheck.isValid,
+    gpsValid: gpsCheck.isValid,
+    cityValid: cityCheck.isValid,
+    productionMonthValid: monthCheck.isValid,
+    yearOfRegistrationValid: yearCheck.isValid,
+    installationDateValid: instDateCheck.isValid,
+    hasAnyError: errorFields.length > 0,
+    errorCount: errorFields.length,
+    errorFields
+  };
+}
+
