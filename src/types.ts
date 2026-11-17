@@ -126,6 +126,41 @@ export interface VisualInformation {
   thermalImageUrl: string;
 }
 
+export interface CableTopologyNode {
+  id: string;
+  type: 'termination_near' | 'cable' | 'joint' | 'termination_far';
+  label: string;
+  startM: number;
+  endM: number;
+  lengthM: number;
+  accessoryModel?: string;
+}
+
+export interface TanDeltaStagePoint {
+  stageLabel: string; // e.g. '0.5 U0', '1.0 U0', '1.5 U0'
+  voltageMultiple: number; // 0.5, 1.0, 1.5
+  testVoltageKv: number;
+  meanTd: number; // in E-3 (10^-3)
+  sdtd: number; // Standard deviation of Tan Delta in E-3 (10^-3)
+}
+
+export interface OfflineIndividualDefect {
+  id: string;
+  defectNumber: number;
+  defectType: string; // e.g., 'Internal Void / Cavity', 'Surface Discharges', 'Corona', 'Treeing', 'Bad Contacts', 'Floating Electrode'
+  locationM: number; // Distance along cable length in meters (0 to cableLength)
+  amplitudePc: number; // Peak amplitude in pC
+  maxChargeNc?: number; // Qmax in nC
+  avgChargePc?: number; // Average charge in pC
+  shotsPerPeriod?: number; // Repetition rate / shots per period
+  inceptionVoltageKv?: number; // Udiv / PDIV (kV)
+  extinctionVoltageKv?: number; // Udev / PDEV (kV)
+  phase?: 'Phase L1 (A)' | 'Phase L2 (B)' | 'Phase L3 (C)' | '3-Phase' | string;
+  prpdImageUrl?: string; // Uploaded PRPD pattern picture URL for this individual defect
+  severity?: 'Low' | 'Medium' | 'High' | 'Critical' | string;
+  notes?: string;
+}
+
 export interface PDDiagnosticInformation {
   number?: number;
   timestamp?: string;
@@ -137,7 +172,7 @@ export interface PDDiagnosticInformation {
   equipmentType?: string;
   locationType?: string;
   substation?: string;
-  // Online HFCT PRPD Telemetry
+  // Online HFCT PRPD Telemetry (Columns K to Q)
   onlinePrpdImageUrl?: string;
   onlinePrpdChannel?: string; // Channel 1, 2, 3, 4, 5, 6
   onlinePrpdPhase?: string; // Phase A, B, C, 3-Phase
@@ -149,20 +184,46 @@ export interface PDDiagnosticInformation {
   onlinePrpdPhaseRange?: string; // e.g. "85°-145° / 265°-325°"
   onlinePrpdDefectType?: string; // Internal Void, Surface, Corona, Bad Contacts, None
   onlinePrpdSeverity?: string; // Safe, Advisory, Critical
-  // Offline PD Test & Software Report
+  // Offline PD Test & Software Report (Columns R to AA)
   offlinePdfUrl?: string; // Google Drive PDF link
   offlinePdfReportUrl?: string; // Google Drive PDF link
+  offlinePdfName?: string;
   offlinePdfReportName?: string;
   offlineTestVoltage?: string; // e.g. "6.4 kV (U0) / 12.8 kV (2.0xU0)"
   offlineMaxDischarge?: number; // nC (or pC)
   offlineMaxApparentCharge?: number; // alias
   offlineDefectLocation?: string; // e.g. "80.0m (Far Termination), 20.32m (Bad Contacts)"
   offlineInceptionVoltage?: number; // kV
+  offlineDefectType?: string;
   offlineDefectClassification?: string; // Surface Discharges, Bad Contacts, Internal Void
+  offlineIeeeStatus?: string;
   offlineIeeeVerdict?: string; // Pass, Planned Action Advised, Immediate Action Required
+  offlineRiskMatrixLevel?: 'Low' | 'Medium' | 'High' | 'Critical' | string;
   offlineRiskLevel?: 'Low' | 'Medium' | 'High' | 'Critical' | string; // Low, Medium, High, Critical
+  diagnosticNotes?: string;
   diagnosticSummary?: string; // AI & Engineering analysis summary
   summaryAnalysis?: string; // alias
+  // Extended Offline Measurement Parameters (Columns AB to AQ in Tab 4)
+  offlineTestDate?: string; // DD/MM/YYYY
+  offlineCableLengthM?: number; // Total cable length in meters
+  offlineTopologyJson?: string; // Serialized CableTopologyNode[]
+  offlineTopology?: CableTopologyNode[];
+  offlineNumberOfDefects?: number;
+  // Section 2: Tan Delta (TD) Result at 3 stages of test voltage & IEEE 400.2-2024 Criteria
+  tdStage1VoltageKv?: number; // 0.5 U0 (kV)
+  tdStage1Mean?: number; // Mean TD at 0.5 U0 [E-3]
+  tdStage1Sdtd?: number; // SDTD at 0.5 U0 [E-3]
+  tdStage2VoltageKv?: number; // 1.0 U0 (kV)
+  tdStage2Mean?: number; // Mean TD at 1.0 U0 [E-3]
+  tdStage2Sdtd?: number; // SDTD at 1.0 U0 [E-3]
+  tdStage3VoltageKv?: number; // 1.5 U0 (kV)
+  tdStage3Mean?: number; // Mean TD at 1.5 U0 [E-3]
+  tdStage3Sdtd?: number; // SDTD at 1.5 U0 [E-3]
+  tdDeltaTipUp?: number; // Tip-Up (TD at 1.5 U0 - TD at 0.5 U0) [E-3]
+  tdIeee4002Criteria?: 'No Action Required' | 'Further Study Advised' | 'Action Required' | string;
+  // Section 3: Offline PD Result (Individual Defects)
+  offlineIndividualDefectsJson?: string; // Serialized OfflineIndividualDefect[]
+  offlineIndividualDefects?: OfflineIndividualDefect[];
   customFields?: Record<string, string>;
 }
 
@@ -205,7 +266,31 @@ export interface CableAsset extends GeneralInformation {
   offlineRiskLevel?: 'Low' | 'Medium' | 'High' | 'Critical' | string;
   diagnosticSummary?: string;
   pdDiagnosticSummary?: string;
+  // Extended Offline Measurement Parameters
+  offlineTestDate?: string;
+  offlineCableLengthM?: number;
+  offlineTopologyJson?: string;
+  offlineTopology?: CableTopologyNode[];
+  offlineNumberOfDefects?: number;
+  tdStage1VoltageKv?: number;
+  tdStage1Mean?: number;
+  tdStage1Sdtd?: number;
+  tdStage2VoltageKv?: number;
+  tdStage2Mean?: number;
+  tdStage2Sdtd?: number;
+  tdStage3VoltageKv?: number;
+  tdStage3Mean?: number;
+  tdStage3Sdtd?: number;
+  tdDeltaTipUp?: number;
+  tdIeee4002Criteria?: 'No Action Required' | 'Further Study Advised' | 'Action Required' | string;
+  offlineIndividualDefectsJson?: string;
+  offlineIndividualDefects?: OfflineIndividualDefect[];
   pdDiagnostics?: PDDiagnosticInformation;
+  pdDiagnosticsHistory?: PDDiagnosticInformation[];
+
+  // Regional area metadata
+  area?: string;
+  peaArea?: string;
 
   // Computed metrics
   healthScore?: number; // 0 to 100

@@ -14,12 +14,22 @@ import {
   markNotificationAsRead,
   clearAllNotifications
 } from "./utils/firestore";
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDocFromServer, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1, getEffectiveGoogleToken } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
-import { findUserByEmail, isAdminAccount, saveUserAccount, verifyUsernamePassword } from './utils/userManagement';
+import { 
+  findUserByEmail, 
+  isAdminAccount, 
+  saveUserAccount, 
+  verifyUsernamePassword,
+  syncRegisteredUsersFromFirestore,
+  setActiveUserSessionMeta,
+  clearActiveUserSessionMeta,
+  canUserUploadOrEdit,
+  getAuthHeadersForApi
+} from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
 import AreaDashboard from './components/AreaDashboard';
 import InputForm from './components/InputForm';
@@ -425,6 +435,7 @@ export default function App() {
     area: string,
     token?: string | null
   ) => {
+    await syncRegisteredUsersFromFirestore().catch(() => {});
     const registered = findUserByEmail(email);
 
     if (registered?.status === 'pending' && !isAdminAccount(email)) {
@@ -447,7 +458,8 @@ export default function App() {
 
     // Strict Account-Area mismatch check for Local Operator
     const currentSelectedArea = selectedAreaRef.current;
-    const effectiveRole = registered ? registered.role : role;
+    const isApprovedRegistered = Boolean(registered && registered.status === 'active') || isAdminAccount(email);
+    const effectiveRole: UserRole = isApprovedRegistered ? (registered ? registered.role : role) : 'User';
     const allowedArea = registered ? registered.interestArea : null;
 
     if (effectiveRole === 'Local Operator' && allowedArea && allowedArea !== 'ALL' && currentSelectedArea !== allowedArea) {
@@ -460,12 +472,13 @@ export default function App() {
       return;
     }
 
-    const finalArea = (role === 'Admin' || role === 'Manager') ? 'ALL' : area;
+    const finalArea = (effectiveRole === 'Admin' || effectiveRole === 'Manager') ? 'ALL' : area;
     const newUser: PEAUser = {
       uid,
       email,
       name,
-      role,
+      role: effectiveRole,
+      status: isAdminAccount(email) ? 'active' : (registered?.status || 'pending'),
       interestArea: finalArea
     };
 
@@ -473,17 +486,30 @@ export default function App() {
       setGoogleToken(token);
     }
 
+    setActiveUserSessionMeta(newUser);
     setUser(newUser);
     setNeedsAuth(false);
 
-    if (role === 'Admin' || role === 'Manager') {
+    if (token && (effectiveRole === 'Admin' || isAdminAccount(email))) {
+      getAuthHeadersForApi()
+        .then(authHeaders =>
+          fetch('/api/sheets/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify({ token, userEmail: email })
+          })
+        )
+        .catch(() => {});
+    }
+
+    if (effectiveRole === 'Admin' || effectiveRole === 'Manager') {
       setActiveTab('admin');
     } else {
       setActiveTab('area');
     }
 
     try {
-      await syncCentralDatabase(token || null, email, role, finalArea);
+      await syncCentralDatabase(token || null, email, effectiveRole, finalArea);
     } catch (err) {
       console.error("Session database sync error:", err);
     } finally {
@@ -499,6 +525,14 @@ export default function App() {
   // Initialize Auth state listeners on load
   useEffect(() => {
     setIsIframe(window.self !== window.top);
+
+    // Validate Firestore server connectivity & sync registered users collection on boot
+    getDocFromServer(doc(db, 'test', 'connection')).catch((error) => {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.error('Please check your Firebase configuration.');
+      }
+    });
+    syncRegisteredUsersFromFirestore().catch(() => {});
 
     // Pre-load central Firestore assets cache on app boot so dashboard never starts with empty mock data
     getCentralAssetsCache().then(cached => {
@@ -523,6 +557,7 @@ export default function App() {
     initAuth(
       async (firebaseUser, token) => {
         const email = firebaseUser.email || 'operator@pea.co.th';
+        await syncRegisteredUsersFromFirestore().catch(() => {});
         const registered = findUserByEmail(email);
 
         if (registered?.status === 'pending' && !isAdminAccount(email)) {
@@ -544,8 +579,8 @@ export default function App() {
         }
 
         const currentSelectedArea = selectedAreaRef.current;
-        const currentSelectedRole = selectedRoleRef.current;
-        const activeRole: UserRole = registered ? registered.role : currentSelectedRole;
+        const isApprovedRegistered = Boolean(registered && registered.status === 'active') || isAdminAccount(email);
+        const activeRole: UserRole = isApprovedRegistered ? (registered ? registered.role : (isAdminAccount(email) ? 'Admin' : 'Local Operator')) : 'User';
         const allowedArea = registered ? registered.interestArea : null;
 
         if (activeRole === 'Local Operator' && allowedArea && allowedArea !== 'ALL' && currentSelectedArea !== allowedArea) {
@@ -561,14 +596,29 @@ export default function App() {
         const activeArea = (activeRole === 'Admin' || activeRole === 'Manager') ? 'ALL' : (registered ? registered.interestArea : currentSelectedArea);
 
         setGoogleToken(token);
-        
-        setUser({
+
+        const sessionUser: PEAUser = {
           uid: firebaseUser.uid,
           email,
           name: registered?.name || firebaseUser.displayName || 'PEA Operator',
           role: activeRole,
+          status: isAdminAccount(email) ? 'active' : (registered?.status || 'pending'),
           interestArea: activeArea
-        });
+        };
+        setActiveUserSessionMeta(sessionUser);
+        setUser(sessionUser);
+
+        if (token && (activeRole === 'Admin' || isAdminAccount(email))) {
+          getAuthHeadersForApi()
+            .then(authHeaders =>
+              fetch('/api/sheets/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ token, userEmail: email })
+              })
+            )
+            .catch(() => {});
+        }
 
         if (activeRole === 'Admin' || activeRole === 'Manager') {
           setActiveTab('admin');
@@ -1228,6 +1278,7 @@ export default function App() {
         const accessToken = result.accessToken;
 
         // Check if user is registered in database or recognized as Admin
+        await syncRegisteredUsersFromFirestore().catch(() => {});
         const registered = findUserByEmail(email);
         const isUserAdmin = isAdminAccount(email) || registered?.role === 'Admin';
 
@@ -1245,7 +1296,8 @@ export default function App() {
           return;
         }
 
-        const activeRole: UserRole = registered ? registered.role : selectedRole;
+        // Unregistered/upcoming users enter in strict View-Only mode ('User') until Admin approves registration
+        const activeRole: UserRole = (registered && registered.status === 'active') ? registered.role : 'User';
         const activeArea = (activeRole === 'Admin' || activeRole === 'Manager') ? 'ALL' : (registered ? registered.interestArea : selectedArea);
 
         await finalizeUserSession(email, registered?.name || name, uid, activeRole, activeArea, accessToken);
@@ -1301,8 +1353,9 @@ export default function App() {
     }
   };
 
-  // Skip direct login to test dashboard instantly using mock database
+  // Skip direct login to test dashboard instantly using mock database (Guest defaults to View-Only)
   const handleGuestLogin = async (customEmail?: string) => {
+    await syncRegisteredUsersFromFirestore().catch(() => {});
     const emailToUse = customEmail || (selectedRole === 'Manager' ? 'moskmitl50@gmail.com' : 'guest.operator@pea.co.th');
     const registered = findUserByEmail(emailToUse);
     const isUserAdmin = isAdminAccount(emailToUse) || registered?.role === 'Admin' || (customEmail ? false : selectedRole === 'Admin');
@@ -1319,12 +1372,13 @@ export default function App() {
       return;
     }
 
-    const activeRole: UserRole = registered ? registered.role : selectedRole;
+    const isRegisteredActive = Boolean(registered && registered.status === 'active') && emailToUse !== 'guest.operator@pea.co.th';
+    const activeRole: UserRole = isRegisteredActive ? registered!.role : 'User';
     const activeArea = (activeRole === 'Admin' || activeRole === 'Manager') ? 'ALL' : (registered ? registered.interestArea : selectedArea);
 
     await finalizeUserSession(
       emailToUse,
-      registered?.name || (activeRole === 'Manager' ? 'Mos KMITL (Manager)' : 'Guest PEA Operator'),
+      registered?.name || (activeRole === 'Manager' ? 'Mos KMITL (Manager)' : 'Guest Viewer (View-Only)'),
       'guest-PEA-999',
       activeRole,
       activeArea,
@@ -1431,6 +1485,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await logout();
+    clearActiveUserSessionMeta();
     setUser(null);
     setGoogleToken(null);
     setSpreadsheetId(null);
@@ -2388,6 +2443,20 @@ export default function App() {
               </div>
             )}
 
+            {/* View-Only Notice for New / Unregistered / Guest Users */}
+            {user && !canUserUploadOrEdit(user) && (
+              <div className="bg-amber-50 border-b border-amber-200/80 py-2 px-4 sm:px-6">
+                <div className="w-full text-[11px] text-amber-900 font-semibold flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 shrink-0 text-amber-700" />
+                    <span>
+                      <strong>View-Only Access:</strong> Asset Drive folders and documents are view-only for new or unregistered accounts. File uploads and edits require an Admin-approved registered account.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Error Callout */}
             {errorMessage && (
               <div className="bg-red-50 border-b border-red-100 py-2.5 px-4 sm:px-6">
@@ -2426,8 +2495,8 @@ export default function App() {
                 />
               )}
 
-              {/* VIEW 3: INPUT DATA ENTRY FORM (Local Operator & Admin only; Manager is restricted) */}
-              {activeTab === 'input' && (user.role === 'Admin' || user.role === 'Local Operator' || user.role === 'User') && (
+              {/* VIEW 3: INPUT DATA ENTRY FORM (Approved Local Operator & Admin only; New/Unregistered/View-Only & Manager restricted) */}
+              {activeTab === 'input' && (user.role === 'Admin' || (user.role === 'Local Operator' && canUserUploadOrEdit(user))) && (
                 <InputForm 
                   user={user} 
                   spreadsheetId={spreadsheetId} 

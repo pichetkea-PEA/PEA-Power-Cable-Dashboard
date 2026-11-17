@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { 
   CableAsset, 
@@ -9,7 +9,14 @@ import {
   PDResultType,
   PEAUser
 } from '../types';
-import { getPendingUsers, approveUserAccount, rejectUserAccount } from '../utils/userManagement';
+import { 
+  getPendingUsers, 
+  approveUserAccount, 
+  rejectUserAccount, 
+  syncRegisteredUsersFromFirestore,
+  getAuthHeadersForApi
+} from '../utils/userManagement';
+import { getEffectiveGoogleToken } from '../utils/googleSheets';
 import { 
   PEA_AREAS, 
   PEA_AREA_NAMES, 
@@ -42,7 +49,9 @@ import {
   X, 
   FileSpreadsheet, 
   QrCode,
-  ShieldCheck
+  ShieldCheck,
+  Lock,
+  Copy
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -414,6 +423,58 @@ Focus field teams in regional sectors with the highest density of critical cable
   };
 
   const [pendingUsers, setPendingUsers] = useState<PEAUser[]>(() => getPendingUsers());
+  const [driveStatus, setDriveStatus] = useState<{
+    serviceAccountConfigured: boolean;
+    serviceAccountEmail: string | null;
+    adminSessionTokenActive: boolean;
+    mode: string;
+  } | null>(null);
+  const [isHardeningFolders, setIsHardeningFolders] = useState(false);
+  const [hardenResultMsg, setHardenResultMsg] = useState<string | null>(null);
+  const [copiedSaEmail, setCopiedSaEmail] = useState(false);
+
+  useEffect(() => {
+    syncRegisteredUsersFromFirestore()
+      .then(() => setPendingUsers(getPendingUsers()))
+      .catch(() => {});
+    fetch('/api/drive/status')
+      .then(r => r.json())
+      .then(data => {
+        if (data && typeof data === 'object') setDriveStatus(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleHardenDriveFolders = async () => {
+    setIsHardeningFolders(true);
+    setHardenResultMsg(null);
+    try {
+      const authHeaders = await getAuthHeadersForApi();
+      const clientToken = getEffectiveGoogleToken(null);
+      const res = await fetch('/api/drive/harden-permissions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
+        body: JSON.stringify({ clientToken })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        setHardenResultMsg(`Warning: ${data?.error || 'Could not update folder permissions.'}`);
+      } else {
+        setHardenResultMsg(
+          `Verified ${data.hardenedCount}/${data.totalFoldersChecked} Area folder(s) as Anyone: View-Only${
+            data.removedWritersCount > 0 ? ` (removed ${data.removedWritersCount} public editor link(s))` : ''
+          }.`
+        );
+      }
+    } catch (err: any) {
+      setHardenResultMsg(`Error: ${err?.message || 'Permission enforcement failed'}`);
+    } finally {
+      setIsHardeningFolders(false);
+    }
+  };
 
   const handleApproveUser = (email: string) => {
     approveUserAccount(email);
@@ -427,6 +488,74 @@ Focus field teams in regional sectors with the highest density of critical cable
 
   return (
     <div className="space-y-6" id="admin-panel-root">
+      {/* Option 1: Central Admin Google Drive Storage & Access Control Bar */}
+      <div className="bg-white rounded-2xl border border-purple-100 shadow-xs p-3.5 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 bg-purple-50 border border-purple-200 rounded-xl text-purple-800 shrink-0">
+            <Lock className="w-4 h-4" />
+          </div>
+          <div className="space-y-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-xs font-black text-gray-900 uppercase tracking-wider">
+                Drive Storage Security (Option 1: Registered-Only Upload)
+              </h3>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  driveStatus?.serviceAccountConfigured
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : driveStatus?.adminSessionTokenActive
+                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                }`}
+              >
+                {driveStatus?.serviceAccountConfigured
+                  ? 'Service Account Active'
+                  : driveStatus?.adminSessionTokenActive
+                  ? 'Admin Delegated Session Active'
+                  : 'Waiting Admin OAuth or Service Account'}
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-500">
+              Folders (Area → City → Equipment ID) are shared as <strong className="text-gray-700">Anyone with link: View-Only</strong>. Only Admin-approved registered users can upload files through the backend proxy.
+            </p>
+            {driveStatus?.serviceAccountEmail && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] text-purple-900 font-mono">
+                <span className="font-sans font-semibold text-gray-500">Service Account:</span>
+                <span className="bg-purple-50 border border-purple-200 px-2 py-0.5 rounded">{driveStatus.serviceAccountEmail}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(driveStatus.serviceAccountEmail || '');
+                    setCopiedSaEmail(true);
+                    setTimeout(() => setCopiedSaEmail(false), 2000);
+                  }}
+                  className="text-purple-700 hover:text-purple-900 font-sans font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  {copiedSaEmail ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            )}
+            {hardenResultMsg && (
+              <p className="text-[11px] font-semibold text-emerald-700 pt-1">{hardenResultMsg}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleHardenDriveFolders}
+            disabled={isHardeningFolders}
+            className="bg-purple-900 hover:bg-purple-950 disabled:opacity-50 text-white text-[11px] font-bold px-3.5 py-2 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+            title="Ensure all 12 Area folders enforce Anyone: View-Only (removing any public Editor permissions)"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            {isHardeningFolders ? 'Enforcing...' : 'Enforce View-Only on Area Folders'}
+          </button>
+        </div>
+      </div>
+
       {/* Pending Account Authorization Requests (If any) */}
       {pendingUsers.length > 0 && (
         <div className="bg-gradient-to-r from-purple-900 via-slate-900 to-purple-950 rounded-2xl border border-purple-500/40 p-5 shadow-xl text-white space-y-4">

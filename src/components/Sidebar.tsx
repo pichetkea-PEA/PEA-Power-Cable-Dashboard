@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import PeaLogo from './PeaLogo';
 import { PEAUser } from '../types';
 import { PEA_AREA_NAMES } from '../utils/peaData';
+import { canUserUploadOrEdit } from '../utils/userManagement';
 import { 
   Globe, 
   Layers, 
@@ -51,7 +52,7 @@ export default function Sidebar({
 
   const canAccessAdminSuite = user.role === 'Admin' || user.role === 'Manager';
   const isSystemAdmin = user.role === 'Admin';
-  const canAccessSubmitLog = user.role === 'Admin' || user.role === 'Local Operator' || user.role === 'User';
+  const canAccessSubmitLog = user.role === 'Admin' || (user.role === 'Local Operator' && canUserUploadOrEdit(user));
   const canDisconnectDb = user.role === 'Admin';
 
   const navigationItems = [

@@ -198,40 +198,43 @@ export default function DiagnosticEditModal({
       let finalPrpdUrl = onlinePrpdImageUrl || prpdPreviewUrl || asset.pdDiagnostics?.onlinePrpdImageUrl || asset.onlinePrpdImageUrl || '';
       let finalPdfUrl = offlinePdfReportUrl || asset.pdDiagnostics?.offlinePdfReportUrl || asset.offlinePdfUrl || '';
 
-      // 1. Upload PRPD Image to Drive if a new file was chosen and token is available
+      const uploadHierarchy = {
+        area: assetArea,
+        city: asset.city || 'Unassigned',
+        equipmentId: asset.equipmentId
+      };
+
+      // 1. Upload PRPD Image to Drive (Area -> City -> Equipment ID) or server fallback
       if (selectedPrpdFile) {
-        if (activeToken) {
-          setSaveStatus('Uploading PRPD pattern image to Google Drive...');
-          try {
-            finalPrpdUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPrpdFile);
-          } catch (uploadErr) {
-            console.warn("Drive image upload failed, using local preview:", uploadErr);
-            finalPrpdUrl = prpdPreviewUrl || finalPrpdUrl;
-          }
-        } else {
+        setSaveStatus('Uploading PRPD pattern image (Area → City → Asset folder)...');
+        try {
+          finalPrpdUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPrpdFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("PRPD upload failed, keeping compact/local preview:", uploadErr);
           finalPrpdUrl = prpdPreviewUrl || finalPrpdUrl;
         }
       }
 
-      // 2. Upload PDF Report to Drive if a new file was chosen
+      // 2. Upload PDF Report to Drive (Area -> City -> Equipment ID) or server fallback
       if (selectedPdfFile) {
-        if (activeToken) {
-          setSaveStatus('Uploading PDF test report to Google Drive...');
-          try {
-            finalPdfUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPdfFile);
-          } catch (uploadErr) {
-            console.warn("Drive PDF upload failed:", uploadErr);
-          }
+        setSaveStatus('Uploading PDF test report (Area → City → Asset folder)...');
+        try {
+          finalPdfUrl = await uploadFileToDrive(activeToken, targetFolderId || '', selectedPdfFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("PDF upload failed:", uploadErr);
         }
       }
 
-      // 3. Build updated PD Diagnostic object
+      // 3. Build updated PD Diagnostic object preserving extended columns AB-AQ
       const parsedAmp = onlinePrpdAmplitude ? parseFloat(onlinePrpdAmplitude) : undefined;
       const parsedPulse = onlinePrpdRepetitionRate ? parseFloat(onlinePrpdRepetitionRate) : undefined;
       const parsedMaxDischarge = offlineMaxDischarge ? parseFloat(offlineMaxDischarge) : undefined;
       const parsedInception = offlineInceptionVoltage ? parseFloat(offlineInceptionVoltage) : undefined;
 
       const updatedPdDiag: PDDiagnosticInformation = {
+        ...pd,
         number: asset.number,
         timestamp: timestamp || getBangkokTimestamp(),
         operatorName: operatorName || asset.operatorName || 'Admin Operator',
@@ -259,7 +262,9 @@ export default function DiagnosticEditModal({
         offlineDefectClassification,
         offlineIeeeVerdict,
         offlineRiskLevel: offlineRiskLevel as any,
-        diagnosticSummary
+        diagnosticSummary,
+        offlineTopologyJson: pd.offlineTopologyJson || (pd.offlineTopology ? JSON.stringify(pd.offlineTopology) : undefined),
+        offlineIndividualDefectsJson: pd.offlineIndividualDefectsJson || (pd.offlineIndividualDefects ? JSON.stringify(pd.offlineIndividualDefects) : undefined)
       };
 
       // 4. Update Google Sheets Tab 4 if target sheet ID exists
@@ -275,7 +280,7 @@ export default function DiagnosticEditModal({
               'PD & Diagnostic Data',
               rowIndices.pdRowIndex,
               updatedPdDiag,
-              'A:AA'
+              'A:AQ'
             );
           } else {
             await appendPdDiagnosticRow(

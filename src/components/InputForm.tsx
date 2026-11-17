@@ -7,8 +7,22 @@ import {
   TanDeltaResult, 
   PEAUser,
   CableAsset,
-  PDDiagnosticInformation
+  PDDiagnosticInformation,
+  CableTopologyNode,
+  OfflineIndividualDefect
 } from '../types';
+import { OfflineMeasurementStep } from './diagnostics/OfflineMeasurementStep';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Line,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ReferenceLine
+} from 'recharts';
 import { 
   PEA_AREAS, 
   PEA_AREA_NAMES, 
@@ -167,7 +181,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [visualPreview, setVisualPreview] = useState<string>('');
   const [thermalPreview, setThermalPreview] = useState<string>('');
 
-  // Page 4: Advanced Partial Discharge (PD) Diagnostic Suite
+  // Step 4: Online Measurement (Columns K to Q in Google Sheet Tab 4)
   const [onlinePrpdFile, setOnlinePrpdFile] = useState<File | null>(null);
   const [onlinePrpdPreview, setOnlinePrpdPreview] = useState<string>('');
   const [analyzedPrpd, setAnalyzedPrpd] = useState<AnalyzedPrpdResult | null>(null);
@@ -176,14 +190,84 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [prpdPhase, setPrpdPhase] = useState<'Phase A' | 'Phase B' | 'Phase C' | '3-Phase'>('Phase A');
   const [prpdPeakCharge, setPrpdPeakCharge] = useState<string>('812.8');
   const [prpdPulseRate, setPrpdPulseRate] = useState<string>('263.7');
+  const [prpdPhaseRange, setPrpdPhaseRange] = useState<string>('85°-145° & 265°-325°');
   const [prpdAvgAmplitude, setPrpdAvgAmplitude] = useState<string>('35.8');
   const [prpdDefectType, setPrpdDefectType] = useState<string>('Surface Tracking / Bad Contacts');
+  const [prpdSeverity, setPrpdSeverity] = useState<'Normal' | 'Advisory' | 'Moderate' | 'Critical' | 'None'>('Critical');
 
-  // Offline PD PDF Report
+  // Step 5: Offline Measurement (Columns R to AQ in Google Sheet Tab 4)
+  // Section 1: General Info
+  const [offlineTestDate, setOfflineTestDate] = useState<string>(() => {
+    const now = new Date();
+    return `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  });
+  const [offlineCableLengthM, setOfflineCableLengthM] = useState<number>(80);
+  const [offlineNearTermLabel, setOfflineNearTermLabel] = useState<string>('Substation Bay Near-End Termination');
+  const [offlineFarTermLabel, setOfflineFarTermLabel] = useState<string>('Feeder Riser Far-End Termination');
+  const [offlineJoints, setOfflineJoints] = useState<{ id: string; label: string; locationM: number; accessoryModel: string }[]>([
+    { id: 'joint-1', label: 'Joint #1', locationM: 27.8, accessoryModel: '3M QS2000 Premolded' },
+    { id: 'joint-2', label: 'Joint #2', locationM: 53.9, accessoryModel: '3M QS2000 Premolded' }
+  ]);
   const [offlinePdfFile, setOfflinePdfFile] = useState<File | null>(null);
   const [analyzedOffline, setAnalyzedOffline] = useState<AnalyzedOfflinePdResult | null>(null);
   const [isAnalyzingPdf, setIsAnalyzingPdf] = useState<boolean>(false);
-  const [offlineTestVoltage, setOfflineTestVoltage] = useState<string>('12.8 kV (2.0 U0)');
+  const [offlineNumberOfDefects, setOfflineNumberOfDefects] = useState<number>(2);
+
+  // Section 2: Tan Delta (TD) Result at 3 stages of test voltage (IEEE 400.2-2024)
+  const [tdStage1VoltageKv, setTdStage1VoltageKv] = useState<string>('6.4');
+  const [tdStage1Mean, setTdStage1Mean] = useState<string>('1.20');
+  const [tdStage1Sdtd, setTdStage1Sdtd] = useState<string>('0.04');
+
+  const [tdStage2VoltageKv, setTdStage2VoltageKv] = useState<string>('12.7');
+  const [tdStage2Mean, setTdStage2Mean] = useState<string>('2.15');
+  const [tdStage2Sdtd, setTdStage2Sdtd] = useState<string>('0.08');
+
+  const [tdStage3VoltageKv, setTdStage3VoltageKv] = useState<string>('19.1');
+  const [tdStage3Mean, setTdStage3Mean] = useState<string>('4.35');
+  const [tdStage3Sdtd, setTdStage3Sdtd] = useState<string>('0.22');
+
+  const [tdIeee4002Criteria, setTdIeee4002Criteria] = useState<'No Action Required' | 'Further Study Advised' | 'Action Required'>('Further Study Advised');
+  const [tdAutoEvaluate, setTdAutoEvaluate] = useState<boolean>(true);
+
+  // Section 3: Offline PD Result (Individual Defects with PRPD picture & movable cursor along cable length)
+  const [offlineIndividualDefects, setOfflineIndividualDefects] = useState<OfflineIndividualDefect[]>([
+    {
+      id: 'defect-1',
+      defectNumber: 1,
+      defectType: 'Internal Void / Cavity',
+      locationM: 27.8,
+      amplitudePc: 1450,
+      maxChargeNc: 1.45,
+      avgChargePc: 620,
+      shotsPerPeriod: 3.4,
+      inceptionVoltageKv: 9.2,
+      extinctionVoltageKv: 7.8,
+      phase: 'Phase L1 (A)',
+      prpdImageUrl: '',
+      severity: 'High',
+      notes: 'Localized cavity discharge inside Joint #1 insulation sleeve'
+    },
+    {
+      id: 'defect-2',
+      defectNumber: 2,
+      defectType: 'Surface Discharges',
+      locationM: 80.0,
+      amplitudePc: 3600,
+      maxChargeNc: 3.60,
+      avgChargePc: 1850,
+      shotsPerPeriod: 6.8,
+      inceptionVoltageKv: 6.4,
+      extinctionVoltageKv: 5.5,
+      phase: 'Phase L2 (B)',
+      prpdImageUrl: '',
+      severity: 'Critical',
+      notes: 'Severe surface tracking discharge at Far-End Termination stress cone'
+    }
+  ]);
+  const [defectPrpdFiles, setDefectPrpdFiles] = useState<Record<string, File>>({});
+
+  // Overall Offline Summary Fields (Columns T through Z)
+  const [offlineTestVoltage, setOfflineTestVoltage] = useState<string>('19.1 kV (1.5 U0)');
   const [offlineMaxCharge, setOfflineMaxCharge] = useState<string>('3.6');
   const [offlineDefectLocation, setOfflineDefectLocation] = useState<string>('80.0 m (Far Termination)');
   const [offlineIeeeVerdict, setOfflineIeeeVerdict] = useState<string>('Action Required');
@@ -340,7 +424,19 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       setPrpdPeakCharge(String(result.amplitude));
       if (result.avgAmplitude !== undefined) setPrpdAvgAmplitude(String(result.avgAmplitude));
       setPrpdPulseRate(String(result.repetitionRate));
+      if (result.phaseRange) setPrpdPhaseRange(result.phaseRange);
       setPrpdDefectType(result.defectType);
+      if (result.severity) {
+        const sevMap: Record<string, 'Normal' | 'Advisory' | 'Moderate' | 'Critical' | 'None'> = {
+          Safe: 'Normal',
+          Normal: 'Normal',
+          Advisory: 'Advisory',
+          Warning: 'Moderate',
+          Moderate: 'Moderate',
+          Critical: 'Critical'
+        };
+        setPrpdSeverity(sevMap[result.severity] || 'Critical');
+      }
     } catch (err) {
       console.warn("Failed to analyze PRPD image:", err);
     } finally {
@@ -371,6 +467,215 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     }
   };
 
+  // Build ordered CableTopologyNode[] from Near Termination, Joints, Cable Spans, and Far Termination
+  const computedTopologyNodes = useMemo<CableTopologyNode[]>(() => {
+    const totalLen = Math.max(1, Number(offlineCableLengthM) || 80);
+    const sortedJoints = [...offlineJoints]
+      .map(j => ({
+        ...j,
+        locationM: Math.min(totalLen, Math.max(0, Number(j.locationM) || 0))
+      }))
+      .sort((a, b) => a.locationM - b.locationM);
+
+    const nodes: CableTopologyNode[] = [];
+    // 1. Near-End Termination at 0 m
+    nodes.push({
+      id: 'term-near',
+      type: 'termination_near',
+      label: offlineNearTermLabel || 'Near-End Termination',
+      startM: 0,
+      endM: 0,
+      lengthM: 0
+    });
+
+    let prevPos = 0;
+    sortedJoints.forEach((joint, idx) => {
+      const spanLen = Math.max(0, Number((joint.locationM - prevPos).toFixed(2)));
+      nodes.push({
+        id: `cable-span-${idx + 1}`,
+        type: 'cable',
+        label: `Cable Span #${idx + 1}`,
+        startM: prevPos,
+        endM: joint.locationM,
+        lengthM: spanLen
+      });
+      nodes.push({
+        id: joint.id,
+        type: 'joint',
+        label: joint.label || `Joint #${idx + 1}`,
+        startM: joint.locationM,
+        endM: joint.locationM,
+        lengthM: 0,
+        accessoryModel: joint.accessoryModel
+      });
+      prevPos = joint.locationM;
+    });
+
+    // Final Cable Span to Far-End Termination
+    const finalSpanLen = Math.max(0, Number((totalLen - prevPos).toFixed(2)));
+    nodes.push({
+      id: `cable-span-${sortedJoints.length + 1}`,
+      type: 'cable',
+      label: `Cable Span #${sortedJoints.length + 1}`,
+      startM: prevPos,
+      endM: totalLen,
+      lengthM: finalSpanLen
+    });
+
+    // Far-End Termination at totalLen m
+    nodes.push({
+      id: 'term-far',
+      type: 'termination_far',
+      label: offlineFarTermLabel || 'Far-End Termination',
+      startM: totalLen,
+      endM: totalLen,
+      lengthM: 0
+    });
+
+    return nodes;
+  }, [offlineCableLengthM, offlineJoints, offlineNearTermLabel, offlineFarTermLabel]);
+
+  // Auto-calculate Tan Delta Tip-Up (TD at 1.5 U0 - TD at 0.5 U0) and IEEE 400.2-2024 Criteria
+  const tdDeltaTipUp = useMemo(() => {
+    const m1 = parseFloat(tdStage1Mean) || 0;
+    const m3 = parseFloat(tdStage3Mean) || 0;
+    return Number((m3 - m1).toFixed(2));
+  }, [tdStage1Mean, tdStage3Mean]);
+
+  // IEEE 400.2-2024 Automatic Criteria Evaluation for Service-Aged XLPE Cables:
+  // Condition 1 (No Action Required): Mean TD @ U0 <= 4.0 E-3 AND Tip-Up <= 5.0 E-3 AND SDTD @ U0 <= 0.10 E-3
+  // Condition 3 (Action Required): Mean TD @ U0 > 50.0 E-3 OR Tip-Up > 80.0 E-3 OR SDTD @ U0 > 0.50 E-3 (or elevated > 4.0 E-3 for strict MV utility criteria)
+  useEffect(() => {
+    if (!tdAutoEvaluate) return;
+    const meanU0 = parseFloat(tdStage2Mean) || 0;
+    const sdtdU0 = parseFloat(tdStage2Sdtd) || 0;
+    const tipUp = Math.abs(tdDeltaTipUp);
+
+    if (meanU0 > 4.0 || tipUp > 5.0 || sdtdU0 > 0.5) {
+      setTdIeee4002Criteria('Action Required');
+      setTanDelta('Action Required');
+    } else if (meanU0 > 1.5 || tipUp > 1.5 || sdtdU0 > 0.1) {
+      setTdIeee4002Criteria('Further Study Advised');
+      setTanDelta('Further Study Advised');
+    } else {
+      setTdIeee4002Criteria('No Action Required');
+      setTanDelta('No Action Required');
+    }
+    setTanDeltaAmplitude(String((meanU0 / 1000).toFixed(5)));
+  }, [tdStage2Mean, tdStage2Sdtd, tdDeltaTipUp, tdAutoEvaluate]);
+
+  // Auto-plot Trend of TD Value across 3 stages of test voltage
+  const tdTrendChartData = useMemo(() => {
+    const v1 = parseFloat(tdStage1VoltageKv) || 0;
+    const v2 = parseFloat(tdStage2VoltageKv) || 0;
+    const v3 = parseFloat(tdStage3VoltageKv) || 0;
+    return [
+      {
+        stage: `0.5 U₀ (${v1} kV)`,
+        voltageKv: v1,
+        meanTd: parseFloat(tdStage1Mean) || 0,
+        sdtd: parseFloat(tdStage1Sdtd) || 0,
+        studyLimit: 1.5,
+        actionLimit: 4.0
+      },
+      {
+        stage: `1.0 U₀ (${v2} kV)`,
+        voltageKv: v2,
+        meanTd: parseFloat(tdStage2Mean) || 0,
+        sdtd: parseFloat(tdStage2Sdtd) || 0,
+        studyLimit: 1.5,
+        actionLimit: 4.0
+      },
+      {
+        stage: `1.5 U₀ (${v3} kV)`,
+        voltageKv: v3,
+        meanTd: parseFloat(tdStage3Mean) || 0,
+        sdtd: parseFloat(tdStage3Sdtd) || 0,
+        studyLimit: 1.5,
+        actionLimit: 4.0
+      }
+    ];
+  }, [tdStage1VoltageKv, tdStage1Mean, tdStage1Sdtd, tdStage2VoltageKv, tdStage2Mean, tdStage2Sdtd, tdStage3VoltageKv, tdStage3Mean, tdStage3Sdtd]);
+
+  // Sync offlineNumberOfDefects with offlineIndividualDefects array length
+  const handleChangeDefectCount = (countVal: number) => {
+    const clamped = Math.max(0, Math.min(12, Math.floor(countVal)));
+    setOfflineNumberOfDefects(clamped);
+    setOfflineIndividualDefects(prev => {
+      if (clamped === prev.length) return prev;
+      if (clamped < prev.length) return prev.slice(0, clamped);
+      const next = [...prev];
+      const totalLen = Math.max(1, Number(offlineCableLengthM) || 80);
+      for (let i = prev.length; i < clamped; i++) {
+        next.push({
+          id: `defect-${Date.now()}-${i + 1}`,
+          defectNumber: i + 1,
+          defectType: 'Internal Void / Cavity',
+          locationM: Number(((totalLen / (clamped + 1)) * (i + 1)).toFixed(1)),
+          amplitudePc: 500,
+          maxChargeNc: 0.5,
+          avgChargePc: 250,
+          shotsPerPeriod: 2.0,
+          inceptionVoltageKv: parseFloat(tdStage2VoltageKv) || 6.4,
+          extinctionVoltageKv: parseFloat(tdStage1VoltageKv) || 5.2,
+          phase: 'Phase L1 (A)',
+          prpdImageUrl: '',
+          severity: 'Medium',
+          notes: `Defect #${i + 1} recorded along cable span`
+        });
+      }
+      return next;
+    });
+  };
+
+  // Auto-sync summary fields (offlineMaxCharge, offlineDefectLocation, offlineIeeeVerdict, offlineRiskLevel) from individual defects
+  useEffect(() => {
+    if (offlineIndividualDefects.length === 0) {
+      setOfflineMaxCharge('0');
+      setOfflineDefectLocation('No Active PD Defect');
+      return;
+    }
+    let maxDef = offlineIndividualDefects[0];
+    for (const d of offlineIndividualDefects) {
+      if ((Number(d.amplitudePc) || 0) > (Number(maxDef.amplitudePc) || 0)) {
+        maxDef = d;
+      }
+    }
+    const maxNc = Number(((Number(maxDef.amplitudePc) || 0) / 1000).toFixed(3));
+    setOfflineMaxCharge(String(maxNc));
+    setOfflineDefectLocation(`${maxDef.locationM} m (${maxDef.defectType})`);
+    setOfflineTestVoltage(`${tdStage3VoltageKv || '19.1'} kV (1.5 U0)`);
+  }, [offlineIndividualDefects, tdStage3VoltageKv]);
+
+  // Handle per-defect PRPD picture upload
+  const handleDefectPrpdUpload = (defectId: string, e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDefectPrpdFiles(prev => ({ ...prev, [defectId]: file }));
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      setOfflineIndividualDefects(prev =>
+        prev.map(d => (d.id === defectId ? { ...d, prpdImageUrl: dataUrl } : d))
+      );
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Helper to identify which topology element a defect location (m) is closest to
+  const getNearestTopologyContext = (locM: number): string => {
+    const totalLen = Math.max(1, Number(offlineCableLengthM) || 80);
+    if (locM <= 1.0) return `Near-End Termination (0.0 m)`;
+    if (locM >= totalLen - 1.0) return `Far-End Termination (${totalLen} m)`;
+    for (const j of offlineJoints) {
+      if (Math.abs(locM - j.locationM) <= 1.5) {
+        return `${j.label} (@ ${j.locationM} m)`;
+      }
+    }
+    const span = computedTopologyNodes.find(n => n.type === 'cable' && locM >= n.startM && locM <= n.endM);
+    return span ? `${span.label} (${span.startM}m – ${span.endM}m)` : `Cable Section @ ${locM} m`;
+  };
+
   // Immediate Engineering warning calculation flags
   const alerts = useMemo(() => {
     const hasHighTemp = surfaceTemp !== '' && parseFloat(surfaceTemp) > 70;
@@ -391,8 +696,13 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   // Executive Combined Diagnostic Summary
   const liveDiagnosticSummary = useMemo(() => {
-    return generateDiagnosticSummary(analyzedPrpd, analyzedOffline, computedEquipmentId);
-  }, [analyzedPrpd, analyzedOffline, computedEquipmentId]);
+    const baseSummary = generateDiagnosticSummary(analyzedPrpd, analyzedOffline, computedEquipmentId);
+    const tdSummary = `Tan Delta (IEEE 400.2-2024): 0.5U0=${tdStage1Mean}E-3, 1.0U0=${tdStage2Mean}E-3, 1.5U0=${tdStage3Mean}E-3 (Tip-Up=${tdDeltaTipUp}E-3, Verdict: ${tdIeee4002Criteria}).`;
+    const pdSummary = `Offline PD (${offlineIndividualDefects.length} defect(s) over ${offlineCableLengthM}m): ${
+      offlineIndividualDefects.map((d, idx) => `#${idx + 1} ${d.defectType} @ ${d.locationM}m (${d.amplitudePc} pC)`).join('; ') || 'None'
+    }.`;
+    return `${baseSummary} | ${tdSummary} | ${pdSummary}`;
+  }, [analyzedPrpd, analyzedOffline, computedEquipmentId, tdStage1Mean, tdStage2Mean, tdStage3Mean, tdDeltaTipUp, tdIeee4002Criteria, offlineIndividualDefects, offlineCableLengthM]);
 
   // Populate form with matched asset details
   const loadAssetDataIntoForm = (asset: CableAsset) => {
@@ -621,49 +931,93 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
     try {
       const activeToken = getEffectiveGoogleToken(googleToken);
-      // 1. Get or Create Spreadsheet for selectedArea
+      // 1. Always resolve the target Spreadsheet & Area Root Folder for selectedArea
       let currentSpreadsheetId = spreadsheetId;
       let currentFolderId = folderId;
 
-      if (activeToken || !currentSpreadsheetId) {
+      try {
         const sectorData = await getSectorSpreadsheet(selectedArea);
-        if (sectorData && sectorData.spreadsheetId) {
+        if (sectorData?.spreadsheetId) {
           currentSpreadsheetId = sectorData.spreadsheetId;
-          if (sectorData.folderId) currentFolderId = sectorData.folderId;
-        } else {
+        }
+        if (sectorData?.folderId) {
+          currentFolderId = sectorData.folderId;
+        }
+        if (!currentSpreadsheetId || (activeToken && !currentFolderId)) {
           const masterMap = await getMasterSpreadsheetsMap(activeToken);
-          if (masterMap.spreadsheets[selectedArea]) {
+          if (masterMap.spreadsheets?.[selectedArea]) {
             currentSpreadsheetId = masterMap.spreadsheets[selectedArea];
-            if (masterMap.folders[selectedArea]) currentFolderId = masterMap.folders[selectedArea];
+          }
+          if (masterMap.folders?.[selectedArea]) {
+            currentFolderId = masterMap.folders[selectedArea];
           }
         }
+      } catch (resolveErr) {
+        console.warn('Sector spreadsheet/folder resolution warning:', resolveErr);
       }
 
-      setStatusMessage('Uploading inspection photos & diagnostic files...');
+      // Resolve equipment identity early so uploads go directly to Area -> City -> Equipment ID folder
+      const finalEquipmentId = (selectedAsset?.equipmentId || computedEquipmentId || '').trim();
+      const finalPeaNumber = (selectedAsset?.peaNumber || peaNumber || '').trim();
+      const finalAdsNumber = (selectedAsset?.adsNumber || adsNumber || '').trim();
+      const finalAssetNumber = (selectedAsset?.assetNumber || assetNumber || '').trim();
+
+      if (selectedAsset && selectedAsset.equipmentId && finalEquipmentId !== selectedAsset.equipmentId) {
+        setStatusMessage('Identity Error: Equipment ID mismatch with identified asset.');
+        setLoading(false);
+        setProgressModal(prev => ({ ...prev, isError: true, errorMessage: 'Equipment ID mismatch with identified asset.' }));
+        return;
+      }
+
+      const uploadHierarchy = {
+        area: selectedArea,
+        city: city || 'Unassigned',
+        equipmentId: finalEquipmentId || 'ASSET'
+      };
+
+      setStatusMessage('Uploading inspection photos, PRPD & PDF reports to Area/City/Equipment folder...');
       setProgressModal(prev => ({
         ...prev,
         percent: 20,
-        stepMessage: 'Uploading visual photo, thermogram scan, PRPD picture & offline PDF report...'
+        stepMessage: `Uploading attachments to ${uploadHierarchy.area}/${uploadHierarchy.city}/${uploadHierarchy.equipmentId}...`
       }));
-      
+
       let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
       let thermalUrl = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400';
-      let prpdUrl = onlinePrpdPreview || '';
+      let prpdUrl = (onlinePrpdPreview && onlinePrpdPreview.length < 45000) ? onlinePrpdPreview : '';
       let offlinePdfUrl = '';
 
-      // Upload files to user's Google Drive folder if connected
-      if (activeToken && currentFolderId) {
-        if (visualFile) {
-          visualUrl = await uploadImageToDrive(activeToken, currentFolderId, visualFile);
+      // Upload files via 3-tier persistence (Google Drive Area/City/EquipmentID -> /api/files/upload -> Compact Data URL for images)
+      if (visualFile) {
+        try {
+          visualUrl = await uploadImageToDrive(activeToken, currentFolderId || '', visualFile, uploadHierarchy);
+        } catch (e: any) {
+          if (e?.status === 403) throw e;
+          console.warn('Visual file upload fallback:', e);
         }
-        if (thermalFile) {
-          thermalUrl = await uploadImageToDrive(activeToken, currentFolderId, thermalFile);
+      }
+      if (thermalFile) {
+        try {
+          thermalUrl = await uploadImageToDrive(activeToken, currentFolderId || '', thermalFile, uploadHierarchy);
+        } catch (e: any) {
+          if (e?.status === 403) throw e;
+          console.warn('Thermal file upload fallback:', e);
         }
-        if (onlinePrpdFile) {
-          prpdUrl = await uploadFileToDrive(activeToken, currentFolderId, onlinePrpdFile);
+      }
+      if (onlinePrpdFile) {
+        try {
+          prpdUrl = await uploadFileToDrive(activeToken, currentFolderId || '', onlinePrpdFile, uploadHierarchy);
+        } catch (e: any) {
+          if (e?.status === 403) throw e;
+          console.warn('Online PRPD upload fallback:', e);
         }
-        if (offlinePdfFile) {
-          offlinePdfUrl = await uploadFileToDrive(activeToken, currentFolderId, offlinePdfFile);
+      }
+      if (offlinePdfFile) {
+        try {
+          offlinePdfUrl = await uploadFileToDrive(activeToken, currentFolderId || '', offlinePdfFile, uploadHierarchy);
+        } catch (e: any) {
+          if (e?.status === 403) throw e;
+          console.warn('Offline PDF upload fallback:', e);
         }
       }
 
@@ -675,7 +1029,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       }));
 
       const timestamp = getBangkokTimestamp();
-      
+
       let rowNum = 1;
       if (activeToken && currentSpreadsheetId) {
         try {
@@ -700,21 +1054,6 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         if (assets && assets.length > 0) {
           const validNumbers = assets.map(a => Number(a.number) || 0).filter(n => n > 0 && n < 50000);
           rowNum = validNumbers.length > 0 ? Math.max(...validNumbers) + 1 : assets.length + 1;
-        }
-      }
-
-      // Pre-submission identity integrity validation check
-      const finalEquipmentId = (selectedAsset?.equipmentId || computedEquipmentId || '').trim();
-      const finalPeaNumber = (selectedAsset?.peaNumber || peaNumber || '').trim();
-      const finalAdsNumber = (selectedAsset?.adsNumber || adsNumber || '').trim();
-      const finalAssetNumber = (selectedAsset?.assetNumber || assetNumber || '').trim();
-
-      if (selectedAsset) {
-        if (selectedAsset.equipmentId && finalEquipmentId !== selectedAsset.equipmentId) {
-          setStatusMessage('Identity Error: Equipment ID mismatch with identified asset.');
-          setLoading(false);
-          setProgressModal(prev => ({ ...prev, isError: true, errorMessage: 'Equipment ID mismatch with identified asset.' }));
-          return;
         }
       }
 
@@ -746,38 +1085,80 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         rowNum, timestamp, user.name, finalEquipmentId, visualUrl, thermalUrl
       ];
 
-      // Tab 4: PD & Diagnostic Data (Aligned with 27-column schema)
-      const pdDiagnosticRow = [
-        rowNum,
-        timestamp,
-        user.name,
-        finalEquipmentId,
-        finalPeaNumber,
-        voltage,
-        city,
-        eqType,
-        locationType,
-        substation || 'Main Station',
-        prpdUrl,
-        prpdPhase,
-        parseFloat(prpdPeakCharge) || 0,
-        parseFloat(prpdPulseRate) || 0,
-        analyzedPrpd?.phaseRange || '85°-145° & 265°-325°',
-        prpdDefectType,
-        analyzedPrpd?.severity || 'Critical',
-        offlinePdfUrl,
-        offlinePdfFile?.name || (analyzedOffline ? 'VLF_PD_Report.pdf' : 'N/A'),
-        offlineTestVoltage,
-        parseFloat(offlineMaxCharge) || 0,
-        offlineDefectLocation,
-        analyzedOffline?.inceptionVoltage || 6.4,
-        analyzedOffline?.defectClassification || 'Surface Discharges',
-        offlineIeeeVerdict,
-        offlineRiskLevel,
-        liveDiagnosticSummary
-      ];
+      // Upload per-defect PRPD images into Area/City/EquipmentID (Drive -> Server fallback -> strip oversized raw base64 for JSON safety)
+      const uploadedIndividualDefects: OfflineIndividualDefect[] = await Promise.all(
+        offlineIndividualDefects.map(async (def, idx) => {
+          let defectImgUrl = def.prpdImageUrl || '';
+          const rawFile = defectPrpdFiles[def.id];
+          if (rawFile) {
+            try {
+              defectImgUrl = await uploadFileToDrive(activeToken, currentFolderId || '', rawFile, uploadHierarchy);
+            } catch (e: any) {
+              if (e?.status === 403) throw e;
+              console.warn(`Could not upload PRPD image for defect #${idx + 1}:`, e);
+            }
+          }
+          if (defectImgUrl.length > 15000 && defectImgUrl.startsWith('data:image/')) {
+            defectImgUrl = '';
+          }
+          const ampPcNum = Number(def.amplitudePc) || 0;
+          return {
+            ...def,
+            defectNumber: idx + 1,
+            maxChargeNc: Number((ampPcNum / 1000).toFixed(3)),
+            prpdImageUrl: defectImgUrl
+          };
+        })
+      );
+
+      // Select dominant defect (highest amplitude) for summary Columns U–X
+      const dominantOfflineDefect = uploadedIndividualDefects.length > 0
+        ? uploadedIndividualDefects.reduce((best, cur) =>
+            (Number(cur.amplitudePc) || 0) >= (Number(best.amplitudePc) || 0) ? cur : best,
+            uploadedIndividualDefects[0]
+          )
+        : undefined;
+
+      const resolvedOfflineMaxDischarge =
+        offlineMaxCharge !== '' && !isNaN(parseFloat(offlineMaxCharge))
+          ? parseFloat(offlineMaxCharge)
+          : (dominantOfflineDefect?.maxChargeNc ?? 0);
+
+      const resolvedOfflineDefectLocation =
+        (offlineDefectLocation && offlineDefectLocation.trim())
+          ? offlineDefectLocation.trim()
+          : dominantOfflineDefect
+          ? `${dominantOfflineDefect.locationM} m (${dominantOfflineDefect.defectType})`
+          : 'No Active PD Defect';
+
+      const resolvedOfflineInceptionKv =
+        dominantOfflineDefect?.inceptionVoltageKv ??
+        analyzedOffline?.inceptionVoltage ??
+        (parseFloat(tdStage2VoltageKv) || 6.4);
+
+      const resolvedOfflineDefectClass =
+        dominantOfflineDefect?.defectType ||
+        analyzedOffline?.defectClassification ||
+        'None';
+
+      const resolvedOfflinePdfName =
+        offlinePdfFile?.name ||
+        (offlinePdfUrl ? `${finalEquipmentId}_Offline_Report.pdf` : 'N/A');
+
+      const serializedTopologyJson = JSON.stringify(computedTopologyNodes);
+      const serializedDefectsJson = JSON.stringify(uploadedIndividualDefects);
 
       const pdDiagInfo: PDDiagnosticInformation = {
+        number: rowNum,
+        timestamp,
+        operatorName: user.name,
+        equipmentId: finalEquipmentId,
+        peaNumber: finalPeaNumber,
+        voltageLevel: voltage,
+        city,
+        equipmentType: eqType,
+        locationType,
+        substation: substation || 'Main Station',
         onlinePrpdImageUrl: prpdUrl,
         onlinePrpdChannel: prpdChannel,
         onlinePrpdPhase: prpdPhase,
@@ -786,23 +1167,49 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         onlinePrpdAvgAmplitude: parseFloat(prpdAvgAmplitude) || 35.8,
         onlinePrpdPulseRate: parseFloat(prpdPulseRate) || 0,
         onlinePrpdRepetitionRate: parseFloat(prpdPulseRate) || 0,
-        onlinePrpdPhaseRange: analyzedPrpd?.phaseRange || '85°-145° & 265°-325°',
+        onlinePrpdPhaseRange: prpdPhaseRange || analyzedPrpd?.phaseRange || '85°-145° & 265°-325°',
         onlinePrpdDefectType: prpdDefectType,
-        onlinePrpdSeverity: analyzedPrpd?.severity || 'Critical',
+        onlinePrpdSeverity: prpdSeverity || analyzedPrpd?.severity || 'Critical',
         offlinePdfUrl: offlinePdfUrl,
-        offlinePdfReportName: offlinePdfFile?.name || 'Offline_PD_Report.pdf',
-        offlineTestVoltage: offlineTestVoltage,
-        offlineMaxApparentCharge: parseFloat(offlineMaxCharge) || 0,
-        offlineDefectLocation: offlineDefectLocation,
-        offlineInceptionVoltage: analyzedOffline?.inceptionVoltage || 6.4,
-        offlineDefectClassification: analyzedOffline?.defectClassification || 'Surface Discharges',
+        offlinePdfReportUrl: offlinePdfUrl,
+        offlinePdfName: resolvedOfflinePdfName,
+        offlinePdfReportName: resolvedOfflinePdfName,
+        offlineTestVoltage: offlineTestVoltage || `${tdStage3VoltageKv || '19.1'} kV (1.5 U0)`,
+        offlineMaxDischarge: resolvedOfflineMaxDischarge,
+        offlineMaxApparentCharge: resolvedOfflineMaxDischarge,
+        offlineDefectLocation: resolvedOfflineDefectLocation,
+        offlineInceptionVoltage: resolvedOfflineInceptionKv,
+        offlineDefectClassification: resolvedOfflineDefectClass,
+        offlineDefectType: resolvedOfflineDefectClass,
         offlineIeeeVerdict: offlineIeeeVerdict,
+        offlineIeeeStatus: offlineIeeeVerdict,
         offlineRiskLevel: offlineRiskLevel,
-        summaryAnalysis: liveDiagnosticSummary
+        offlineRiskMatrixLevel: offlineRiskLevel,
+        diagnosticSummary: liveDiagnosticSummary,
+        summaryAnalysis: liveDiagnosticSummary,
+        offlineTestDate,
+        offlineCableLengthM: Number(offlineCableLengthM) || 80,
+        offlineTopologyJson: serializedTopologyJson,
+        offlineTopology: computedTopologyNodes,
+        offlineNumberOfDefects: uploadedIndividualDefects.length,
+        tdStage1VoltageKv: parseFloat(tdStage1VoltageKv) || 0,
+        tdStage1Mean: parseFloat(tdStage1Mean) || 0,
+        tdStage1Sdtd: parseFloat(tdStage1Sdtd) || 0,
+        tdStage2VoltageKv: parseFloat(tdStage2VoltageKv) || 0,
+        tdStage2Mean: parseFloat(tdStage2Mean) || 0,
+        tdStage2Sdtd: parseFloat(tdStage2Sdtd) || 0,
+        tdStage3VoltageKv: parseFloat(tdStage3VoltageKv) || 0,
+        tdStage3Mean: parseFloat(tdStage3Mean) || 0,
+        tdStage3Sdtd: parseFloat(tdStage3Sdtd) || 0,
+        tdDeltaTipUp,
+        tdIeee4002Criteria,
+        offlineIndividualDefectsJson: serializedDefectsJson,
+        offlineIndividualDefects: uploadedIndividualDefects
       };
 
       const combinedAsset: CableAsset = {
         number: rowNum, timestamp, operatorName: user.name, voltageLevel: voltage, city, 
+        area: selectedArea,
         equipmentType: eqType, manufacturer: brand || 'Prysmian Group', country: country || 'Thailand',
         locationType, substationName: substation || 'Main Station', landmark: landmark || 'No landmarks',
         gps: { lat: parseFloat(gpsLat) || 13.7563, lng: parseFloat(gpsLng) || 100.5018 },
@@ -817,14 +1224,50 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         pdResult, onlinePdAmplitude: parseFloat(onlinePdAmplitude) || (parseFloat(prpdPeakCharge) || 0),
         insulationResistance: parseFloat(insulationRes) || 15.0,
         tanDelta, tanDeltaAmplitude: parseFloat(tanDeltaAmplitude) || 0,
-        visualPictureUrl: visualPreview || visualUrl, thermalImageUrl: thermalPreview || thermalUrl,
+        visualPictureUrl: visualUrl || visualPreview, thermalImageUrl: thermalUrl || thermalPreview,
+        onlinePrpdImageUrl: prpdUrl || onlinePrpdPreview || '',
+        onlinePrpdPhase: prpdPhase,
+        onlinePrpdAmplitude: parseFloat(prpdPeakCharge) || 0,
+        onlinePrpdRepetitionRate: parseFloat(prpdPulseRate) || 0,
+        onlinePrpdPhaseRange: prpdPhaseRange,
+        onlinePrpdDefectType: prpdDefectType,
+        onlinePrpdSeverity: prpdSeverity,
+        offlinePdfUrl: offlinePdfUrl,
+        offlinePdfReportUrl: offlinePdfUrl,
+        offlinePdfReportName: resolvedOfflinePdfName,
+        offlineTestVoltage: pdDiagInfo.offlineTestVoltage,
+        offlineMaxDischarge: resolvedOfflineMaxDischarge,
+        offlineDefectLocation: resolvedOfflineDefectLocation,
+        offlineInceptionVoltage: resolvedOfflineInceptionKv,
+        offlineDefectClassification: resolvedOfflineDefectClass,
+        offlineIeeeVerdict: offlineIeeeVerdict,
+        offlineRiskLevel: offlineRiskLevel,
+        diagnosticSummary: liveDiagnosticSummary,
+        offlineTestDate,
+        offlineCableLengthM: Number(offlineCableLengthM) || 80,
+        offlineTopologyJson: serializedTopologyJson,
+        offlineTopology: computedTopologyNodes,
+        offlineNumberOfDefects: uploadedIndividualDefects.length,
+        tdStage1VoltageKv: parseFloat(tdStage1VoltageKv) || 0,
+        tdStage1Mean: parseFloat(tdStage1Mean) || 0,
+        tdStage1Sdtd: parseFloat(tdStage1Sdtd) || 0,
+        tdStage2VoltageKv: parseFloat(tdStage2VoltageKv) || 0,
+        tdStage2Mean: parseFloat(tdStage2Mean) || 0,
+        tdStage2Sdtd: parseFloat(tdStage2Sdtd) || 0,
+        tdStage3VoltageKv: parseFloat(tdStage3VoltageKv) || 0,
+        tdStage3Mean: parseFloat(tdStage3Mean) || 0,
+        tdStage3Sdtd: parseFloat(tdStage3Sdtd) || 0,
+        tdDeltaTipUp,
+        tdIeee4002Criteria,
+        offlineIndividualDefectsJson: serializedDefectsJson,
+        offlineIndividualDefects: uploadedIndividualDefects,
         pdDiagnostics: pdDiagInfo,
         pdDiagnosticSummary: liveDiagnosticSummary
       };
 
       if (currentSpreadsheetId) {
         setProgressModal(prev => ({ ...prev, percent: 50, stepMessage: `Writing General Information for ${finalEquipmentId}...` }));
-        await appendGeneralRow(activeToken, currentSpreadsheetId, generalRow);
+        await appendGeneralRow(activeToken, currentSpreadsheetId, generalRow, { skipTab4Sync: true });
 
         setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing Engineering Parameters row...' }));
         await appendEngineeringRow(activeToken, currentSpreadsheetId, engineeringRow);
@@ -832,8 +1275,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         setProgressModal(prev => ({ ...prev, percent: 78, stepMessage: 'Writing Visual & Thermal image references...' }));
         await appendVisualRow(activeToken, currentSpreadsheetId, visualRow);
 
-        setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing PD & Diagnostic Data sheet (Tab 4)...' }));
-        await appendPdDiagnosticRow(activeToken, currentSpreadsheetId, pdDiagnosticRow);
+        setProgressModal(prev => ({ ...prev, percent: 88, stepMessage: 'Writing Online & Offline Measurement Data (Tab 4 Columns A–AQ)...' }));
+        await appendPdDiagnosticRow(activeToken, currentSpreadsheetId, pdDiagInfo);
       }
 
       setProgressModal(prev => ({ ...prev, percent: 95, stepMessage: 'Synchronizing central database cache & local storage...' }));
@@ -927,8 +1370,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   const handleSubmitForm = async (e: FormEvent) => {
     e.preventDefault();
-    if (step < 4) {
-      setStep(prev => Math.min(prev + 1, 4));
+    if (step < 5) {
+      setStep(prev => Math.min(prev + 1, 5));
       return;
     }
     await executeFinalSubmission();
@@ -936,7 +1379,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
   if (!isAssetIdentified) {
     return (
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-2xl mx-auto p-6 md:p-8" id="input-form-search-gatekeeper">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden w-full p-6 md:p-8" id="input-form-search-gatekeeper">
         <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-6">
           <div className="p-3 bg-purple-100 text-purple-800 rounded-xl">
             <Search className="w-6 h-6" />
@@ -1077,7 +1520,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden max-w-3xl mx-auto" id="input-form-card">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden w-full" id="input-form-card">
       {/* Wizard Header Progress */}
       <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-purple-950 text-white p-6 relative">
         <div className="flex justify-between items-center">
@@ -1085,7 +1528,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             Asset Registration & Diagnostic Wizard
           </span>
           <span className="text-xs font-mono font-bold text-purple-200">
-            Step {step} of 4
+            Step {step} of 5
           </span>
         </div>
         <h3 className="text-base font-bold mt-1 uppercase">Log Cable System Equipment & Diagnostics</h3>
@@ -1094,17 +1537,17 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         {/* Dynamic Progress Bar */}
         <div className="absolute bottom-0 left-0 w-full h-1.5 bg-purple-950 flex">
           <div className={`h-full bg-emerald-400 transition-all duration-300 ${
-            step === 1 ? 'w-1/4' : step === 2 ? 'w-2/4' : step === 3 ? 'w-3/4' : 'w-full'
+            step === 1 ? 'w-1/5' : step === 2 ? 'w-2/5' : step === 3 ? 'w-3/5' : step === 4 ? 'w-4/5' : 'w-full'
           }`} />
         </div>
       </div>
 
-      {/* Step Indicators Bar */}
-      <div className="grid grid-cols-4 bg-gray-50 border-b border-gray-100 text-center text-[10px] font-bold text-gray-500">
+      {/* Step Indicators Bar (5 Steps: Split Step 4 into 4. Online Measurement & 5. Offline Measurement) */}
+      <div className="grid grid-cols-5 bg-gray-50 border-b border-gray-100 text-center text-[10px] font-bold text-gray-500">
         <button
           type="button"
           onClick={() => setStep(1)}
-          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+          className={`py-2.5 px-1 border-b-2 transition-all cursor-pointer ${
             step === 1 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
           }`}
         >
@@ -1113,7 +1556,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         <button
           type="button"
           onClick={() => setStep(2)}
-          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+          className={`py-2.5 px-1 border-b-2 transition-all cursor-pointer ${
             step === 2 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
           }`}
         >
@@ -1122,7 +1565,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         <button
           type="button"
           onClick={() => setStep(3)}
-          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+          className={`py-2.5 px-1 border-b-2 transition-all cursor-pointer ${
             step === 3 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
           }`}
         >
@@ -1131,11 +1574,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         <button
           type="button"
           onClick={() => setStep(4)}
-          className={`py-2 px-1 border-b-2 transition-all cursor-pointer ${
+          className={`py-2.5 px-1 border-b-2 transition-all cursor-pointer ${
             step === 4 ? 'border-purple-600 text-purple-900 bg-purple-50/50 font-black' : 'border-transparent hover:text-gray-900'
           }`}
         >
-          4. Advanced PD Suite
+          4. Online Measurement
+        </button>
+        <button
+          type="button"
+          onClick={() => setStep(5)}
+          className={`py-2.5 px-1 border-b-2 transition-all cursor-pointer ${
+            step === 5 ? 'border-indigo-600 text-indigo-900 bg-indigo-50/50 font-black' : 'border-transparent hover:text-gray-900'
+          }`}
+        >
+          5. Offline Measurement
         </button>
       </div>
 
@@ -2104,20 +2556,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             </div>
           )}
 
-          {/* STEP 4: ADVANCED ONLINE PARTIAL DISCHARGE (PRPD) DIAGNOSTICS */}
+          {/* STEP 4: ONLINE MEASUREMENT (Columns K to Q in PD & Diagnostic Data) */}
           {step === 4 && (
             <div className="space-y-6 animate-fadeIn">
               <div className="border-b border-gray-100 pb-2 mb-1">
                 <div className="flex items-center gap-2">
                   <span className="bg-purple-100 text-purple-800 text-[10px] font-black uppercase px-2 py-0.5 rounded-sm">
-                    Step 4 : Online PRPD Diagnostic
+                    Step 4 : Online Measurement (Tab 4 Columns K–Q)
                   </span>
                   <h4 className="text-xs font-bold text-gray-900 uppercase">
-                    High-Voltage Online HFCT PRPD Diagnostic Input
+                    Online HFCT PRPD Pattern & PD Parameters
                   </h4>
                 </div>
                 <p className="text-[10px] text-gray-500 mt-1">
-                  Upload HFCT PRPD pattern image to trigger real-time AI/heuristic analysis and populate the asset's health record.
+                  Upload online HFCT PRPD pattern image (Column K) and record online PD parameters (Columns L–Q: Phase, Amplitude, Pulse Rate, Phase Range, Defect Classification, and Severity).
                 </p>
               </div>
 
@@ -2127,10 +2579,10 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                   <div>
                     <div className="flex items-center gap-1.5 text-purple-900 font-bold text-xs uppercase tracking-wide">
                       <Radio className="w-4 h-4 text-purple-700 animate-pulse" />
-                      <span>Online HFCT PRPD Pattern Input</span>
+                      <span>Online HFCT PRPD Pattern & Telemetry (Columns K–Q)</span>
                     </div>
                     <p className="text-[10px] text-gray-500">
-                      Phase Resolved Partial Discharge image from HFCT online sensor
+                      Phase Resolved Partial Discharge image and online sensor parameters
                     </p>
                   </div>
 
@@ -2158,10 +2610,10 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* PRPD Image Upload Box */}
+                  {/* PRPD Image Upload Box (Col K) */}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-gray-600 uppercase block">
-                      PRPD Pattern Image (.png, .jpg)
+                      Col K: Online PRPD Pattern Image (.png, .jpg)
                     </label>
                     <div className="border-2 border-dashed border-purple-200 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer hover:border-purple-400 relative min-h-[160px] overflow-hidden bg-white group">
                       {onlinePrpdPreview ? (
@@ -2187,10 +2639,10 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                     </div>
                   </div>
 
-                  {/* PRPD Parameters & Analysis */}
+                  {/* PRPD Parameters & Analysis (Cols L to Q) */}
                   <div className="space-y-3 bg-white p-3.5 rounded-xl border border-purple-100">
                     <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-black text-purple-900 uppercase">Analysis Parameters</span>
+                      <span className="text-[10px] font-black text-purple-900 uppercase">Online PD Parameters (Cols L–Q)</span>
                       {isAnalyzingPrpd ? (
                         <span className="text-[9px] text-purple-600 flex items-center gap-1 font-bold">
                           <Loader2 className="w-3 h-3 animate-spin" /> Analyzing Image...
@@ -2209,7 +2661,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                       <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Phase Channel</label>
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col L: Phase Channel</label>
                         <select
                           value={prpdChannel}
                           onChange={e => {
@@ -2233,7 +2685,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       </div>
 
                       <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Peak Amplitude (mV / pC)</label>
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col M: Peak Amplitude (mV/pC)</label>
                         <input
                           type="number"
                           step="any"
@@ -2245,7 +2697,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       </div>
 
                       <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Pulses / Sec (pps)</label>
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col N: Pulse Rate (pps)</label>
                         <input
                           type="number"
                           step="any"
@@ -2257,19 +2709,18 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                       </div>
 
                       <div className="flex flex-col gap-1">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Average Amplitude (mV / pC)</label>
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col O: Phase Range</label>
                         <input
-                          type="number"
-                          step="any"
-                          value={prpdAvgAmplitude}
-                          onChange={e => setPrpdAvgAmplitude(e.target.value)}
+                          type="text"
+                          value={prpdPhaseRange}
+                          onChange={e => setPrpdPhaseRange(e.target.value)}
                           className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
-                          placeholder="e.g. 35.8"
+                          placeholder="e.g. 15°-105°, 195°-285°"
                         />
                       </div>
 
-                      <div className="flex flex-col gap-1 sm:col-span-2">
-                        <label className="text-[9px] font-bold text-gray-400 uppercase">Identified Defect Type</label>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col P: Defect Classification</label>
                         <select
                           value={prpdDefectType}
                           onChange={e => setPrpdDefectType(e.target.value)}
@@ -2280,6 +2731,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                           <option value="Corona / External Glow">Corona / External Glow</option>
                           <option value="Treeing Breakdown">Treeing Breakdown</option>
                           <option value="Background Noise / No Active Defect">Background Noise</option>
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] font-bold text-gray-400 uppercase">Col Q: Online PD Severity</label>
+                        <select
+                          value={prpdSeverity}
+                          onChange={e => setPrpdSeverity(e.target.value as any)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg py-1.5 px-2 text-xs font-medium text-gray-700"
+                        >
+                          <option value="Normal">Normal</option>
+                          <option value="Moderate">Moderate</option>
+                          <option value="High">High</option>
+                          <option value="Critical">Critical</option>
                         </select>
                       </div>
                     </div>
@@ -2312,6 +2777,70 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             </div>
           )}
 
+          {/* STEP 5: OFFLINE MEASUREMENT (3 Structured Sections: General Info, Tan Delta Result, Offline PD Result) */}
+          {step === 5 && (
+            <OfflineMeasurementStep
+              offlinePdfName={offlinePdfFile?.name || ''}
+              offlinePdfFile={offlinePdfFile}
+              offlinePdfAutoFilled={!!analyzedOffline}
+              handleOfflinePdfUpload={handleOfflinePdfChange}
+              offlineTestDate={offlineTestDate}
+              setOfflineTestDate={setOfflineTestDate}
+              offlineCableLengthM={offlineCableLengthM}
+              setOfflineCableLengthM={setOfflineCableLengthM}
+              offlineNumberOfDefects={offlineNumberOfDefects}
+              handleChangeDefectCount={handleChangeDefectCount}
+              offlineTestVoltageKv={offlineTestVoltage}
+              setOfflineTestVoltageKv={setOfflineTestVoltage}
+              offlineTerminationNearLabel={offlineNearTermLabel}
+              setOfflineTerminationNearLabel={setOfflineNearTermLabel}
+              offlineTerminationFarLabel={offlineFarTermLabel}
+              setOfflineTerminationFarLabel={setOfflineFarTermLabel}
+              offlineJoints={offlineJoints}
+              setOfflineJoints={setOfflineJoints}
+              computedTopologyNodes={computedTopologyNodes}
+              offlineIndividualDefects={offlineIndividualDefects}
+              handleUpdateIndividualDefect={(idx, patch) => {
+                setOfflineIndividualDefects(prev =>
+                  prev.map((item, i) => (i === idx ? { ...item, ...patch } : item))
+                );
+              }}
+              handleDefectPrpdUpload={handleDefectPrpdUpload}
+              getNearestTopologyContext={getNearestTopologyContext}
+              tdStage1VoltageKv={tdStage1VoltageKv}
+              setTdStage1VoltageKv={setTdStage1VoltageKv}
+              tdStage1Mean={tdStage1Mean}
+              setTdStage1Mean={setTdStage1Mean}
+              tdStage1Sdtd={tdStage1Sdtd}
+              setTdStage1Sdtd={setTdStage1Sdtd}
+              tdStage2VoltageKv={tdStage2VoltageKv}
+              setTdStage2VoltageKv={setTdStage2VoltageKv}
+              tdStage2Mean={tdStage2Mean}
+              setTdStage2Mean={setTdStage2Mean}
+              tdStage2Sdtd={tdStage2Sdtd}
+              setTdStage2Sdtd={setTdStage2Sdtd}
+              tdStage3VoltageKv={tdStage3VoltageKv}
+              setTdStage3VoltageKv={setTdStage3VoltageKv}
+              tdStage3Mean={tdStage3Mean}
+              setTdStage3Mean={setTdStage3Mean}
+              tdStage3Sdtd={tdStage3Sdtd}
+              setTdStage3Sdtd={setTdStage3Sdtd}
+              tdDeltaTipUp={tdDeltaTipUp}
+              tdIeee4002Criteria={tdIeee4002Criteria}
+              setTdIeee4002Criteria={setTdIeee4002Criteria}
+              tdTrendChartData={tdTrendChartData}
+              offlineMaxDischargePc={offlineMaxCharge}
+              setOfflineMaxDischargePc={setOfflineMaxCharge}
+              offlineDefectLocationM={offlineDefectLocation}
+              setOfflineDefectLocationM={setOfflineDefectLocation}
+              offlineIeeeStatus={offlineIeeeVerdict}
+              setOfflineIeeeStatus={setOfflineIeeeVerdict}
+              riskMatrixLevel={offlineRiskLevel}
+              setRiskMatrixLevel={setOfflineRiskLevel}
+              liveDiagnosticSummary={liveDiagnosticSummary}
+            />
+          )}
+
           {/* Controls Navigation Footer */}
           <div className="flex justify-between items-center border-t border-gray-100 pt-5 mt-6">
             {step > 1 ? (
@@ -2327,13 +2856,13 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
               <div />
             )}
 
-            {step < 4 ? (
+            {step < 5 ? (
               <button
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  setStep(prev => Math.min(prev + 1, 4));
+                  setStep(prev => Math.min(prev + 1, 5));
                 }}
                 className="bg-purple-900 hover:bg-purple-950 text-white rounded-lg py-2.5 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
               >

@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
   signInWithPopup, 
@@ -8,23 +8,28 @@ import {
   onAuthStateChanged, 
   User 
 } from 'firebase/auth';
-import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  memoryLocalCache,
+  Firestore
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-// Enable offline persistence to drastically reduce Firestore daily quota reads
-if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('Firestore persistence failed: Multiple tabs open');
-    } else if (err.code === 'unimplemented') {
-      console.warn('Firestore persistence unsupported in browser');
-    }
-  });
+let firestoreDb: Firestore;
+try {
+  firestoreDb = initializeFirestore(
+    app,
+    { localCache: memoryLocalCache() },
+    firebaseConfig.firestoreDatabaseId
+  );
+} catch (err) {
+  firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 }
+export const db = firestoreDb;
 
 const provider = new GoogleAuthProvider();
 // Force Google to show account selection prompt so user can choose alternative accounts

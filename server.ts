@@ -1,5 +1,7 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
@@ -10,6 +12,512 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
+
+// ==========================================
+// OPTION 1: CENTRAL GOOGLE DRIVE STORAGE PROXY & REGISTERED-USER ACCESS GUARD
+// ==========================================
+interface FirebaseClientConfig {
+  projectId?: string;
+  apiKey?: string;
+  firestoreDatabaseId?: string;
+}
+
+let cachedFirebaseConfig: FirebaseClientConfig | null = null;
+function getFirebaseConfig(): FirebaseClientConfig {
+  if (cachedFirebaseConfig) return cachedFirebaseConfig;
+  try {
+    const raw = fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8');
+    cachedFirebaseConfig = JSON.parse(raw);
+  } catch (e) {
+    cachedFirebaseConfig = {};
+  }
+  return cachedFirebaseConfig || {};
+}
+
+const ADMIN_EMAILS = new Set(['pichet.kea@gmail.com', 'admin@pea.co.th']);
+const PRESEEDED_ACTIVE_USERS: Record<string, { role: string; status: string }> = {
+  'g51056018@gmail.com': { role: 'Manager', status: 'active' },
+  'natthakorn@rockchatn.com': { role: 'Manager', status: 'active' },
+  'moskmitl50@gmail.com': { role: 'Manager', status: 'active' },
+  'pichet.kea@gmail.com': { role: 'Admin', status: 'active' },
+  'admin@pea.co.th': { role: 'Admin', status: 'active' },
+  'n1powercableunderground@gmail.com': { role: 'Local Operator', status: 'active' }
+};
+
+interface ServiceAccountCreds {
+  client_email: string;
+  private_key: string;
+}
+
+function getServiceAccountCreds(): ServiceAccountCreds | null {
+  try {
+    const jsonEnv = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+    if (jsonEnv) {
+      let decoded = jsonEnv;
+      if (!decoded.startsWith('{')) {
+        try {
+          decoded = Buffer.from(decoded, 'base64').toString('utf8');
+        } catch (e) {}
+      }
+      const parsed = JSON.parse(decoded);
+      if (parsed?.client_email && parsed?.private_key) {
+        return {
+          client_email: String(parsed.client_email).trim(),
+          private_key: String(parsed.private_key).replace(/\\n/g, '\n')
+        };
+      }
+    }
+    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL?.trim();
+    const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.trim();
+    if (clientEmail && privateKey) {
+      return {
+        client_email: clientEmail,
+        private_key: privateKey.replace(/\\n/g, '\n')
+      };
+    }
+  } catch (err) {
+    console.warn('[Drive SA] Could not parse Service Account credentials from env:', err);
+  }
+  return null;
+}
+
+let cachedServiceAccountToken: { token: string; expiresAt: number } | null = null;
+
+async function getServiceAccountDriveToken(): Promise<string | null> {
+  const creds = getServiceAccountCreds();
+  if (!creds) return null;
+
+  if (cachedServiceAccountToken && Date.now() < cachedServiceAccountToken.expiresAt - 60_000) {
+    return cachedServiceAccountToken.token;
+  }
+
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+    const claimSet = Buffer.from(
+      JSON.stringify({
+        iss: creds.client_email,
+        scope: 'https://www.googleapis.com/auth/drive',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: nowSec + 3600,
+        iat: nowSec
+      })
+    ).toString('base64url');
+
+    const unsignedJwt = `${header}.${claimSet}`;
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(unsignedJwt);
+    const signature = signer.sign(creds.private_key, 'base64url');
+    const assertion = `${unsignedJwt}.${signature}`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion
+      }).toString()
+    });
+
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      console.warn('[Drive SA] Token exchange failed:', tokenRes.status, errText);
+      return null;
+    }
+
+    const tokenData: any = await tokenRes.json();
+    if (tokenData?.access_token) {
+      const expiresInMs = (Number(tokenData.expires_in) || 3500) * 1000;
+      cachedServiceAccountToken = {
+        token: tokenData.access_token,
+        expiresAt: Date.now() + expiresInMs
+      };
+      return tokenData.access_token;
+    }
+  } catch (err) {
+    console.warn('[Drive SA] Error exchanging Service Account JWT:', err);
+  }
+  return null;
+}
+
+async function verifyFirebaseIdTokenEmail(idToken: string): Promise<string | null> {
+  const fb = getFirebaseConfig();
+  if (!idToken || !fb.apiKey) return null;
+  try {
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(fb.apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken })
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const userEmail = data?.users?.[0]?.email;
+    return userEmail ? String(userEmail).toLowerCase().trim() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function decodeFirestoreFieldValue(field: any): any {
+  if (!field || typeof field !== 'object') return undefined;
+  if ('stringValue' in field) return field.stringValue;
+  if ('integerValue' in field) return Number(field.integerValue);
+  if ('doubleValue' in field) return Number(field.doubleValue);
+  if ('booleanValue' in field) return Boolean(field.booleanValue);
+  if ('mapValue' in field) {
+    const out: Record<string, any> = {};
+    const fields = field.mapValue?.fields || {};
+    for (const [k, v] of Object.entries(fields)) {
+      out[k] = decodeFirestoreFieldValue(v);
+    }
+    return out;
+  }
+  return undefined;
+}
+
+async function fetchFirestoreDocument(collectionPath: string, docId: string): Promise<Record<string, any> | null> {
+  const fb = getFirebaseConfig();
+  if (!fb.projectId || !fb.firestoreDatabaseId) return null;
+  const keyParam = fb.apiKey ? `?key=${encodeURIComponent(fb.apiKey)}` : '';
+  const url = `https://firestore.googleapis.com/v1/projects/${fb.projectId}/databases/${fb.firestoreDatabaseId}/documents/${collectionPath}/${encodeURIComponent(docId)}${keyParam}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    const fields = json?.fields;
+    if (!fields) return null;
+    const decoded: Record<string, any> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      decoded[k] = decodeFirestoreFieldValue(v);
+    }
+    return decoded;
+  } catch (e) {
+    return null;
+  }
+}
+
+interface AuthCheckResult {
+  authorized: boolean;
+  email: string;
+  role: string;
+  status: number;
+  error: string;
+}
+
+async function verifyAuthorizedUploader(
+  req: express.Request,
+  requireAdmin = false
+): Promise<AuthCheckResult> {
+  const headerEmail = req.headers['x-pea-user-email'];
+  const bodyEmail = req.body?.userEmail;
+  const rawEmail = Array.isArray(headerEmail) ? headerEmail[0] : (headerEmail || bodyEmail || '');
+  const email = String(rawEmail).toLowerCase().trim();
+
+  if (!email || email === 'guest.operator@pea.co.th' || email.startsWith('guest.')) {
+    return {
+      authorized: false,
+      email,
+      role: 'User',
+      status: 403,
+      error: 'View-Only Access: Guest and unregistered accounts can view files only. Only Admin-approved registered users can upload or edit files.'
+    };
+  }
+
+  const headerToken = req.headers['x-firebase-id-token'];
+  const idToken = Array.isArray(headerToken) ? headerToken[0] : (headerToken || req.body?.firebaseIdToken || '');
+  if (idToken && typeof idToken === 'string' && idToken.trim().length > 10) {
+    const verifiedEmail = await verifyFirebaseIdTokenEmail(idToken.trim());
+    if (!verifiedEmail || verifiedEmail !== email) {
+      return {
+        authorized: false,
+        email,
+        role: 'User',
+        status: 403,
+        error: 'Authentication verification failed: Firebase session token does not match claimed user account.'
+      };
+    }
+  }
+
+  const safeDocId = email.replace(/[^a-z0-9]/gi, '_');
+  const fsUser = await fetchFirestoreDocument('registered_users', safeDocId);
+  const preseeded = PRESEEDED_ACTIVE_USERS[email];
+
+  const effectiveStatus = fsUser?.status || preseeded?.status || 'unregistered';
+  const effectiveRole = fsUser?.role || preseeded?.role || (ADMIN_EMAILS.has(email) ? 'Admin' : 'User');
+
+  if (effectiveStatus !== 'active' && !ADMIN_EMAILS.has(email)) {
+    return {
+      authorized: false,
+      email,
+      role: effectiveRole,
+      status: 403,
+      error:
+        effectiveStatus === 'pending'
+          ? 'View-Only Access: Your account registration is pending PEA Executive Admin approval.'
+          : effectiveStatus === 'rejected'
+          ? 'View-Only Access: Your registration request was declined by PEA Executive Admin.'
+          : 'View-Only Access: New or unregistered accounts cannot upload or modify Drive folder files.'
+    };
+  }
+
+  if (effectiveRole === 'User') {
+    return {
+      authorized: false,
+      email,
+      role: effectiveRole,
+      status: 403,
+      error: 'View-Only Access: Read-only accounts cannot upload or edit files in asset folders.'
+    };
+  }
+
+  if (requireAdmin && effectiveRole !== 'Admin' && !ADMIN_EMAILS.has(email)) {
+    return {
+      authorized: false,
+      email,
+      role: effectiveRole,
+      status: 403,
+      error: 'Administrator privileges required to modify central Drive folder permissions.'
+    };
+  }
+
+  return { authorized: true, email, role: effectiveRole, status: 200, error: '' };
+}
+
+function escapeServerDriveQuery(val: string): string {
+  return String(val || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+async function ensureDriveViewOnlyPermissions(
+  token: string,
+  fileId: string,
+  extraWriterEmail?: string | null
+): Promise<{ removedPublicWriters: number; ensuredPublicReader: boolean }> {
+  let removedPublicWriters = 0;
+  let ensuredPublicReader = false;
+  if (!token || !fileId) return { removedPublicWriters, ensuredPublicReader };
+
+  try {
+    const listRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=permissions(id,type,role,emailAddress)&supportsAllDrives=true`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    let hasAnyoneReader = false;
+    let hasServiceWriter = false;
+
+    if (listRes.ok) {
+      const listData: any = await listRes.json();
+      const perms: any[] = listData?.permissions || [];
+
+      for (const perm of perms) {
+        if (perm.type === 'anyone' && perm.role !== 'reader') {
+          const delRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(perm.id)}?supportsAllDrives=true`,
+            {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` }
+            }
+          );
+          if (delRes.ok) removedPublicWriters++;
+        } else if (perm.type === 'anyone' && perm.role === 'reader') {
+          hasAnyoneReader = true;
+        }
+        if (
+          extraWriterEmail &&
+          perm.type === 'user' &&
+          perm.emailAddress?.toLowerCase() === extraWriterEmail.toLowerCase() &&
+          (perm.role === 'writer' || perm.role === 'owner')
+        ) {
+          hasServiceWriter = true;
+        }
+      }
+    }
+
+    if (!hasAnyoneReader) {
+      const addReaderRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?supportsAllDrives=true`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ role: 'reader', type: 'anyone' })
+        }
+      );
+      if (addReaderRes.ok) ensuredPublicReader = true;
+    } else {
+      ensuredPublicReader = true;
+    }
+
+    if (extraWriterEmail && !hasServiceWriter) {
+      await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            role: 'writer',
+            type: 'user',
+            emailAddress: extraWriterEmail
+          })
+        }
+      ).catch(() => {});
+    }
+  } catch (err) {
+    console.warn(`[Drive Permissions] Could not harden permissions for ${fileId}:`, err);
+  }
+
+  return { removedPublicWriters, ensuredPublicReader };
+}
+
+const serverDriveFolderCache: Record<string, string> = {};
+
+async function findOrCreateServerDriveFolder(
+  token: string,
+  folderName: string,
+  parentId?: string
+): Promise<string> {
+  const cleanName = String(folderName || '').trim() || 'Unassigned';
+  const cacheKey = `${parentId || 'ROOT'}::${cleanName.toLowerCase()}`;
+  if (serverDriveFolderCache[cacheKey]) {
+    return serverDriveFolderCache[cacheKey];
+  }
+
+  const parentClause = parentId
+    ? ` and '${escapeServerDriveQuery(parentId)}' in parents`
+    : ` and 'root' in parents`;
+  const q = encodeURIComponent(
+    `name = '${escapeServerDriveQuery(cleanName)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`
+  );
+
+  try {
+    const searchRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=5&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (searchRes.ok) {
+      const searchData: any = await searchRes.json();
+      const existing = searchData?.files?.[0];
+      if (existing?.id) {
+        serverDriveFolderCache[cacheKey] = existing.id;
+        ensureDriveViewOnlyPermissions(token, existing.id).catch(() => {});
+        return existing.id;
+      }
+    }
+  } catch (e) {}
+
+  const metadata: any = {
+    name: cleanName,
+    mimeType: 'application/vnd.google-apps.folder'
+  };
+  if (parentId) metadata.parents = [parentId];
+
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name&supportsAllDrives=true', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(metadata)
+  });
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    throw new Error(`Could not create Drive folder '${cleanName}': ${errText}`);
+  }
+
+  const created: any = await createRes.json();
+  if (created?.id) {
+    serverDriveFolderCache[cacheKey] = created.id;
+    await ensureDriveViewOnlyPermissions(token, created.id);
+  }
+  return created.id;
+}
+
+async function resolveAreaFolderIdFromFirestore(area: string): Promise<string | null> {
+  const cleanArea = (area || '').trim().toUpperCase();
+  if (!cleanArea) return null;
+  const centralConfig = await fetchFirestoreDocument('admin_central_db', 'config');
+  if (centralConfig?.foldersByArea && typeof centralConfig.foldersByArea === 'object') {
+    const mapped = centralConfig.foldersByArea[cleanArea];
+    if (mapped && typeof mapped === 'string') return mapped.trim();
+  }
+  const sectorDoc = await fetchFirestoreDocument('sector_spreadsheets', cleanArea);
+  if (sectorDoc?.folderId && typeof sectorDoc.folderId === 'string') {
+    return sectorDoc.folderId.trim();
+  }
+  return null;
+}
+
+// Persistent local upload repository (Fallback/Secondary Cloud Repository mirroring Area/City/EquipmentId)
+const UPLOADS_ROOT = path.join(process.cwd(), 'uploads');
+try {
+  fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+} catch (e) {
+  console.warn('[Uploads] Could not pre-create uploads directory:', e);
+}
+
+const sanitizePathSegment = (seg: string, fallback: string) => {
+  const clean = String(seg || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\.\./g, '_')
+    .slice(0, 120);
+  return clean || fallback;
+};
+
+app.use('/api/files', express.static(UPLOADS_ROOT, {
+  setHeaders: (res, filePath) => {
+    if (filePath.toLowerCase().endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline');
+    }
+  }
+}));
+
+app.post('/api/files/upload', async (req, res) => {
+  try {
+    const authCheck = await verifyAuthorizedUploader(req, false);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+
+    const { fileName, mimeType, base64Data, area, city, equipmentId } = req.body || {};
+    if (!fileName || !base64Data) {
+      res.status(400).json({ success: false, error: 'fileName and base64Data are required.' });
+      return;
+    }
+
+    const safeArea = sanitizePathSegment(area, 'GENERAL');
+    const safeCity = sanitizePathSegment(city, 'Unassigned');
+    const safeEqId = sanitizePathSegment(equipmentId, 'ASSET');
+    const safeFileName = `${Date.now()}_${sanitizePathSegment(fileName, 'attachment.bin')}`;
+
+    const targetDir = path.join(UPLOADS_ROOT, safeArea, safeCity, safeEqId);
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const rawBase64 = String(base64Data).includes(',') ? String(base64Data).split(',')[1] : String(base64Data);
+    const buffer = Buffer.from(rawBase64, 'base64');
+    const targetPath = path.join(targetDir, safeFileName);
+    fs.writeFileSync(targetPath, buffer);
+
+    const relativeUrl = `/api/files/${encodeURIComponent(safeArea)}/${encodeURIComponent(safeCity)}/${encodeURIComponent(safeEqId)}/${encodeURIComponent(safeFileName)}`;
+    res.json({
+      success: true,
+      url: relativeUrl,
+      mimeType: mimeType || 'application/octet-stream',
+      sizeBytes: buffer.length
+    });
+  } catch (err: any) {
+    console.error('[Server File Upload Error]:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to save file on server' });
+  }
+});
 
 // Helper to sanitize asset object for AI processing (strips heavy base64 image strings and history arrays)
 function sanitizeAssetForAI(a: any) {
@@ -791,15 +1299,28 @@ async function fetchSheetCsvTab(spreadsheetId: string, tabNames: string[]): Prom
   return [];
 }
 
-// In-memory token store for Google API operations
+// In-memory token store for Admin-delegated Google API operations
 let serverGoogleToken: string | null = process.env.GOOGLE_OAUTH_ACCESS_TOKEN || null;
+let serverGoogleTokenOwner: string | null = null;
 
-// Token management endpoint
-app.post('/api/sheets/token', (req, res) => {
-  const { token, userEmail } = req.body;
+// Token management endpoint (restricted to active registered Admin/Operator sessions)
+app.post('/api/sheets/token', async (req, res) => {
+  const { token, userEmail } = req.body || {};
+  const authCheck = await verifyAuthorizedUploader(req, false);
+  if (!authCheck.authorized) {
+    res.status(authCheck.status).json({ success: false, error: authCheck.error });
+    return;
+  }
+
   if (token && typeof token === 'string' && token.trim()) {
-    serverGoogleToken = token.trim();
-    console.log(`[Google Token] Cached active token for server operations (from ${userEmail || 'client'})`);
+    // Prefer retaining an Admin token over overwriting with a non-admin token
+    const incomingIsAdmin = ADMIN_EMAILS.has(authCheck.email) || authCheck.role === 'Admin';
+    const currentIsAdmin = serverGoogleTokenOwner ? ADMIN_EMAILS.has(serverGoogleTokenOwner) : false;
+    if (!serverGoogleToken || incomingIsAdmin || !currentIsAdmin) {
+      serverGoogleToken = token.trim();
+      serverGoogleTokenOwner = authCheck.email;
+      console.log(`[Google Token] Cached delegated token for server operations (owner: ${userEmail || authCheck.email})`);
+    }
     res.json({ success: true, message: 'Server Google token updated' });
   } else {
     res.status(400).json({ error: 'Valid token string required' });
@@ -813,8 +1334,213 @@ app.get('/api/sheets/token', (req, res) => {
   });
 });
 
+// Option 1 Drive Proxy Status endpoint
+app.get('/api/drive/status', (req, res) => {
+  const saCreds = getServiceAccountCreds();
+  res.json({
+    serviceAccountConfigured: !!saCreds,
+    serviceAccountEmail: saCreds?.client_email || null,
+    adminSessionTokenActive: !!serverGoogleToken,
+    adminSessionOwner: serverGoogleTokenOwner || null,
+    mode: saCreds ? 'service_account' : (serverGoogleToken ? 'admin_delegated_session' : 'unconfigured')
+  });
+});
+
+// Option 1 Drive Upload Proxy (Routes approved registered user uploads into Admin's Area -> City -> Asset folders as View-Only)
+app.post('/api/drive/upload', async (req, res) => {
+  try {
+    const authCheck = await verifyAuthorizedUploader(req, false);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+
+    const { fileName, mimeType, base64Data, area, city, equipmentId, baseAreaFolderId } = req.body || {};
+    if (!fileName || !base64Data) {
+      res.status(400).json({ success: false, error: 'fileName and base64Data are required.' });
+      return;
+    }
+
+    let storageMode: 'service_account' | 'admin_session' = 'service_account';
+    let driveToken = await getServiceAccountDriveToken();
+    if (!driveToken) {
+      if (serverGoogleToken) {
+        driveToken = serverGoogleToken;
+        storageMode = 'admin_session';
+      } else {
+        res.status(503).json({
+          success: false,
+          code: 'DRIVE_TOKEN_UNAVAILABLE',
+          error: 'Central Admin Google Drive proxy token is not configured yet. Admin must either sign in via Google OAuth once or configure GOOGLE_SERVICE_ACCOUNT_JSON.'
+        });
+        return;
+      }
+    }
+
+    const cleanArea = String(area || 'GENERAL').trim().toUpperCase();
+    const cleanCity = sanitizePathSegment(city, 'Unassigned_City');
+    const cleanEqId = sanitizePathSegment(equipmentId, `ASSET_${Date.now()}`);
+    const resolvedMime = String(mimeType || 'application/octet-stream');
+    const isPdf = resolvedMime === 'application/pdf' || String(fileName).toLowerCase().endsWith('.pdf');
+
+    // 1. Resolve Area Folder ID (provided -> Firestore config -> create)
+    let areaFolderId = baseAreaFolderId ? String(baseAreaFolderId).trim() : '';
+    if (!areaFolderId) {
+      areaFolderId = (await resolveAreaFolderIdFromFirestore(cleanArea)) || '';
+    }
+    if (!areaFolderId) {
+      areaFolderId = await findOrCreateServerDriveFolder(driveToken, `PEA Cable Asset Images - ${cleanArea}`);
+    } else {
+      ensureDriveViewOnlyPermissions(driveToken, areaFolderId).catch(() => {});
+    }
+
+    // 2. City Sub-folder -> Equipment ID Sub-folder (all strictly View-Only for Anyone)
+    const cityFolderId = await findOrCreateServerDriveFolder(driveToken, cleanCity, areaFolderId);
+    const assetFolderId = await findOrCreateServerDriveFolder(driveToken, cleanEqId, cityFolderId);
+
+    const rawBase64 = String(base64Data).includes(',') ? String(base64Data).split(',')[1] : String(base64Data);
+    const fileBuffer = Buffer.from(rawBase64, 'base64');
+
+    const metadata = {
+      name: `${Date.now()}_${sanitizePathSegment(fileName, 'upload.bin')}`,
+      mimeType: resolvedMime,
+      parents: [assetFolderId]
+    };
+
+    const boundary = `pea_drive_boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const prePart = Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${resolvedMime}\r\n\r\n`,
+      'utf8'
+    );
+    const endPart = Buffer.from(`\r\n--${boundary}--`, 'utf8');
+    const multipartBody = Buffer.concat([prePart, fileBuffer, endPart]);
+
+    let uploadRes = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${driveToken}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+          'Content-Length': String(multipartBody.length)
+        },
+        body: multipartBody
+      }
+    );
+
+    if (!uploadRes.ok && storageMode === 'service_account' && serverGoogleToken) {
+      // Fallback to Admin session token if SA doesn't yet have write access on Admin's manually created folder
+      console.warn('[Drive Proxy] Service Account upload failed, falling back to delegated Admin session token...');
+      storageMode = 'admin_session';
+      driveToken = serverGoogleToken;
+      uploadRes = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${driveToken}`,
+            'Content-Type': `multipart/related; boundary=${boundary}`,
+            'Content-Length': String(multipartBody.length)
+          },
+          body: multipartBody
+        }
+      );
+    }
+
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.text();
+      console.error(`[Drive Proxy Upload Error] (${uploadRes.status}):`, errBody);
+      res.status(uploadRes.status === 401 ? 503 : uploadRes.status).json({
+        success: false,
+        code: uploadRes.status === 401 ? 'DRIVE_TOKEN_UNAVAILABLE' : 'DRIVE_UPLOAD_ERROR',
+        error: `Google Drive proxy upload failed (${uploadRes.status}): ${errBody}`
+      });
+      return;
+    }
+
+    const uploadedData: any = await uploadRes.json();
+    const driveFileId = uploadedData.id;
+
+    // Enforce strictly View-Only (anyone: reader) on the uploaded asset file
+    await ensureDriveViewOnlyPermissions(driveToken, driveFileId);
+
+    const url = isPdf
+      ? `https://drive.google.com/file/d/${driveFileId}/view?usp=sharing`
+      : `https://drive.google.com/thumbnail?id=${driveFileId}&sz=w1000`;
+
+    console.log(`[Drive Proxy] ${authCheck.email} (${authCheck.role}) uploaded '${fileName}' -> ${cleanArea}/${cleanCity}/${cleanEqId} (${storageMode})`);
+    res.json({
+      success: true,
+      url,
+      driveFileId,
+      assetFolderId,
+      storageMode
+    });
+  } catch (err: any) {
+    console.error('[Drive Proxy Exception]:', err);
+    res.status(500).json({ success: false, error: err.message || 'Drive proxy upload exception' });
+  }
+});
+
+// Admin-only endpoint to harden existing 12 Area folders to strictly Anyone = View-Only (reader)
+app.post('/api/drive/harden-permissions', async (req, res) => {
+  try {
+    const authCheck = await verifyAuthorizedUploader(req, true);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+
+    const { folderIds: bodyFolderIds, clientToken } = req.body || {};
+    const saCreds = getServiceAccountCreds();
+    const driveToken = (typeof clientToken === 'string' && clientToken.trim()) || serverGoogleToken || (await getServiceAccountDriveToken());
+
+    if (!driveToken) {
+      res.status(503).json({
+        success: false,
+        error: 'No active Admin Google OAuth token or Service Account token available to harden Drive folder permissions.'
+      });
+      return;
+    }
+
+    const folderIdSet = new Set<string>();
+    if (Array.isArray(bodyFolderIds)) {
+      bodyFolderIds.forEach((id: any) => {
+        if (id && typeof id === 'string' && id.trim()) folderIdSet.add(id.trim());
+      });
+    }
+
+    const centralConfig = await fetchFirestoreDocument('admin_central_db', 'config');
+    if (centralConfig?.foldersByArea && typeof centralConfig.foldersByArea === 'object') {
+      Object.values(centralConfig.foldersByArea).forEach((id: any) => {
+        if (id && typeof id === 'string' && id.trim()) folderIdSet.add(id.trim());
+      });
+    }
+
+    let hardenedCount = 0;
+    let removedWritersCount = 0;
+
+    for (const fId of folderIdSet) {
+      const result = await ensureDriveViewOnlyPermissions(driveToken, fId, saCreds?.client_email || null);
+      if (result.ensuredPublicReader) hardenedCount++;
+      removedWritersCount += result.removedPublicWriters;
+    }
+
+    res.json({
+      success: true,
+      totalFoldersChecked: folderIdSet.size,
+      hardenedCount,
+      removedWritersCount,
+      serviceAccountShared: saCreds?.client_email || null
+    });
+  } catch (err: any) {
+    console.error('[Drive Harden Error]:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to harden folder permissions' });
+  }
+});
+
 // Helper to ensure spreadsheet sheet has enough columns and valid tab name
-async function autoHealSheetGrid(spreadsheetId: string, token: string, minCols: number = 36): Promise<{ titleMap: Record<string, string> }> {
+async function autoHealSheetGrid(spreadsheetId: string, token: string, minCols: number = 46): Promise<{ titleMap: Record<string, string> }> {
   const titleMap: Record<string, string> = {};
   try {
     const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`, {
@@ -915,7 +1641,7 @@ app.post('/api/sheets/update-row', async (req, res) => {
     // If failed due to grid limit or tab name, auto-heal and retry
     if (!googleRes.ok) {
       console.warn('[Sheets Update Proxy Notice] Initial update failed, auto-healing grid...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
       
       // Attempt with mapped title
       for (const [standardTitle, realTitle] of Object.entries(titleMap)) {
@@ -982,7 +1708,7 @@ app.post('/api/sheets/append-row', async (req, res) => {
 
     if (!googleRes.ok) {
       console.warn('[Sheets Append Proxy Notice] Initial append failed, auto-healing grid...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
       if (titleMap[targetSheetName]) {
         targetSheetName = titleMap[targetSheetName];
       }
@@ -1047,7 +1773,7 @@ app.post('/api/sheets/batch-update', async (req, res) => {
     // Auto-heal grid dimensions and tab names if failed
     if (!googleRes.ok) {
       console.warn('[Sheets Batch Update Notice] Initial batchUpdate failed, attempting auto-heal...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 38);
+      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
 
       currentUpdates = updates.map((u: any) => {
         let rng = u.range;

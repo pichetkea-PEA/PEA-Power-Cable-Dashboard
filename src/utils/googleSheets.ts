@@ -2,6 +2,7 @@ import { CableAsset, GeneralInformation, EngineeringInformation, VisualInformati
 import { calculateHealth, generateEquipmentId, getEquipmentConditionPrefix, getCityAbbreviation, getLocationTypeAbbreviation, getEquipmentTypeAbbreviation2, getVoltageCode, getPea6Digits, getAreaFromCity, PEA_AREAS, PEA_AREA_NAMES, PEA_AREA_CITIES, getCityGpsCenter, parseEquipmentIdDetails, CITY_ABBREVIATION_TO_NAME, getDefaultClassForEquipmentType } from './peaData';
 import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './firestore';
 import { getBangkokTimestamp } from './dateUtils';
+import { getAuthHeadersForApi } from './userManagement';
 
 // Helper to resolve an effective Google access token from parameters, localStorage, or central store
 export function getEffectiveGoogleToken(token?: string | null): string | null {
@@ -18,23 +19,48 @@ export function getEffectiveGoogleToken(token?: string | null): string | null {
   return null;
 }
 
-// Helper to set public write permissions on Google Drive files so all authorized users can sync
+// Helper to enforce strict public View-Only (anyone: reader) permissions and remove any legacy public writer permissions
 export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
   if (!accessToken || !fileId) return;
   try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        role: 'writer',
-        type: 'anyone'
-      })
-    });
+    const listRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=permissions(id,type,role)`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    let hasAnyoneReader = false;
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const perms: any[] = listData?.permissions || [];
+      for (const perm of perms) {
+        if (perm.type === 'anyone' && perm.role !== 'reader') {
+          await fetch(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(perm.id)}`,
+            {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${accessToken}` }
+            }
+          ).catch(() => {});
+        } else if (perm.type === 'anyone' && perm.role === 'reader') {
+          hasAnyoneReader = true;
+        }
+      }
+    }
+
+    if (!hasAnyoneReader) {
+      await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          role: 'reader',
+          type: 'anyone'
+        })
+      });
+    }
   } catch (e) {
-    console.warn(`Failed to set public write permission on file ${fileId}:`, e);
+    console.warn(`Failed to enforce View-Only permission on file ${fileId}:`, e);
   }
 }
 
@@ -348,6 +374,7 @@ export async function autoDiscoverAndSync(accessToken: string): Promise<{
         if (match) {
           const area = match[1].trim().toUpperCase();
           folders[area] = file.id;
+          makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
         }
       });
     }
@@ -523,16 +550,8 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
         ]]
       },
       {
-        range: "'PD & Diagnostic Data'!A1:AA1",
-        values: [[
-          'Number', 'Timestamp', 'Name of user or admin', 'Equipment ID', 'PEA Number (ID)',
-          'Voltage Level (kV)', 'City', 'Equipment type', 'Location type', 'Substation',
-          'Online PRPD Picture URL', 'Online PRPD Phase', 'Online PD Amplitude (mV / pC)',
-          'Online PD Pulse Rate (pps)', 'Online PD Phase Range', 'Online PD Defect Classification', 'Online PD Severity',
-          'Offline PDF Report URL', 'Offline PDF Report Name', 'Offline Test Voltage (kV)',
-          'Offline Max Discharge Qmax (nC)', 'Offline TDR Defect Location (m)', 'Offline Inception Voltage (kV)',
-          'Offline Defect Classification', 'Offline IEEE 400.2 Status', '3x3 Failure Risk Level', 'Diagnostic & Maintenance Summary'
-        ]]
+        range: "'PD & Diagnostic Data'!A1:AQ1",
+        values: [PD_DIAGNOSTIC_HEADERS]
       }
     ]
   };
@@ -639,30 +658,334 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
   return { spreadsheetId, folderId };
 }
 
-// Upload file to specific Google Drive Folder and return publicly accessible direct URL
-export async function uploadFileToDrive(accessToken: string | null | undefined, folderId: string, file: File): Promise<string> {
-  const token = getEffectiveGoogleToken(accessToken);
+// In-memory cache for resolved 3-level Google Drive folder hierarchy:
+// Area ("PEA Cable Asset Images - {AREA}") -> City ("{City}") -> Asset ("{Equipment ID}")
+const driveFolderHierarchyCache: Record<string, string> = {};
+
+function escapeDriveQueryValue(val: string): string {
+  return String(val || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+// Find an existing Google Drive folder by exact name (and optional parentId) or create it
+export async function findOrCreateDriveFolder(
+  accessToken: string,
+  folderName: string,
+  parentId?: string
+): Promise<string> {
+  const cleanName = String(folderName || '').trim() || 'Unassigned';
+  const cacheKey = `${parentId || 'ROOT'}::${cleanName.toLowerCase()}`;
+  if (driveFolderHierarchyCache[cacheKey]) {
+    return driveFolderHierarchyCache[cacheKey];
+  }
+
+  const parentClause = parentId
+    ? ` and '${escapeDriveQueryValue(parentId)}' in parents`
+    : ` and 'root' in parents`;
+  const query = encodeURIComponent(
+    `name = '${escapeDriveQueryValue(cleanName)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`
+  );
+
+  try {
+    const searchRes = await fetchWithBackoff(
+      `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&pageSize=5`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      2,
+      500
+    );
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      const existing = searchData.files?.[0];
+      if (existing?.id) {
+        driveFolderHierarchyCache[cacheKey] = existing.id;
+        makeFileReadableByAnyone(accessToken, existing.id).catch(() => {});
+        return existing.id;
+      }
+    }
+  } catch (e) {
+    console.warn(`Drive folder search warning for '${cleanName}':`, e);
+  }
+
+  // Create missing folder
+  const metadata: any = {
+    name: cleanName,
+    mimeType: 'application/vnd.google-apps.folder'
+  };
+  if (parentId) {
+    metadata.parents = [parentId];
+  }
+
+  const createRes = await fetchWithBackoff(
+    'https://www.googleapis.com/drive/v3/files?fields=id,name',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(metadata)
+    },
+    2,
+    600
+  );
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    throw new Error(`Could not create Drive folder '${cleanName}': ${errText}`);
+  }
+
+  const created = await createRes.json();
+  const createdId = created.id;
+  if (createdId) {
+    driveFolderHierarchyCache[cacheKey] = createdId;
+    // Set public View-Only reader permission so new/upcoming users can view only, never edit in Drive
+    makeFileReadableByAnyone(accessToken, createdId).catch(() => {});
+  }
+  return createdId;
+}
+
+// Resolve 3-level Drive Hierarchy: Area Root Folder -> City Sub-folder -> Equipment ID Sub-folder
+export async function resolveAssetDriveFolderHierarchy(
+  accessToken: string,
+  options: {
+    area?: string;
+    city?: string;
+    equipmentId?: string;
+    baseAreaFolderId?: string;
+  }
+): Promise<{ areaFolderId: string; cityFolderId: string; assetFolderId: string }> {
+  const cleanArea = (options.area || 'GENERAL').trim().toUpperCase();
+  const cleanCity = (options.city || 'Unassigned_City').trim().replace(/[<>:"/\\|?*]/g, '_');
+  const cleanEqId = (options.equipmentId || `ASSET_${Date.now()}`).trim().replace(/[<>:"/\\|?*]/g, '_');
+
+  // Level 1: Area Main Folder ("PEA Cable Asset Images - {AREA}")
+  let areaFolderId = options.baseAreaFolderId ? String(options.baseAreaFolderId).trim() : '';
+  if (!areaFolderId) {
+    // Also check Central / Sector config before creating a duplicate Area folder
+    try {
+      const map = await getMasterSpreadsheetsMap(accessToken);
+      if (map.folders?.[cleanArea]) {
+        areaFolderId = map.folders[cleanArea];
+      }
+    } catch (e) {}
+  }
+  if (!areaFolderId) {
+    areaFolderId = await findOrCreateDriveFolder(accessToken, `PEA Cable Asset Images - ${cleanArea}`);
+  }
+
+  // Level 2: City Sub-folder inside the Area Folder
+  const cityFolderId = await findOrCreateDriveFolder(accessToken, cleanCity, areaFolderId);
+
+  // Level 3: Asset Sub-folder (named by Equipment ID) inside the City Folder
+  const assetFolderId = await findOrCreateDriveFolder(accessToken, cleanEqId, cityFolderId);
+
+  return { areaFolderId, cityFolderId, assetFolderId };
+}
+
+// Persistent backend file repository upload fallback (when no Google Drive proxy token is active yet)
+export async function uploadFileToServerFallback(
+  file: File,
+  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+): Promise<string> {
+  const base64Data: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string) || '');
+    reader.onerror = () => reject(new Error('Failed to read file for server upload'));
+    reader.readAsDataURL(file);
+  });
+
+  if (!base64Data) {
+    throw new Error('Empty file payload for upload');
+  }
+
+  const authHeaders = await getAuthHeadersForApi();
+  const resp = await fetch('/api/files/upload', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders
+    },
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      base64Data,
+      area: hierarchy?.area || 'GENERAL',
+      city: hierarchy?.city || 'Unassigned',
+      equipmentId: hierarchy?.equipmentId || 'ASSET'
+    })
+  });
+
+  const data = await resp.json();
+  if (!resp.ok || !data?.success || !data?.url) {
+    const errMsg = data?.error || `Server file upload failed (${resp.status})`;
+    const err: any = new Error(errMsg);
+    err.status = resp.status;
+    throw err;
+  }
+
+  if (typeof window !== 'undefined' && data.url.startsWith('/')) {
+    return `${window.location.origin}${data.url}`;
+  }
+  return data.url;
+}
+
+// Last-resort image compressor ensuring any fallback Data URL stays safely under Google Sheets' 50,000-char cell limit
+async function compressImageToCompactDataUrl(file: File, maxChars = 42000): Promise<string> {
+  try {
+    const rawDataUrl: string = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string) || '');
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+    if (!rawDataUrl || rawDataUrl.length <= maxChars) return rawDataUrl;
+
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = rawDataUrl;
+    });
+
+    const maxDim = 480;
+    const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    for (const q of [0.65, 0.45, 0.3, 0.18]) {
+      const compressed = canvas.toDataURL('image/jpeg', q);
+      if (compressed.length <= maxChars) return compressed;
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Guard against Google Sheets' strict 50,000 characters-per-cell limit
+export function sanitizeCellForSheets(val: any): any {
+  if (val === undefined || val === null) return '';
+  if (typeof val === 'string' && val.length > 48000) {
+    if (val.startsWith('data:image/')) {
+      return '';
+    }
+    return val.slice(0, 48000);
+  }
+  return val;
+}
+
+export function sanitizeRowForSheets(row: any[]): any[] {
+  return (row || []).map(sanitizeCellForSheets);
+}
+
+// Upload file to Google Drive via Option 1 Central Admin Drive Proxy (Area -> City -> Equipment ID, strictly View-Only for Anyone)
+// Only approved registered users are authorized by backend /api/drive/upload; new/unregistered/guest users are rejected with 403.
+export async function uploadFileToDrive(
+  accessToken: string | null | undefined,
+  folderId: string,
+  file: File,
+  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+): Promise<string> {
   if (!file) {
     throw new Error('Missing file for upload');
   }
 
-  if (!token) {
-    if (file.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(file.name)) {
-      console.warn("No active Google token available for Drive upload. Converting image to Base64 Data URL fallback.");
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string || '');
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
+  const isImage = file.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(file.name);
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  let cleanFolderId = folderId ? String(folderId).trim() : '';
+
+  // Tier 1 (Option 1 Primary): Central Backend Drive Proxy using Admin Service Account or Delegated Admin Token
+  try {
+    const base64Data: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string) || '');
+      reader.onerror = () => reject(new Error('Failed to read file for Drive upload'));
+      reader.readAsDataURL(file);
+    });
+
+    if (base64Data) {
+      const authHeaders = await getAuthHeadersForApi();
+      const proxyRes = await fetch('/api/drive/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type || (isPdf ? 'application/pdf' : 'application/octet-stream'),
+          base64Data,
+          area: hierarchy?.area || 'GENERAL',
+          city: hierarchy?.city || 'Unassigned',
+          equipmentId: hierarchy?.equipmentId || 'ASSET',
+          baseAreaFolderId: cleanFolderId || undefined
+        })
       });
+
+      const proxyData = await proxyRes.json().catch(() => ({}));
+
+      // Strict 403 block: View-Only / Pending / Unregistered users must NEVER bypass via client fallbacks
+      if (proxyRes.status === 403) {
+        const forbiddenErr: any = new Error(
+          proxyData?.error || 'View-Only Access: Only Admin-approved registered users can upload files.'
+        );
+        forbiddenErr.status = 403;
+        throw forbiddenErr;
+      }
+
+      if (proxyRes.ok && proxyData?.success && proxyData?.url) {
+        return proxyData.url;
+      }
+
+      console.warn(`Central Drive proxy returned ${proxyRes.status}:`, proxyData?.error || 'Unavailable');
     }
-    throw new Error('Missing access token for Google Drive upload');
+  } catch (proxyErr: any) {
+    if (proxyErr?.status === 403) {
+      throw proxyErr;
+    }
+    console.warn('Central Drive proxy attempt fell back:', proxyErr?.message || proxyErr);
   }
 
-  const cleanFolderId = folderId ? String(folderId).trim() : '';
+  // Tier 2 (Fallback when SA/Delegated Proxy token is not configured yet): Direct OAuth upload for Admin/Operator with valid Google token
+  const token = getEffectiveGoogleToken(accessToken);
+  if (!token) {
+    try {
+      return await uploadFileToServerFallback(file, hierarchy);
+    } catch (serverErr: any) {
+      if (serverErr?.status === 403) {
+        throw serverErr;
+      }
+      console.warn('Server file upload fallback unavailable without Google token:', serverErr);
+      if (isImage) {
+        return compressImageToCompactDataUrl(file);
+      }
+      throw new Error(serverErr?.message || 'Missing active Google Drive proxy token and server upload fallback failed.');
+    }
+  }
+
+  // Automatically resolve 3-level Drive folder hierarchy: Area -> City -> Equipment ID
+  if (hierarchy && (hierarchy.area || hierarchy.city || hierarchy.equipmentId)) {
+    try {
+      const resolvedHierarchy = await resolveAssetDriveFolderHierarchy(token, {
+        area: hierarchy.area,
+        city: hierarchy.city,
+        equipmentId: hierarchy.equipmentId,
+        baseAreaFolderId: cleanFolderId || undefined
+      });
+      if (resolvedHierarchy.assetFolderId) {
+        cleanFolderId = resolvedHierarchy.assetFolderId;
+      }
+    } catch (hierErr) {
+      console.warn('Could not build 3-level Drive folder hierarchy (Area/City/Asset), continuing with base folder:', hierErr);
+    }
+  }
+
   const metadata: any = {
     name: `${Date.now()}_${file.name}`,
-    mimeType: file.type || 'application/octet-stream'
+    mimeType: file.type || (isPdf ? 'application/pdf' : 'application/octet-stream')
   };
 
   if (cleanFolderId) {
@@ -681,7 +1004,6 @@ export async function uploadFileToDrive(accessToken: string | null | undefined, 
     body: formData
   });
 
-  // If upload to specific parent folder failed (e.g. 404 folder not found or 403 access forbidden), retry uploading to Google Drive root
   if (!res.ok && metadata.parents) {
     console.warn(`Drive upload to parent folder '${cleanFolderId}' failed with HTTP ${res.status}. Retrying upload to Google Drive root...`);
     delete metadata.parents;
@@ -702,15 +1024,16 @@ export async function uploadFileToDrive(accessToken: string | null | undefined, 
     const errorBody = await res.text();
     console.error(`Google Drive upload failed (${res.status}):`, errorBody);
 
-    // Fallback for image files: convert to Base64 Data URL so user picture upload never breaks asset saving
-    if (file.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(file.name)) {
-      console.warn("Converting image to Base64 Data URL fallback after Drive HTTP upload failure.");
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string || '');
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-      });
+    try {
+      const serverUrl = await uploadFileToServerFallback(file, hierarchy);
+      if (serverUrl) return serverUrl;
+    } catch (serverErr: any) {
+      if (serverErr?.status === 403) throw serverErr;
+      console.warn('Server file upload fallback also failed after Drive HTTP failure:', serverErr);
+    }
+
+    if (isImage) {
+      return compressImageToCompactDataUrl(file);
     }
 
     throw new Error(`Failed to upload file to Google Drive (${res.status}): ${res.statusText || errorBody || 'Upload HTTP error'}`);
@@ -719,35 +1042,24 @@ export async function uploadFileToDrive(accessToken: string | null | undefined, 
   const data = await res.json();
   const fileId = data.id;
 
-  // Set file permission to public readers
-  try {
-    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        role: 'reader',
-        type: 'anyone'
-      })
-    });
-  } catch (e) {
-    console.warn(`Could not set public permission on Drive file ${fileId}:`, e);
-  }
+  // Enforce strict public View-Only (anyone: reader) permission on the uploaded file
+  await makeFileReadableByAnyone(token, fileId);
 
-  // If PDF, provide direct Drive view link
-  if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+  if (isPdf) {
     return `https://drive.google.com/file/d/${fileId}/view?usp=sharing`;
   }
 
-  // Use standard direct hotlink URL for Google Drive images
   return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
 }
 
 // Upload file to specific Google Drive Folder (Alias for backwards compatibility)
-export async function uploadImageToDrive(accessToken: string, folderId: string, file: File): Promise<string> {
-  return uploadFileToDrive(accessToken, folderId, file);
+export async function uploadImageToDrive(
+  accessToken: string | null | undefined,
+  folderId: string,
+  file: File,
+  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+): Promise<string> {
+  return uploadFileToDrive(accessToken, folderId, file, hierarchy);
 }
 
 export const PD_DIAGNOSTIC_HEADERS = [
@@ -757,7 +1069,24 @@ export const PD_DIAGNOSTIC_HEADERS = [
   'Online PD Pulse Rate (pps)', 'Online PD Phase Range', 'Online PD Defect Classification', 'Online PD Severity',
   'Offline PDF Report URL', 'Offline PDF Report Name', 'Offline Test Voltage (kV)',
   'Offline Max Discharge Qmax (nC)', 'Offline TDR Defect Location (m)', 'Offline Inception Voltage (kV)',
-  'Offline Defect Classification', 'Offline IEEE 400.2 Status', '3x3 Failure Risk Level', 'Diagnostic & Maintenance Summary'
+  'Offline Defect Classification', 'Offline IEEE 400.2 Status', '3x3 Failure Risk Level', 'Diagnostic & Maintenance Summary',
+  // Extended Offline Measurement Columns (Columns AB to AQ)
+  'Offline Test Date',
+  'Offline Cable Length (m)',
+  'Offline Cable Topology JSON',
+  'Offline Number of Defects',
+  'TD Stage 1 Voltage (0.5 U0 kV)',
+  'TD Stage 1 Mean (E-3)',
+  'TD Stage 1 SDTD (E-3)',
+  'TD Stage 2 Voltage (1.0 U0 kV)',
+  'TD Stage 2 Mean (E-3)',
+  'TD Stage 2 SDTD (E-3)',
+  'TD Stage 3 Voltage (1.5 U0 kV)',
+  'TD Stage 3 Mean (E-3)',
+  'TD Stage 3 SDTD (E-3)',
+  'TD Delta Tip-Up (E-3)',
+  'TD IEEE 400.2-2024 Criteria',
+  'Offline Individual Defects JSON'
 ];
 
 // Helper to format date into DD/MM/YYYY
@@ -893,31 +1222,56 @@ export function alignRowWithHeaders(headers: string[], data: Record<string, any>
     if (norm === 'tandeltaresult' || norm === 'tandelta') return data.tanDelta ?? defaultValues[idx] ?? '';
     if (norm === 'tandeltaamplitude') return data.tanDeltaAmplitude ?? defaultValues[idx] ?? '';
 
-    // Online PRPD & Offline PD Diagnostics
-    if (norm === 'onlineprpdpictururl' || norm === 'onlineprpdpictureurl' || norm === 'onlineprpdimageurl') return data.onlinePrpdImageUrl ?? defaultValues[idx] ?? '';
+    // Online PRPD & Offline PD Diagnostics (Tab 4 Columns K to AQ)
+    if (norm === 'peanumberid' || norm === 'peanumber') return data.peaNumber ?? defaultValues[idx] ?? '';
+    if (norm === 'voltagelevelkv' || norm === 'voltagelevel') return data.voltageLevel ?? defaultValues[idx] ?? '';
+    if (norm === 'city') return data.city ?? defaultValues[idx] ?? '';
+    if (norm === 'equipmenttype') return data.equipmentType ?? defaultValues[idx] ?? '';
+    if (norm === 'locationtype') return data.locationType ?? defaultValues[idx] ?? '';
+    if (norm === 'substation' || norm === 'substationname') return data.substation ?? data.substationName ?? defaultValues[idx] ?? '';
+
+    if (norm === 'onlineprpdpictururl' || norm === 'onlineprpdpictureurl' || norm === 'onlineprpdimageurl') return sanitizeCellForSheets(data.onlinePrpdImageUrl ?? defaultValues[idx] ?? '');
     if (norm === 'onlineprpdphase') return data.onlinePrpdPhase ?? defaultValues[idx] ?? '';
-    if (norm === 'onlinepdamplitudemvpc' || norm === 'onlinepdamplitude') return data.onlinePrpdAmplitude ?? defaultValues[idx] ?? '';
-    if (norm === 'onlinepdpulseratepps' || norm === 'onlinepdrepetitionrate' || norm === 'onlinepdpulserate') return data.onlinePrpdRepetitionRate ?? defaultValues[idx] ?? '';
+    if (norm === 'onlinepdamplitudemvpc' || norm === 'onlinepdamplitude') return (data.onlinePrpdAmplitude !== undefined && data.onlinePrpdAmplitude !== null) ? data.onlinePrpdAmplitude : (data.onlinePrpdPeakCharge ?? defaultValues[idx] ?? '');
+    if (norm === 'onlinepdpulseratepps' || norm === 'onlinepdrepetitionrate' || norm === 'onlinepdpulserate') return (data.onlinePrpdRepetitionRate !== undefined && data.onlinePrpdRepetitionRate !== null) ? data.onlinePrpdRepetitionRate : (data.onlinePrpdPulseRate ?? defaultValues[idx] ?? '');
     if (norm === 'onlinepdphaserange') return data.onlinePrpdPhaseRange ?? defaultValues[idx] ?? '';
     if (norm === 'onlinepddefectclassification' || norm === 'onlinepddefecttype') return data.onlinePrpdDefectType ?? defaultValues[idx] ?? '';
     if (norm === 'onlinepdseverity') return data.onlinePrpdSeverity ?? defaultValues[idx] ?? '';
 
-    if (norm === 'offlinepdfreporturl' || norm === 'offlinetestresultpdfreporturl' || norm === 'offlinereporturl') return data.offlinePdfReportUrl ?? defaultValues[idx] ?? '';
-    if (norm === 'offlinepdfreportname' || norm === 'offlinereportname') return data.offlinePdfReportName ?? defaultValues[idx] ?? '';
+    if (norm === 'offlinepdfreporturl' || norm === 'offlinetestresultpdfreporturl' || norm === 'offlinereporturl' || norm === 'offlinepdfurl') return sanitizeCellForSheets(data.offlinePdfReportUrl ?? data.offlinePdfUrl ?? defaultValues[idx] ?? '');
+    if (norm === 'offlinepdfreportname' || norm === 'offlinereportname' || norm === 'offlinepdfname') return data.offlinePdfReportName ?? data.offlinePdfName ?? defaultValues[idx] ?? '';
     if (norm === 'offlinetestvoltagekv' || norm === 'offlinetestvoltage') return data.offlineTestVoltage ?? defaultValues[idx] ?? '';
-    if (norm === 'offlinemaxdischargeqmaxnc' || norm === 'offlinemaxdischarge') return data.offlineMaxDischarge ?? defaultValues[idx] ?? '';
+    if (norm === 'offlinemaxdischargeqmaxnc' || norm === 'offlinemaxdischarge' || norm === 'offlinemaxapparentcharge') return (data.offlineMaxDischarge !== undefined && data.offlineMaxDischarge !== null) ? data.offlineMaxDischarge : (data.offlineMaxApparentCharge ?? defaultValues[idx] ?? '');
     if (norm === 'offlinetdrdefectlocationm' || norm === 'offlinedefectlocation') return data.offlineDefectLocation ?? defaultValues[idx] ?? '';
-    if (norm === 'offlineinceptionvoltagekv' || norm === 'offlineinceptionvoltage') return data.offlineInceptionVoltage ?? defaultValues[idx] ?? '';
-    if (norm === 'offlinedefectclassification') return data.offlineDefectClassification ?? defaultValues[idx] ?? '';
-    if (norm === 'offlineieee4002status' || norm === 'offlineieeeverdict') return data.offlineIeeeVerdict ?? defaultValues[idx] ?? '';
-    if (norm === '3x3failurerisklevel' || norm === 'offlinerisklevel' || norm === 'risklevel') return data.offlineRiskLevel ?? defaultValues[idx] ?? '';
-    if (norm === 'diagnosticmaintenancesummary' || norm === 'diagnosticsummary') return data.diagnosticSummary ?? defaultValues[idx] ?? '';
+    if (norm === 'offlineinceptionvoltagekv' || norm === 'offlineinceptionvoltage') return (data.offlineInceptionVoltage !== undefined && data.offlineInceptionVoltage !== null) ? data.offlineInceptionVoltage : (defaultValues[idx] ?? '');
+    if (norm === 'offlinedefectclassification' || norm === 'offlinedefecttype') return data.offlineDefectClassification ?? data.offlineDefectType ?? defaultValues[idx] ?? '';
+    if (norm === 'offlineieee4002status' || norm === 'offlineieeeverdict' || norm === 'offlineieeestatus') return data.offlineIeeeVerdict ?? data.offlineIeeeStatus ?? defaultValues[idx] ?? '';
+    if (norm === '3x3failurerisklevel' || norm === 'offlinerisklevel' || norm === 'risklevel' || norm === 'offlineriskmatrixlevel') return data.offlineRiskLevel ?? data.offlineRiskMatrixLevel ?? defaultValues[idx] ?? '';
+    if (norm === 'diagnosticmaintenancesummary' || norm === 'diagnosticsummary' || norm === 'summaryanalysis') return sanitizeCellForSheets(data.diagnosticSummary ?? data.summaryAnalysis ?? data.diagnosticNotes ?? defaultValues[idx] ?? '');
+
+    // Extended Offline Measurement Columns (AB to AQ)
+    if (norm === 'offlinetestdate') return data.offlineTestDate ?? defaultValues[idx] ?? '';
+    if (norm === 'offlinecablelengthm' || norm === 'offlinecablelength') return (data.offlineCableLengthM !== undefined && data.offlineCableLengthM !== null) ? data.offlineCableLengthM : (defaultValues[idx] ?? '');
+    if (norm === 'offlinecabletopologyjson' || norm === 'offlinetopologyjson') return sanitizeCellForSheets(data.offlineTopologyJson ?? (data.offlineTopology ? JSON.stringify(data.offlineTopology) : (defaultValues[idx] ?? '')));
+    if (norm === 'offlinenumberofdefects' || norm === 'offlinedefectcount') return (data.offlineNumberOfDefects !== undefined && data.offlineNumberOfDefects !== null) ? data.offlineNumberOfDefects : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage1voltage05u0kv' || norm === 'tdstage1voltagekv') return (data.tdStage1VoltageKv !== undefined && data.tdStage1VoltageKv !== null) ? data.tdStage1VoltageKv : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage1meane3' || norm === 'tdstage1mean') return (data.tdStage1Mean !== undefined && data.tdStage1Mean !== null) ? data.tdStage1Mean : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage1sdtde3' || norm === 'tdstage1sdtd') return (data.tdStage1Sdtd !== undefined && data.tdStage1Sdtd !== null) ? data.tdStage1Sdtd : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage2voltage10u0kv' || norm === 'tdstage2voltagekv') return (data.tdStage2VoltageKv !== undefined && data.tdStage2VoltageKv !== null) ? data.tdStage2VoltageKv : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage2meane3' || norm === 'tdstage2mean') return (data.tdStage2Mean !== undefined && data.tdStage2Mean !== null) ? data.tdStage2Mean : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage2sdtde3' || norm === 'tdstage2sdtd') return (data.tdStage2Sdtd !== undefined && data.tdStage2Sdtd !== null) ? data.tdStage2Sdtd : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage3voltage15u0kv' || norm === 'tdstage3voltagekv') return (data.tdStage3VoltageKv !== undefined && data.tdStage3VoltageKv !== null) ? data.tdStage3VoltageKv : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage3meane3' || norm === 'tdstage3mean') return (data.tdStage3Mean !== undefined && data.tdStage3Mean !== null) ? data.tdStage3Mean : (defaultValues[idx] ?? '');
+    if (norm === 'tdstage3sdtde3' || norm === 'tdstage3sdtd') return (data.tdStage3Sdtd !== undefined && data.tdStage3Sdtd !== null) ? data.tdStage3Sdtd : (defaultValues[idx] ?? '');
+    if (norm === 'tddeltatipupe3' || norm === 'tddeltatipup') return (data.tdDeltaTipUp !== undefined && data.tdDeltaTipUp !== null) ? data.tdDeltaTipUp : (defaultValues[idx] ?? '');
+    if (norm === 'tdieee40022024criteria' || norm === 'tdieee4002criteria') return data.tdIeee4002Criteria ?? defaultValues[idx] ?? '';
+    if (norm === 'offlineindividualdefectsjson' || norm === 'offlinedefectsjson') return sanitizeCellForSheets(data.offlineIndividualDefectsJson ?? (data.offlineIndividualDefects ? JSON.stringify(data.offlineIndividualDefects) : (defaultValues[idx] ?? '')));
 
     // Custom properties / newly added columns
-    if (data.customFields && data.customFields[header]) return data.customFields[header];
-    if (data.customFields && data.customFields[norm]) return data.customFields[norm];
-    if (data[header] !== undefined) return data[header];
-    if (data[norm] !== undefined) return data[norm];
+    if (data.customFields && data.customFields[header]) return sanitizeCellForSheets(data.customFields[header]);
+    if (data.customFields && data.customFields[norm]) return sanitizeCellForSheets(data.customFields[norm]);
+    if (data[header] !== undefined) return sanitizeCellForSheets(data[header]);
+    if (data[norm] !== undefined) return sanitizeCellForSheets(data[norm]);
 
     return defaultValues[idx] ?? '';
   });
@@ -1346,8 +1700,9 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     };
   });
 
-  // Parse Page 2: Engineering Information (Dynamic & Header-driven)
+  // Parse Page 2: Engineering Information (Dynamic & Header-driven, keeping both latest map and timestamp history)
   const engineerings: Record<string, EngineeringInformation> = {};
+  const engineeringsHistory: Record<string, EngineeringInformation[]> = {};
   engDataRows.forEach((row: any[], index: number) => {
     const getVal = (headerName: string) => {
       const idx = engHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
@@ -1387,7 +1742,7 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     });
 
     const engRawTs = getVal('timestamp') || cleanStr(row[1]);
-    engineerings[eqId] = {
+    const engRecord: EngineeringInformation = {
       number: parseInt(getVal('number') || getVal('no')) || (index + 1),
       timestamp: engRawTs ? getBangkokTimestamp(engRawTs) : getBangkokTimestamp(),
       operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
@@ -1403,10 +1758,14 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       tanDeltaAmplitude,
       customFields
     };
+    engineerings[eqId] = engRecord;
+    if (!engineeringsHistory[eqId]) engineeringsHistory[eqId] = [];
+    engineeringsHistory[eqId].push(engRecord);
   });
 
   // Parse Page 3: Visual & Thermal Images (Dynamic & Header-driven)
   const visuals: Record<string, VisualInformation> = {};
+  const visualsHistory: Record<string, VisualInformation[]> = {};
   visDataRows.forEach((row: any[], index: number) => {
     const getVal = (headerName: string) => {
       const idx = visHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
@@ -1419,16 +1778,8 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     }
     if (!eqId) return;
 
-    const fixDriveUrl = (url: string) => {
-      if (!url) return url;
-      if (url.includes('drive.google.com/uc?export=view&id=')) {
-        return url.replace('uc?export=view&id=', 'thumbnail?id=') + '&sz=w1000';
-      }
-      return url;
-    };
-
     const visRawTs = getVal('timestamp') || cleanStr(row[1]);
-    visuals[eqId] = {
+    const visRecord: VisualInformation = {
       number: parseInt(getVal('number') || getVal('no')) || (index + 1),
       timestamp: visRawTs ? getBangkokTimestamp(visRawTs) : getBangkokTimestamp(),
       operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
@@ -1436,10 +1787,14 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       visualPictureUrl: fixDriveUrl(getVal('visualpictureurl') || getVal('visualpicture') || cleanStr(row[4])),
       thermalImageUrl: fixDriveUrl(getVal('thermalimageurl') || getVal('thermalimage') || cleanStr(row[5]))
     };
+    visuals[eqId] = visRecord;
+    if (!visualsHistory[eqId]) visualsHistory[eqId] = [];
+    visualsHistory[eqId].push(visRecord);
   });
 
-  // Parse Page 4: PD & Diagnostic Data (Dynamic & Header-driven)
+  // Parse Page 4: PD & Diagnostic Data (Dynamic & Header-driven, keeping both latest map and full history)
   const pdDiagnostics: Record<string, PDDiagnosticInformation> = {};
+  const pdDiagnosticsHistory: Record<string, PDDiagnosticInformation[]> = {};
   pdDataRows.forEach((row: any[], index: number) => {
     const getVal = (headerName: string) => {
       const idx = pdHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
@@ -1458,7 +1813,45 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
     const offlineMaxDischargeVal = parseFloat(getVal('offlinemaxdischargeqmaxnc') || getVal('offlinemaxdischarge') || cleanStr(row[20]));
     const offlineInceptionVoltageVal = parseFloat(getVal('offlineinceptionvoltagekv') || getVal('offlineinceptionvoltage') || cleanStr(row[22]));
 
-    pdDiagnostics[eqId] = {
+    // Parse Extended Offline Measurement Columns (AB to AQ, indices 27 to 42)
+    const offlineTestDateVal = getVal('offlinetestdate') || cleanStr(row[27]);
+    const offlineCableLengthVal = parseFloat(getVal('offlinecablelengthm') || getVal('offlinecablelength') || cleanStr(row[28]));
+    const offlineTopologyJsonVal = getVal('offlinecabletopologyjson') || getVal('offlinetopologyjson') || cleanStr(row[29]);
+    const offlineNumDefectsVal = parseInt(getVal('offlinenumberofdefects') || getVal('offlinedefectcount') || cleanStr(row[30]), 10);
+
+    const tdStage1VoltageVal = parseFloat(getVal('tdstage1voltage05u0kv') || getVal('tdstage1voltagekv') || cleanStr(row[31]));
+    const tdStage1MeanVal = parseFloat(getVal('tdstage1meane3') || getVal('tdstage1mean') || cleanStr(row[32]));
+    const tdStage1SdtdVal = parseFloat(getVal('tdstage1sdtde3') || getVal('tdstage1sdtd') || cleanStr(row[33]));
+
+    const tdStage2VoltageVal = parseFloat(getVal('tdstage2voltage10u0kv') || getVal('tdstage2voltagekv') || cleanStr(row[34]));
+    const tdStage2MeanVal = parseFloat(getVal('tdstage2meane3') || getVal('tdstage2mean') || cleanStr(row[35]));
+    const tdStage2SdtdVal = parseFloat(getVal('tdstage2sdtde3') || getVal('tdstage2sdtd') || cleanStr(row[36]));
+
+    const tdStage3VoltageVal = parseFloat(getVal('tdstage3voltage15u0kv') || getVal('tdstage3voltagekv') || cleanStr(row[37]));
+    const tdStage3MeanVal = parseFloat(getVal('tdstage3meane3') || getVal('tdstage3mean') || cleanStr(row[38]));
+    const tdStage3SdtdVal = parseFloat(getVal('tdstage3sdtde3') || getVal('tdstage3sdtd') || cleanStr(row[39]));
+
+    const tdDeltaTipUpVal = parseFloat(getVal('tddeltatipupe3') || getVal('tddeltatipup') || cleanStr(row[40]));
+    const tdIeee4002CriteriaVal = getVal('tdieee40022024criteria') || getVal('tdieee4002criteria') || cleanStr(row[41]);
+    const offlineDefectsJsonVal = getVal('offlineindividualdefectsjson') || getVal('offlinedefectsjson') || cleanStr(row[42]);
+
+    let parsedTopology: any[] | undefined = undefined;
+    if (offlineTopologyJsonVal) {
+      try {
+        const parsed = JSON.parse(offlineTopologyJsonVal);
+        if (Array.isArray(parsed)) parsedTopology = parsed;
+      } catch (e) {}
+    }
+
+    let parsedDefects: any[] | undefined = undefined;
+    if (offlineDefectsJsonVal) {
+      try {
+        const parsed = JSON.parse(offlineDefectsJsonVal);
+        if (Array.isArray(parsed)) parsedDefects = parsed;
+      } catch (e) {}
+    }
+
+    const pdRecord: PDDiagnosticInformation = {
       number: parseInt(getVal('number') || getVal('no')) || (index + 1),
       timestamp: pdRawTs ? getBangkokTimestamp(pdRawTs) : getBangkokTimestamp(),
       operatorName: getVal('nameofuseroradmin') || getVal('operatorname') || getVal('operator') || cleanStr(row[2]),
@@ -1477,23 +1870,75 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       onlinePrpdDefectType: getVal('onlinepddefectclassification') || getVal('onlinepddefecttype') || cleanStr(row[15]),
       onlinePrpdSeverity: (getVal('onlinepdseverity') || cleanStr(row[16])) as any,
       offlinePdfReportUrl: getVal('offlinepdfreporturl') || getVal('offlinetestresultpdfreporturl') || cleanStr(row[17]),
+      offlinePdfUrl: getVal('offlinepdfreporturl') || getVal('offlinetestresultpdfreporturl') || cleanStr(row[17]),
       offlinePdfReportName: getVal('offlinepdfreportname') || getVal('offlinereportname') || cleanStr(row[18]),
+      offlinePdfName: getVal('offlinepdfreportname') || getVal('offlinereportname') || cleanStr(row[18]),
       offlineTestVoltage: getVal('offlinetestvoltagekv') || getVal('offlinetestvoltage') || cleanStr(row[19]),
       offlineMaxDischarge: !isNaN(offlineMaxDischargeVal) ? offlineMaxDischargeVal : undefined,
       offlineDefectLocation: getVal('offlinetdrdefectlocationm') || getVal('offlinedefectlocation') || cleanStr(row[21]),
       offlineInceptionVoltage: !isNaN(offlineInceptionVoltageVal) ? offlineInceptionVoltageVal : undefined,
       offlineDefectClassification: getVal('offlinedefectclassification') || cleanStr(row[23]),
+      offlineDefectType: getVal('offlinedefectclassification') || cleanStr(row[23]),
       offlineIeeeVerdict: getVal('offlineieee4002status') || getVal('offlineieeeverdict') || cleanStr(row[24]),
+      offlineIeeeStatus: getVal('offlineieee4002status') || getVal('offlineieeeverdict') || cleanStr(row[24]),
       offlineRiskLevel: (getVal('3x3failurerisklevel') || getVal('offlinerisklevel') || cleanStr(row[25])) as any,
-      diagnosticSummary: getVal('diagnosticmaintenancesummary') || getVal('diagnosticsummary') || cleanStr(row[26])
+      offlineRiskMatrixLevel: (getVal('3x3failurerisklevel') || getVal('offlinerisklevel') || cleanStr(row[25])) as any,
+      diagnosticSummary: getVal('diagnosticmaintenancesummary') || getVal('diagnosticsummary') || cleanStr(row[26]),
+      // Extended Offline Measurement Parameters
+      offlineTestDate: offlineTestDateVal || undefined,
+      offlineCableLengthM: !isNaN(offlineCableLengthVal) ? offlineCableLengthVal : undefined,
+      offlineTopologyJson: offlineTopologyJsonVal || undefined,
+      offlineTopology: parsedTopology,
+      offlineNumberOfDefects: !isNaN(offlineNumDefectsVal) ? offlineNumDefectsVal : (parsedDefects ? parsedDefects.length : undefined),
+      tdStage1VoltageKv: !isNaN(tdStage1VoltageVal) ? tdStage1VoltageVal : undefined,
+      tdStage1Mean: !isNaN(tdStage1MeanVal) ? tdStage1MeanVal : undefined,
+      tdStage1Sdtd: !isNaN(tdStage1SdtdVal) ? tdStage1SdtdVal : undefined,
+      tdStage2VoltageKv: !isNaN(tdStage2VoltageVal) ? tdStage2VoltageVal : undefined,
+      tdStage2Mean: !isNaN(tdStage2MeanVal) ? tdStage2MeanVal : undefined,
+      tdStage2Sdtd: !isNaN(tdStage2SdtdVal) ? tdStage2SdtdVal : undefined,
+      tdStage3VoltageKv: !isNaN(tdStage3VoltageVal) ? tdStage3VoltageVal : undefined,
+      tdStage3Mean: !isNaN(tdStage3MeanVal) ? tdStage3MeanVal : undefined,
+      tdStage3Sdtd: !isNaN(tdStage3SdtdVal) ? tdStage3SdtdVal : undefined,
+      tdDeltaTipUp: !isNaN(tdDeltaTipUpVal) ? tdDeltaTipUpVal : undefined,
+      tdIeee4002Criteria: tdIeee4002CriteriaVal || undefined,
+      offlineIndividualDefectsJson: offlineDefectsJsonVal || undefined,
+      offlineIndividualDefects: parsedDefects
     };
+    pdDiagnostics[eqId] = pdRecord;
+    if (!pdDiagnosticsHistory[eqId]) pdDiagnosticsHistory[eqId] = [];
+    pdDiagnosticsHistory[eqId].push(pdRecord);
   });
+
+  // Track chronological occurrence index per equipmentId so duplicate Tab 1 rows align with Tab 2/3/4 logs
+  const eqOccurrenceCursor: Record<string, number> = {};
 
   // Join them together and compute health index
   const results = generals.map(gen => {
-    const eng = (engineerings[gen.equipmentId] || {}) as Partial<EngineeringInformation>;
-    const vis = (visuals[gen.equipmentId] || {}) as Partial<VisualInformation>;
-    const pd = (pdDiagnostics[gen.equipmentId] || {}) as Partial<PDDiagnosticInformation>;
+    const occIdx = eqOccurrenceCursor[gen.equipmentId] || 0;
+    eqOccurrenceCursor[gen.equipmentId] = occIdx + 1;
+
+    const engList = engineeringsHistory[gen.equipmentId] || [];
+    const visList = visualsHistory[gen.equipmentId] || [];
+    const pdList = pdDiagnosticsHistory[gen.equipmentId] || [];
+
+    const eng = ((gen.timestamp && engList.find(e => e.timestamp === gen.timestamp)) ||
+      engList.find(e => e.number === gen.number) ||
+      engList[occIdx] ||
+      engineerings[gen.equipmentId] ||
+      {}) as Partial<EngineeringInformation>;
+
+    const vis = ((gen.timestamp && visList.find(v => v.timestamp === gen.timestamp)) ||
+      visList.find(v => v.number === gen.number) ||
+      visList[occIdx] ||
+      visuals[gen.equipmentId] ||
+      {}) as Partial<VisualInformation>;
+
+    const pd = ((gen.timestamp && pdList.find(p => p.timestamp === gen.timestamp)) ||
+      pdList.find(p => p.number === gen.number) ||
+      pdList[occIdx] ||
+      pdDiagnostics[gen.equipmentId] ||
+      {}) as Partial<PDDiagnosticInformation>;
+
     const { score, status } = calculateHealth(eng);
 
     const getMs = (ts: string) => {
@@ -1533,6 +1978,7 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
       ...vis,
       ...pd,
       pdDiagnostics: Object.keys(pd).length > 0 ? (pd as PDDiagnosticInformation) : undefined,
+      pdDiagnosticsHistory: pdList.length > 0 ? pdList : undefined,
       healthScore: score,
       healthStatus: status,
       latestUpdatedBy: latestBy,
@@ -1714,7 +2160,12 @@ export async function executeUniversalSheetUpdate(
 }
 
 // Append new general row
-export async function appendGeneralRow(accessToken: string | null | undefined, spreadsheetId: string, rowOrData: any[] | Record<string, any>) {
+export async function appendGeneralRow(
+  accessToken: string | null | undefined,
+  spreadsheetId: string,
+  rowOrData: any[] | Record<string, any>,
+  options?: { skipTab4Sync?: boolean }
+) {
   const token = getEffectiveGoogleToken(accessToken);
   let rowValues: any[];
   if (Array.isArray(rowOrData)) {
@@ -1736,10 +2187,10 @@ export async function appendGeneralRow(accessToken: string | null | undefined, s
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', [rowValues]);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', [sanitizeRowForSheets(rowValues)]);
 
-  // Automatically sync and link Tab 4 Columns A-J from Tab 1 for this Google Sheet if token available
-  if (token) {
+  // Automatically sync and link Tab 4 Columns A-J from Tab 1 ONLY when caller is not explicitly writing Tab 4 immediately afterwards
+  if (token && !options?.skipTab4Sync) {
     syncSingleSpreadsheetTab4FromTab1(token, spreadsheetId).catch(err => {
       console.warn(`[Auto-Link Tab 4] Post-append sync notice for spreadsheet ${spreadsheetId}:`, err);
     });
@@ -1864,7 +2315,8 @@ export async function ensurePdDiagnosticsSheetExists(
                 properties: {
                   title: 'PD & Diagnostic Data',
                   gridProperties: {
-                    frozenRowCount: 1
+                    frozenRowCount: 1,
+                    columnCount: Math.max(46, PD_DIAGNOSTIC_HEADERS.length)
                   }
                 }
               }
@@ -1881,23 +2333,10 @@ export async function ensurePdDiagnosticsSheetExists(
       const addSheetData = await addSheetRes.json();
       pdSheetId = addSheetData.replies?.[0]?.addSheet?.properties?.sheetId;
       isCreated = true;
-
-      // 2. Add Headers
-      await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AA1?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          range: "'PD & Diagnostic Data'!A1:AA1",
-          majorDimension: 'ROWS',
-          values: [PD_DIAGNOSTIC_HEADERS]
-        })
-      });
-
-      // 3. Format header row: Purple header, bold white text, centered
-      if (pdSheetId !== undefined) {
+    } else {
+      // Sheet already exists: ensure its column count is at least 46 so columns AB-AQ fit
+      const currentCols = pdSheetObj?.properties?.gridProperties?.columnCount || 26;
+      if (pdSheetId !== undefined && currentCols < PD_DIAGNOSTIC_HEADERS.length) {
         await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
           method: 'POST',
           headers: {
@@ -1907,45 +2346,81 @@ export async function ensurePdDiagnosticsSheetExists(
           body: JSON.stringify({
             requests: [
               {
-                repeatCell: {
-                  range: {
-                    sheetId: pdSheetId,
-                    startRowIndex: 0,
-                    endRowIndex: 1,
-                    startColumnIndex: 0,
-                    endColumnIndex: PD_DIAGNOSTIC_HEADERS.length
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      backgroundColor: { red: 0.23, green: 0.05, blue: 0.39 }, // Deep purple #3B0D63
-                      textFormat: {
-                        foregroundColor: { red: 1.0, green: 1.0, blue: 1.0 },
-                        fontSize: 10,
-                        bold: true
-                      },
-                      horizontalAlignment: 'CENTER',
-                      verticalAlignment: 'MIDDLE',
-                      wrapStrategy: 'CLIP'
-                    }
-                  },
-                  fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)'
-                }
-              },
-              {
-                updateSheetProperties: {
-                  properties: {
-                    sheetId: pdSheetId,
-                    gridProperties: {
-                      frozenRowCount: 1
-                    }
-                  },
-                  fields: 'gridProperties.frozenRowCount'
+                appendDimension: {
+                  sheetId: pdSheetId,
+                  dimension: 'COLUMNS',
+                  length: PD_DIAGNOSTIC_HEADERS.length - currentCols + 3
                 }
               }
             ]
           })
-        }).catch(err => console.warn("Could not format PD header row:", err));
+        }).catch(() => {});
       }
+    }
+
+    // Always ensure all 43 headers (A1:AQ1) are written and formatted on 'PD & Diagnostic Data'
+    await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AQ1?valueInputOption=USER_ENTERED`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        range: "'PD & Diagnostic Data'!A1:AQ1",
+        majorDimension: 'ROWS',
+        values: [PD_DIAGNOSTIC_HEADERS]
+      })
+    }).catch(() => {});
+
+    // Format header row: Purple header, bold white text, centered
+    if (pdSheetId !== undefined) {
+      await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          requests: [
+            {
+              repeatCell: {
+                range: {
+                  sheetId: pdSheetId,
+                  startRowIndex: 0,
+                  endRowIndex: 1,
+                  startColumnIndex: 0,
+                  endColumnIndex: PD_DIAGNOSTIC_HEADERS.length
+                },
+                cell: {
+                  userEnteredFormat: {
+                    backgroundColor: { red: 0.23, green: 0.05, blue: 0.39 }, // Deep purple #3B0D63
+                    textFormat: {
+                      foregroundColor: { red: 1.0, green: 1.0, blue: 1.0 },
+                      fontSize: 10,
+                      bold: true
+                    },
+                    horizontalAlignment: 'CENTER',
+                    verticalAlignment: 'MIDDLE',
+                    wrapStrategy: 'CLIP'
+                  }
+                },
+                fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)'
+              }
+            },
+            {
+              updateSheetProperties: {
+                properties: {
+                  sheetId: pdSheetId,
+                  gridProperties: {
+                    frozenRowCount: 1
+                  }
+                },
+                fields: 'gridProperties.frozenRowCount'
+              }
+            }
+          ]
+        })
+      }).catch(err => console.warn("Could not format PD header row:", err));
     }
 
     // Tab 4 is kept blank for user-registered assets (no simulated mock rows)
@@ -2031,7 +2506,7 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
 
     const cleanStr = (val: any) => (val === undefined || val === null) ? '' : String(val).trim();
 
-    // Map existing diagnostic measurements from Tab 4 (Columns K through AA) by equipmentId
+    // Map existing diagnostic measurements from Tab 4 (Columns K through AQ) keyed by eqId::timestamp AND fallback eqId
     const existingDiagMap: Record<string, string[]> = {};
     const getPdVal = (row: any[], headerName: string) => {
       const idx = pdHeaders.findIndex((h: string) => normalizeHeader(h) === normalizeHeader(headerName));
@@ -2042,11 +2517,15 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
       let eqId = getPdVal(row, 'equipmentid') || cleanStr(row[3]);
       if (!eqId) return;
       eqId = eqId.toLowerCase().trim();
+      const pdTs = getPdVal(row, 'timestamp') || cleanStr(row[1]);
 
-      // Diagnostic columns start from column 10 (0-indexed: K=10, L=11, ... AA=26)
+      // Diagnostic columns start from column 10 (0-indexed: K=10, L=11, ... AQ=42)
       const diagCols: string[] = [];
       for (let c = 10; c < PD_DIAGNOSTIC_HEADERS.length; c++) {
         diagCols.push(c < row.length ? cleanStr(row[c]) : '');
+      }
+      if (pdTs) {
+        existingDiagMap[`${eqId}::${pdTs}`] = diagCols;
       }
       existingDiagMap[eqId] = diagCols;
     });
@@ -2096,9 +2575,9 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
         substation     // Col J: Substation
       ];
 
-      // Build Columns K through AA (indices 10 to 26): preserve existing diagnostic data if present, otherwise blank
-      const lookupKey = equipmentId.toLowerCase().trim();
-      const existingDiag = existingDiagMap[lookupKey];
+      // Build Columns K through AQ (indices 10 to 42): preserve exact timestamp match first, then equipmentId fallback
+      const lookupEq = equipmentId.toLowerCase().trim();
+      const existingDiag = existingDiagMap[`${lookupEq}::${timestamp}`] || existingDiagMap[lookupEq];
 
       for (let c = 10; c < PD_DIAGNOSTIC_HEADERS.length; c++) {
         const diagIdx = c - 10;
@@ -2116,9 +2595,9 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
       return { success: true, syncedRowsCount: 0 };
     }
 
-    // 3. Write synchronized rows to Tab 4 starting at A2:AA
+    // 3. Write synchronized rows to Tab 4 starting at A2:AQ
     const updateRes = await fetchWithBackoff(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'PD & Diagnostic Data'!A2:AA${newPdRows.length + 1}`)}?valueInputOption=USER_ENTERED`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'PD & Diagnostic Data'!A2:AQ${newPdRows.length + 1}`)}?valueInputOption=USER_ENTERED`,
       {
         method: 'PUT',
         headers: {
@@ -2126,7 +2605,7 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          range: `'PD & Diagnostic Data'!A2:AA${newPdRows.length + 1}`,
+          range: `'PD & Diagnostic Data'!A2:AQ${newPdRows.length + 1}`,
           majorDimension: 'ROWS',
           values: newPdRows
         })
@@ -2137,7 +2616,7 @@ export async function syncSingleSpreadsheetTab4FromTab1(accessToken: string, spr
     if (pdDataRows.length > newPdRows.length) {
       const clearStartRow = newPdRows.length + 2;
       await fetchWithBackoff(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'PD & Diagnostic Data'!A${clearStartRow}:AA`)}:clear`,
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`'PD & Diagnostic Data'!A${clearStartRow}:AQ`)}:clear`,
         {
           method: 'POST',
           headers: {
@@ -2266,18 +2745,19 @@ export async function appendPdDiagnosticRow(accessToken: string | null | undefin
     let headers: string[] = [];
     if (token) {
       try {
-        const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AZ1`, {
+        const resHeaders = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27PD%20%26%20Diagnostic%20Data%27%21A1:AQ1`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const dataHeaders = resHeaders.ok ? await resHeaders.json() : null;
-        headers = dataHeaders?.values?.[0] || PD_DIAGNOSTIC_HEADERS;
+        const fetchedHeaders: string[] = dataHeaders?.values?.[0] || [];
+        headers = fetchedHeaders.length >= PD_DIAGNOSTIC_HEADERS.length ? fetchedHeaders : PD_DIAGNOSTIC_HEADERS;
       } catch (e) {}
     }
     if (headers.length === 0) headers = PD_DIAGNOSTIC_HEADERS;
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', [rowValues]);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', [sanitizeRowForSheets(rowValues)]);
 }
 
 // Append multiple PD diagnostic rows in a SINGLE API call

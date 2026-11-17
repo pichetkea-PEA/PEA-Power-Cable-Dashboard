@@ -54,6 +54,7 @@ import {
   getEffectiveGoogleToken
 } from '../utils/googleSheets';
 import { getSectorSpreadsheet, saveSectorSpreadsheet, saveCentralAssetsCache, sendAdminNotification } from '../utils/firestore';
+import { canUserUploadOrEdit } from '../utils/userManagement';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { logAssetActivity, deriveAssetArea, AssetActivityLog } from '../utils/auditLogger';
 
@@ -338,57 +339,42 @@ export default function AssetRecord({
 
   const parametricTrendData = useMemo(() => {
     if (!selectedAsset) return [];
-    
-    // If we have actual historical logs, use them!
-    if (selectedAssetHistory.length > 1) {
-      return selectedAssetHistory.map((h, index) => {
-        const datePart = h.timestamp ? h.timestamp.split(' ')[0] : `Log #${index + 1}`;
-        return {
-          index: index + 1,
-          date: datePart,
-          timestamp: h.timestamp || '',
-          operator: h.operatorName || 'System',
-          loadCurrent: h.loadCurrent ?? 120,
-          sheathCurrent: h.sheathCurrent ?? 8,
-          surfaceTemperature: h.surfaceTemperature ?? 35,
-          externalDischarge: h.externalDischarge ?? 5,
-          insulationResistance: h.insulationResistance ?? 15,
-          tanDelta: h.tanDelta === 'Action Required' ? 3 : h.tanDelta === 'Further Study Advised' ? 2 : h.tanDelta === 'No Action Required' ? 1 : 0
-        };
-      });
-    }
 
-    // Fallback: Generate a high-fidelity 5-point monthly simulation trend leading up to the current value
-    const current = selectedAsset;
-    const points = [];
-    const baseLoad = current.loadCurrent ?? 120;
-    const baseSheath = current.sheathCurrent ?? 8;
-    const baseTemp = current.surfaceTemperature ?? 35;
-    const baseDischarge = current.externalDischarge ?? 5;
-    const baseInsulation = current.insulationResistance ?? 15;
-    const baseTd = current.tanDelta === 'Action Required' ? 3 : current.tanDelta === 'Further Study Advised' ? 2 : current.tanDelta === 'No Action Required' ? 1 : 0;
+    // Strictly derive parametric diagnostic trends from actual database history records
+    const records = selectedAssetHistory.length > 0 ? selectedAssetHistory : [selectedAsset];
+    return records.map((h, index) => {
+      const rawDate = h.timestamp
+        ? h.timestamp.split(' ')[0]
+        : (h.offlineTestDate || h.pdDiagnostics?.offlineTestDate || `Log #${index + 1}`);
+      const pdVal =
+        h.pdDiagnostics?.onlinePrpdAmplitude ??
+        h.onlinePdAmplitude ??
+        h.onlinePrpdAmplitude ??
+        h.externalDischarge ??
+        0;
+      const tdNumeric =
+        h.tanDelta === 'Action Required' || h.pdDiagnostics?.tdIeee4002Criteria === 'Action Required'
+          ? 3
+          : h.tanDelta === 'Further Study Advised' || h.pdDiagnostics?.tdIeee4002Criteria === 'Further Study Advised'
+          ? 2
+          : h.tanDelta === 'No Action Required' || h.pdDiagnostics?.tdIeee4002Criteria === 'No Action Required'
+          ? 1
+          : 0;
 
-    for (let i = 4; i >= 0; i--) {
-      const factor = 1 - (i * 0.05); // slightly lower load/PD/temp in the past
-      const noise = (Math.sin(i) * 0.03);
-      const date = new Date();
-      date.setDate(date.getDate() - (i * 30)); // 30-day interval
-      const dateStr = date.toISOString().split('T')[0];
-
-      points.push({
-        index: 5 - i,
-        date: i === 0 ? (current.timestamp ? current.timestamp.split(' ')[0] : dateStr) : dateStr,
-        timestamp: i === 0 ? (current.timestamp || dateStr) : `${dateStr} 12:00:00`,
-        operator: i === 0 ? (current.operatorName || 'System') : 'PEA Simulator',
-        loadCurrent: Math.round(baseLoad * factor * (1 + noise)),
-        sheathCurrent: Math.round(baseSheath * factor * (1 + noise * 1.5)),
-        surfaceTemperature: Math.round(baseTemp * factor),
-        externalDischarge: Math.round(baseDischarge * factor),
-        insulationResistance: parseFloat((baseInsulation / (factor * (1 + noise))).toFixed(2)),
-        tanDelta: i === 0 ? baseTd : Math.max(1, Math.round(baseTd))
-      });
-    }
-    return points;
+      return {
+        index: index + 1,
+        date: rawDate,
+        timestamp: h.timestamp || rawDate,
+        operator: h.operatorName || h.pdDiagnostics?.operatorName || 'Recorded',
+        loadCurrent: h.loadCurrent ?? 0,
+        sheathCurrent: h.sheathCurrent ?? 0,
+        surfaceTemperature: h.surfaceTemperature ?? 0,
+        externalDischarge: pdVal,
+        insulationResistance: h.insulationResistance ?? 0,
+        tanDelta: tdNumeric,
+        tdStage2Mean: h.pdDiagnostics?.tdStage2Mean ?? h.tdStage2Mean ?? h.tanDeltaAmplitude ?? 0
+      };
+    });
   }, [selectedAsset, selectedAssetHistory]);
 
   const handleDownloadExecutivePDF = async () => {
@@ -1255,17 +1241,20 @@ export default function AssetRecord({
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
 
-      // 1. Photo uploads to Google Drive folder or fallback
+      const uploadHierarchy = {
+        area: getAssetArea(selectedAsset) || deriveAssetArea(selectedAsset),
+        city: editCity || selectedAsset.city || 'Unassigned',
+        equipmentId: selectedAsset.equipmentId
+      };
+
+      // 1. Photo uploads to Google Drive (Area -> City -> Equipment ID) or server fallback
       if (visualFile) {
-        if (activeToken) {
-          setSyncStatus('Uploading new general photos...');
-          try {
-            finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile);
-          } catch (uploadErr) {
-            console.warn("Drive visual photo upload fallback:", uploadErr);
-            finalVisualUrl = visualPreview || editVisualUrl;
-          }
-        } else {
+        setSyncStatus('Uploading new general photos (Area → City → Asset folder)...');
+        try {
+          finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("Visual photo upload fallback:", uploadErr);
           finalVisualUrl = visualPreview || editVisualUrl;
         }
       } else if (visualPreview) {
@@ -1273,15 +1262,12 @@ export default function AssetRecord({
       }
 
       if (thermalFile) {
-        if (activeToken) {
-          setSyncStatus('Uploading new thermographic snaps...');
-          try {
-            finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile);
-          } catch (uploadErr) {
-            console.warn("Drive thermal photo upload fallback:", uploadErr);
-            finalThermalUrl = thermalPreview || editThermalUrl;
-          }
-        } else {
+        setSyncStatus('Uploading new thermographic snaps (Area → City → Asset folder)...');
+        try {
+          finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("Thermal photo upload fallback:", uploadErr);
           finalThermalUrl = thermalPreview || editThermalUrl;
         }
       } else if (thermalPreview) {
@@ -1513,7 +1499,7 @@ export default function AssetRecord({
 
       // Calculate next sequential running number
       let rowNum = 1;
-      if (activeToken && targetSpreadsheetId) {
+      if (targetSpreadsheetId) {
         try {
           setSyncStatus('Retrieving latest records to calculate running number...');
           setProgressModal(prev => ({ ...prev, percent: 30, stepMessage: 'Calculating sequential running index...' }));
@@ -1542,19 +1528,21 @@ export default function AssetRecord({
       
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
+      const uploadHierarchy = {
+        area: getAssetArea(selectedAsset) || deriveAssetArea(selectedAsset),
+        city: editCity || selectedAsset.city || 'Unassigned',
+        equipmentId: selectedAsset.equipmentId
+      };
 
-      // 1. Photo uploads to Google Drive folder or fallback
+      // 1. Photo uploads to Google Drive (Area -> City -> Equipment ID) or server fallback
       if (visualFile) {
-        if (activeToken) {
-          setSyncStatus('Uploading new general photos...');
-          setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos to Google Drive...' }));
-          try {
-            finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile);
-          } catch (uploadErr) {
-            console.warn("Drive visual photo upload fallback:", uploadErr);
-            finalVisualUrl = visualPreview || editVisualUrl;
-          }
-        } else {
+        setSyncStatus('Uploading new general photos (Area → City → Asset folder)...');
+        setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos...' }));
+        try {
+          finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("Visual photo upload fallback:", uploadErr);
           finalVisualUrl = visualPreview || editVisualUrl;
         }
       } else if (visualPreview) {
@@ -1562,16 +1550,13 @@ export default function AssetRecord({
       }
 
       if (thermalFile) {
-        if (activeToken) {
-          setSyncStatus('Uploading new thermographic snaps...');
-          setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images to Google Drive...' }));
-          try {
-            finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile);
-          } catch (uploadErr) {
-            console.warn("Drive thermal photo upload fallback:", uploadErr);
-            finalThermalUrl = thermalPreview || editThermalUrl;
-          }
-        } else {
+        setSyncStatus('Uploading new thermographic snaps (Area → City → Asset folder)...');
+        setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images...' }));
+        try {
+          finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile, uploadHierarchy);
+        } catch (uploadErr: any) {
+          if (uploadErr?.status === 403) throw uploadErr;
+          console.warn("Thermal photo upload fallback:", uploadErr);
           finalThermalUrl = thermalPreview || editThermalUrl;
         }
       } else if (thermalPreview) {
@@ -1596,14 +1581,16 @@ export default function AssetRecord({
         editCostCenter || 'N/A', editGistag || 'N/A', editClass || 'N/A', editContractNumber || 'N/A',
         editFeeder || 'N/A', editSubstationId || 'N/A', editOperateId || 'N/A', editSerialNumber || 'N/A',
         editModel || 'N/A', editWorkOrder || 'N/A', editSize || 'N/A', editAssetValue || 'N/A',
-        updatedEquipmentId
+        updatedEquipmentId, (editQrDocument || '').trim()
       ];
 
       const engineeringRow = [
         rowNum, timestamp, user.name, updatedEquipmentId,
         parseFloat(editLoadCurrent) || 120, parseFloat(editSheathCurrent) || 8,
         parseFloat(editTemp) || 35, parseFloat(editDischarge) || 5, editPdResult,
-        parseFloat(editInsulation) || 15.0, editTanDelta
+        parseFloat(editOnlinePdAmplitude) || 0,
+        parseFloat(editInsulation) || 15.0, editTanDelta,
+        parseFloat(editTanDeltaAmplitude) || 0
       ];
 
       const visualRow = [
@@ -1655,7 +1642,7 @@ export default function AssetRecord({
       combinedAsset.healthScore = score;
       combinedAsset.healthStatus = status;
 
-      if (activeToken && targetSpreadsheetId) {
+      if (targetSpreadsheetId) {
         setSyncStatus('Adding new log entry rows to Google Sheets...');
         setProgressModal(prev => ({ ...prev, percent: 65, stepMessage: 'Writing General Information row to Google Sheets...' }));
         await appendGeneralRow(activeToken, targetSpreadsheetId, generalRow);
@@ -3133,14 +3120,23 @@ export default function AssetRecord({
                       <FileText className="w-4 h-4" />
                       Generate Field PDF
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsEditing(true)}
-                      className="bg-purple-900 hover:bg-purple-950 text-white px-5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md animate-fadeIn"
-                    >
-                      <Edit className="w-4 h-4" />
-                      Edit Data
-                    </button>
+                    {canUserUploadOrEdit(user) ? (
+                      <button
+                        type="button"
+                        onClick={() => setIsEditing(true)}
+                        className="bg-purple-900 hover:bg-purple-950 text-white px-5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md animate-fadeIn"
+                      >
+                        <Edit className="w-4 h-4" />
+                        Edit Data
+                      </button>
+                    ) : (
+                      <span
+                        className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                        title="View-Only: Only Admin-approved registered users can edit assets or upload files"
+                      >
+                        View-Only Access
+                      </span>
+                    )}
                   </>
                 )}
               </div>
@@ -3227,13 +3223,27 @@ export default function AssetRecord({
                   }`}
                 >
                   <FileText className="w-4 h-4 text-red-600" />
-                  <span>Page 3: Offline PD & 3x3 Risk Matrix</span>
+                  <span>Page 3: Offline PD, Tan Delta and 3x3 Risk Matrix</span>
                 </button>
               </div>
 
               {/* PAGE 1 CONTENT: PARAMETRIC TREND CHARTS */}
               {adminSuitePage === 'trends' && (
                 <div className="space-y-4 animate-fadeIn">
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-purple-50/70 border border-purple-100 rounded-xl px-4 py-2.5 text-xs">
+                    <div className="flex items-center gap-2 text-purple-950 font-bold">
+                      <Database className="w-4 h-4 text-purple-700" />
+                      <span>
+                        Live Database History ({parametricTrendData.length} Recorded {parametricTrendData.length === 1 ? 'Entry' : 'Entries'})
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-purple-700 font-semibold">
+                      {parametricTrendData.length === 1
+                        ? 'Baseline record from Google Sheets — log additional inspections in Submit Log to plot multi-point trends'
+                        : `Showing ${parametricTrendData.length} chronological logs from Tab 2 (Engineering Information) & Tab 4`}
+                    </span>
+                  </div>
+
                   {/* Individual Parameters Pills */}
                   <div className="flex flex-wrap gap-2">
                     {[
@@ -3375,68 +3385,48 @@ export default function AssetRecord({
                 </div>
               )}
 
-              {/* PAGE 2 CONTENT: ONLINE HFCT PRPD PATTERN DIAGNOSTICS */}
+              {/* PAGE 2 CONTENT: ONLINE HFCT PRPD PATTERN DIAGNOSTICS (READ-ONLY RESULT VIEW) */}
               {adminSuitePage === 'online_prpd' && (
                 <OnlinePrpdDiagnostics 
                   asset={selectedAsset} 
-                  onEditDiagnostics={() => {
-                    setDiagnosticEditSection('online_prpd');
-                    setShowDiagnosticEditModal(true);
-                  }}
                   googleToken={googleToken || undefined}
                   spreadsheetId={spreadsheetId || undefined}
                   driveFolderId={folderId || undefined}
-                  onSaveSuccess={async (updatedAsset) => {
-                    setSelectedAsset(updatedAsset);
-                    const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
-                    const updatedAllAssets = currentList.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a);
-                    setAllAssets(updatedAllAssets);
-                    try {
-                      await saveCentralAssetsCache(updatedAllAssets, true);
-                    } catch (e) {
-                      console.warn("Save central assets cache warning:", e);
-                    }
-                    safeSetLocalStorage('pea_central_assets_backup', JSON.stringify(updatedAllAssets));
-                    safeSetLocalStorage('registered_assets', JSON.stringify(updatedAllAssets));
-                    safeSetLocalStorage('local_cable_assets', JSON.stringify(updatedAllAssets));
-                    if (onRefresh) {
-                      onRefresh();
-                    }
-                  }}
                 />
               )}
 
-              {/* PAGE 3 CONTENT: OFFLINE CABLE PD & 3X3 RISK MATRIX */}
+              {/* PAGE 3 CONTENT: OFFLINE CABLE PD & 3X3 RISK MATRIX (READ-ONLY RESULT VIEW) */}
               {adminSuitePage === 'offline_pd' && (
                 <OfflinePdDiagnostics 
                   asset={selectedAsset} 
                 />
               )}
 
-              {/* Bottom Action Bar for Admin Advanced Diagnostic Suite (Page 3 Offline PD) */}
+              {/* Bottom Status Bar for Admin Advanced Diagnostic Suite (Read-Only Result View) */}
               {adminSuitePage !== 'online_prpd' && (
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-purple-100 bg-purple-50/40 -mx-6 -mb-6 p-4 rounded-b-2xl">
                   <div className="flex items-center gap-2 text-xs text-purple-900">
                     <Activity className="w-4 h-4 text-purple-700" />
                     <span className="font-semibold">
-                      Google Sheet Tab 4 Telemetry: <strong className="font-mono">{selectedAsset.equipmentId}</strong>
+                      Google Sheet Tab 4 Telemetry ({adminSuitePage === 'offline_pd' ? 'Cols R–AQ' : 'Engineering & PD DB'}): <strong className="font-mono">{selectedAsset.equipmentId}</strong>
                     </span>
                     <span className="text-purple-600/80 text-[11px] hidden sm:inline">
-                      ({selectedAsset.pdDiagnostics?.offlinePdfUrl || selectedAsset.pdDiagnostics?.offlineMaxDischarge !== undefined ? 'Data Recorded' : 'Empty Database State'})
+                      ({adminSuitePage === 'offline_pd'
+                        ? (selectedAsset.pdDiagnostics?.offlinePdfReportUrl ||
+                           selectedAsset.pdDiagnostics?.offlinePdfUrl ||
+                           selectedAsset.pdDiagnostics?.offlineMaxDischarge !== undefined ||
+                           selectedAsset.pdDiagnostics?.tdStage1Mean !== undefined ||
+                           (selectedAsset.pdDiagnostics?.offlineIndividualDefects && selectedAsset.pdDiagnostics.offlineIndividualDefects.length > 0) ||
+                           selectedAsset.pdDiagnostics?.offlineRiskLevel
+                            ? 'Result Recorded in DB Cols R–AQ'
+                            : 'No Offline Record in DB Cols R–AQ')
+                        : `${parametricTrendData.length} Recorded DB Point(s)`})
                     </span>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDiagnosticEditSection('offline_pd');
-                      setShowDiagnosticEditModal(true);
-                    }}
-                    className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all"
-                  >
-                    <FilePenLine className="w-3.5 h-3.5" />
-                    <span>Edit Offline PD & 3x3 Risk Matrix Data (Tab 4)</span>
-                  </button>
+                  <div className="flex items-center gap-2 text-[11px] font-bold text-purple-800 bg-white border border-purple-200 px-3 py-1.5 rounded-xl">
+                    <span>Read-Only Diagnostic Result View (Submit via Submit Log Panel)</span>
+                  </div>
                 </div>
               )}
 

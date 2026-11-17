@@ -1,6 +1,53 @@
 import { PEAUser } from '../types';
-import { db } from './firebaseAuth';
-import { doc, setDoc } from 'firebase/firestore';
+import { auth, db } from './firebaseAuth';
+import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export const PRESEEDED_USERS: Record<string, PEAUser> = {
   'g51056018@gmail.com': {
@@ -79,7 +126,7 @@ export function verifyUsernamePassword(username: string, password: string): PEAU
     };
   }
 
-  // Check all registered users by employeeId or email
+  // Check all registered users by employeeId or email (must be active!)
   const allUsers = getRegisteredUsers();
   for (const user of Object.values(allUsers)) {
     if (
@@ -96,9 +143,13 @@ export function verifyUsernamePassword(username: string, password: string): PEAU
 }
 
 const REGISTERED_USERS_KEY = 'pea_registered_users_list_v1';
+const ACTIVE_SESSION_META_KEY = 'pea_active_user_session_meta_v1';
 
 export function getRegisteredUsers(): Record<string, PEAUser> {
-  const localSaved = localStorage.getItem(REGISTERED_USERS_KEY);
+  let localSaved: string | null = null;
+  try {
+    localSaved = localStorage.getItem(REGISTERED_USERS_KEY);
+  } catch (e) {}
   let users: Record<string, PEAUser> = { ...PRESEEDED_USERS };
   if (localSaved) {
     try {
@@ -109,6 +160,35 @@ export function getRegisteredUsers(): Record<string, PEAUser> {
     }
   }
   return users;
+}
+
+// Synchronize registered_users collection from Firestore so approvals/rejections propagate across all browsers & devices
+export async function syncRegisteredUsersFromFirestore(): Promise<Record<string, PEAUser>> {
+  const merged: Record<string, PEAUser> = getRegisteredUsers();
+  const pathForGetDocs = 'registered_users';
+  try {
+    const snap = await getDocs(collection(db, pathForGetDocs));
+    snap.forEach((docSnap) => {
+      const data = docSnap.data() as PEAUser;
+      if (data?.email) {
+        const normEmail = data.email.toLowerCase().trim();
+        merged[normEmail] = {
+          ...merged[normEmail],
+          ...data,
+          email: normEmail
+        };
+      }
+    });
+    try {
+      localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(merged));
+    } catch (e) {}
+  } catch (error: any) {
+    if (error?.code === 'permission-denied' || error?.message?.includes('Missing or insufficient permissions')) {
+      handleFirestoreError(error, OperationType.GET, pathForGetDocs);
+    }
+    console.warn('Firestore registered_users sync notice:', error?.message || error);
+  }
+  return merged;
 }
 
 export function saveUserAccount(user: PEAUser): void {
@@ -122,14 +202,25 @@ export function saveUserAccount(user: PEAUser): void {
     status: user.status || 'pending'
   };
   current[normalizedEmail] = updatedUser;
-  localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(current));
+  try {
+    localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(current));
+  } catch (e) {}
 
   // Sync to Firestore asynchronously
+  const safeDocId = normalizedEmail.replace(/[^a-z0-9]/gi, '_');
+  const pathForWrite = `registered_users/${safeDocId}`;
   try {
-    const safeDocId = normalizedEmail.replace(/[^a-z0-9]/gi, '_');
     const docRef = doc(db, 'registered_users', safeDocId);
     setDoc(docRef, updatedUser, { merge: true }).catch(err => {
-      console.warn('Firestore user save warning:', err);
+      if (err?.code === 'permission-denied' || err?.message?.includes('Missing or insufficient permissions')) {
+        try {
+          handleFirestoreError(err, OperationType.WRITE, pathForWrite);
+        } catch (structuredErr) {
+          console.error(structuredErr);
+        }
+      } else {
+        console.warn('Firestore user save warning:', err);
+      }
     });
   } catch (err) {
     console.warn('Firestore user save catch:', err);
@@ -168,8 +259,74 @@ export function isAdminAccount(email: string): boolean {
   if (!email) return false;
   const normalized = email.toLowerCase().trim();
   const found = findUserByEmail(normalized);
-  if (found && found.role === 'Admin') return true;
-  // Fallback check for known admin accounts
+  if (found && found.role === 'Admin' && found.status !== 'rejected') return true;
   if (normalized === 'pichet.kea@gmail.com' || normalized === 'admin@pea.co.th') return true;
   return false;
 }
+
+// ==========================================
+// ACTIVE SESSION METADATA & OPTION 1 VIEW-ONLY / UPLOAD PERMISSION HELPERS
+// ==========================================
+export function setActiveUserSessionMeta(user: PEAUser | null): void {
+  try {
+    if (!user) {
+      sessionStorage.removeItem(ACTIVE_SESSION_META_KEY);
+      return;
+    }
+    sessionStorage.setItem(
+      ACTIVE_SESSION_META_KEY,
+      JSON.stringify({
+        email: (user.email || '').toLowerCase().trim(),
+        role: user.role,
+        status: user.status || (isAdminAccount(user.email) ? 'active' : findUserByEmail(user.email)?.status || 'pending')
+      })
+    );
+  } catch (e) {}
+}
+
+export function clearActiveUserSessionMeta(): void {
+  try {
+    sessionStorage.removeItem(ACTIVE_SESSION_META_KEY);
+  } catch (e) {}
+}
+
+export function getActiveUserSessionMeta(): { email: string; role: string; status: string } | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_SESSION_META_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function canUserUploadOrEdit(user: PEAUser | null | undefined): boolean {
+  if (!user || !user.email) return false;
+  const email = user.email.toLowerCase().trim();
+  if (!email || email === 'guest.operator@pea.co.th' || email.startsWith('guest.')) return false;
+  if (user.role === 'User') return false;
+  if (isAdminAccount(email)) return true;
+
+  const registered = findUserByEmail(email);
+  const effectiveStatus = user.status || registered?.status;
+  return effectiveStatus === 'active';
+}
+
+export async function getAuthHeadersForApi(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const meta = getActiveUserSessionMeta();
+  const email = (auth.currentUser?.email || meta?.email || '').toLowerCase().trim();
+  if (email) {
+    headers['x-pea-user-email'] = email;
+  }
+  try {
+    if (auth.currentUser) {
+      const idToken = await auth.currentUser.getIdToken();
+      if (idToken) {
+        headers['x-firebase-id-token'] = idToken;
+      }
+    }
+  } catch (e) {}
+  return headers;
+}
+
