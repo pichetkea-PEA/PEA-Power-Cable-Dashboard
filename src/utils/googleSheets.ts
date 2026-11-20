@@ -4,7 +4,7 @@ import { getCentralAdminDatabaseConfig, getAllSectorSpreadsheets } from './fires
 import { getBangkokTimestamp } from './dateUtils';
 import { getAuthHeadersForApi } from './userManagement';
 
-// Helper to resolve an effective Google access token from parameters, localStorage, or central store
+// Helper to resolve an effective Google access token from parameters, session/localStorage
 export function getEffectiveGoogleToken(token?: string | null): string | null {
   if (token && typeof token === 'string' && token.trim().length > 0) {
     try {
@@ -13,6 +13,8 @@ export function getEffectiveGoogleToken(token?: string | null): string | null {
     return token.trim();
   }
   try {
+    const sessToken = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('google_access_token') : null;
+    if (sessToken && sessToken.trim().length > 0) return sessToken.trim();
     const saved = localStorage.getItem('pea_google_token');
     if (saved && saved.trim().length > 0) return saved.trim();
   } catch (e) {}
@@ -23,8 +25,16 @@ function clearExpiredGoogleTokenIf401(status: number, usedToken: string | null):
   if (status !== 401 || !usedToken) return false;
   try {
     const saved = localStorage.getItem('pea_google_token');
-    if (saved && saved.trim() === usedToken.trim()) {
+    if (!saved || saved.trim() === usedToken.trim()) {
       localStorage.removeItem('pea_google_token');
+      localStorage.removeItem('pea_google_token_email');
+    }
+    const sessToken = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('google_access_token') : null;
+    if (!sessToken || sessToken.trim() === usedToken.trim()) {
+      sessionStorage.removeItem('google_access_token');
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pea-google-token-expired'));
     }
   } catch (e) {}
   return true;
@@ -83,6 +93,102 @@ export async function makeFileReadableByAnyone(accessToken: string, fileId: stri
   }
 }
 
+export const VERIFIED_MANAGER_EMAILS = [
+  'g51056018@gmail.com',
+  'natthakorn@rockchatn.com',
+  'moskmitl50@gmail.com'
+];
+
+export async function ensureManagersHaveEditorAccess(
+  accessToken: string,
+  extraManagerEmails: string[] = []
+): Promise<{
+  totalFiles: number;
+  sharedCount: number;
+  alreadySharedCount: number;
+  externalForbiddenCount: number;
+}> {
+  const result = {
+    totalFiles: 0,
+    sharedCount: 0,
+    alreadySharedCount: 0,
+    externalForbiddenCount: 0
+  };
+  if (!accessToken) return result;
+
+  const targetEmails = Array.from(
+    new Set(
+      [...VERIFIED_MANAGER_EMAILS, ...extraManagerEmails]
+        .map(e => String(e || '').toLowerCase().trim())
+        .filter(e => e.includes('@'))
+    )
+  );
+  if (targetEmails.length === 0) return result;
+
+  try {
+    const masterMap = await getMasterSpreadsheetsMap(accessToken, false);
+    const fileIds = Array.from(
+      new Set([
+        ...Object.values(masterMap.spreadsheets || {}),
+        ...Object.values(masterMap.folders || {})
+      ].map(id => normalizeSpreadsheetId(id)).filter(Boolean))
+    );
+    result.totalFiles = fileIds.length;
+
+    for (const fileId of fileIds) {
+      try {
+        const listRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=permissions(id,type,role,emailAddress)&supportsAllDrives=true`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!listRes.ok) {
+          if (listRes.status === 403 || listRes.status === 404) {
+            result.externalForbiddenCount++;
+          }
+          continue;
+        }
+        const listData = await listRes.json().catch(() => ({}));
+        const perms: any[] = listData?.permissions || [];
+
+        for (const mgrEmail of targetEmails) {
+          const existing = perms.find(
+            p => p.type === 'user' && String(p.emailAddress || '').toLowerCase().trim() === mgrEmail
+          );
+          if (existing && (existing.role === 'writer' || existing.role === 'owner')) {
+            result.alreadySharedCount++;
+            continue;
+          }
+          const shareRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                role: 'writer',
+                type: 'user',
+                emailAddress: mgrEmail
+              })
+            }
+          ).catch(() => null);
+          if (shareRes && shareRes.ok) {
+            result.sharedCount++;
+          } else if (shareRes && (shareRes.status === 403 || shareRes.status === 404)) {
+            result.externalForbiddenCount++;
+          }
+        }
+      } catch (fileErr) {
+        // Ignore individual file permission checks
+      }
+    }
+  } catch (err) {
+    console.warn('[Manager Editor Share Notice]:', err);
+  }
+  return result;
+}
+
 // Master Spreadsheet mapping retriever combining Firestore Central DB config and Drive discovery
 export async function getMasterSpreadsheetsMap(
   accessToken?: string | null,
@@ -98,10 +204,15 @@ export async function getMasterSpreadsheetsMap(
   try {
     const config = await getCentralAdminDatabaseConfig();
     if (config?.spreadsheetsByArea) {
-      Object.assign(spreadsheets, config.spreadsheetsByArea);
+      for (const [area, sId] of Object.entries(config.spreadsheetsByArea)) {
+        const cleanId = normalizeSpreadsheetId(sId);
+        if (cleanId) spreadsheets[area.toUpperCase().trim()] = cleanId;
+      }
     }
     if (config?.foldersByArea) {
-      Object.assign(folders, config.foldersByArea);
+      for (const [area, fId] of Object.entries(config.foldersByArea)) {
+        if (fId) folders[area.toUpperCase().trim()] = String(fId).trim();
+      }
     }
   } catch (e) {
     console.warn("Error getting central config for spreadsheets map:", e);
@@ -111,8 +222,9 @@ export async function getMasterSpreadsheetsMap(
   try {
     const sectorSheets = await getAllSectorSpreadsheets();
     for (const [area, item] of Object.entries(sectorSheets)) {
-      if (item.spreadsheetId) spreadsheets[area.toUpperCase()] = item.spreadsheetId;
-      if (item.folderId) folders[area.toUpperCase()] = item.folderId;
+      const cleanId = normalizeSpreadsheetId(item.spreadsheetId);
+      if (cleanId) spreadsheets[area.toUpperCase().trim()] = cleanId;
+      if (item.folderId) folders[area.toUpperCase().trim()] = String(item.folderId).trim();
     }
   } catch (e) {
     console.warn("Error getting sector spreadsheets from Firestore:", e);
@@ -577,8 +689,26 @@ export async function createSheetsTemplate(accessToken: string, interestArea?: s
   const sheetData = await sheetRes.json();
   const spreadsheetId = sheetData.spreadsheetId;
 
-  // Set file permission to public reader so all roles can read Google Sheet data
+  // Set file permission to public reader so all roles can read Google Sheet data,
+  // and grant verified Manager accounts Editor access so they can register/update across all regions
   await makeFileReadableByAnyone(accessToken, spreadsheetId);
+  for (const mgrEmail of VERIFIED_MANAGER_EMAILS) {
+    await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          role: 'writer',
+          type: 'user',
+          emailAddress: mgrEmail
+        })
+      }
+    ).catch(() => {});
+  }
 
   // 3. Write Headers to each sheet
   const headers = {
@@ -1445,6 +1575,8 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
         if (match) {
           allowedArea = match[1].trim().toUpperCase();
         }
+      } else {
+        clearExpiredGoogleTokenIf401(metaRes.status, accessToken);
       }
     } catch (err) {
       console.warn("Failed to fetch spreadsheet title metadata:", err);
@@ -1494,6 +1626,8 @@ export async function fetchSheetsData(accessToken: string | null, spreadsheetId:
         engRows = rangeIndexMap.eng !== undefined ? (valueRanges[rangeIndexMap.eng]?.values || []) : [];
         visRows = rangeIndexMap.vis !== undefined ? (valueRanges[rangeIndexMap.vis]?.values || []) : [];
         pdRows = rangeIndexMap.pd !== undefined ? (valueRanges[rangeIndexMap.pd]?.values || []) : [];
+      } else {
+        clearExpiredGoogleTokenIf401(res.status, accessToken);
       }
     } catch (apiErr) {
       console.warn("Google Sheets API batchGet error, falling back to proxy:", apiErr);
@@ -2123,6 +2257,7 @@ export async function executeUniversalSheetAppend(
   }
   const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
   let token = getEffectiveGoogleToken(accessToken);
+  let directErrorDetail: string | null = null;
 
   // 1. If client token is available, attempt direct Google Sheets API write
   if (token) {
@@ -2141,13 +2276,19 @@ export async function executeUniversalSheetAppend(
         })
       });
       if (res.ok) return;
+      const directErrJson = await res.json().catch(() => ({}));
+      const googleMsg = directErrJson?.error?.message || res.statusText || 'Rejected by Google Sheets API';
+      directErrorDetail = `Direct Google API HTTP ${res.status} (${googleMsg})`;
       if (clearExpiredGoogleTokenIf401(res.status, token)) {
         token = null;
       }
-      console.warn(`Direct Google Sheets append failed (${res.status}), trying server proxy fallback...`);
-    } catch (e) {
+      console.warn(`Direct Google Sheets append failed (${res.status}): ${googleMsg}. Trying server proxy fallback...`);
+    } catch (e: any) {
+      directErrorDetail = `Direct Google API network error (${e?.message || 'Fetch failed'})`;
       console.warn('Direct Google Sheets append error, trying server proxy fallback:', e);
     }
+  } else {
+    directErrorDetail = 'No active Google OAuth access token in current browser session';
   }
 
   // 2. Fallback to Express backend proxy (server falls back to Admin delegated token / Service Account on 401/403)
@@ -2167,15 +2308,25 @@ export async function executeUniversalSheetAppend(
         userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
-    const proxyData = await proxyRes.json().catch(() => ({}));
+    const rawText = await proxyRes.text().catch(() => '');
+    let proxyData: any = {};
+    try {
+      proxyData = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      proxyData = {};
+    }
     if (proxyRes.ok && proxyData.success) {
       return;
     }
+    const cleanTextSnippet = !proxyData.error && rawText
+      ? rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180)
+      : '';
     const defaultErr =
       proxyRes.status === 404 && !proxyData.error
-        ? `Backend API endpoint /api/sheets/append-row returned HTTP 404 (server instance needs restart or app republish, or target spreadsheet "${cleanSpreadsheetId}" was not found).`
-        : `Server proxy returned HTTP ${proxyRes.status} while appending to Google Sheets.`;
-    throw new Error(proxyData.error || defaultErr);
+        ? `Backend API endpoint /api/sheets/append-row returned HTTP 404 (app server needs republish/restart or spreadsheet "${cleanSpreadsheetId}" not found).`
+        : `Server proxy returned HTTP ${proxyRes.status} while appending to Google Sheets.${cleanTextSnippet ? ` (${cleanTextSnippet})` : ''}`;
+    const baseMsg = proxyData.error || defaultErr;
+    throw new Error(directErrorDetail ? `${baseMsg} [${directErrorDetail}]` : baseMsg);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Append Error]:`, proxyErr);
     throw new Error(`Google Sheets append failed for "${sheetName}": ${proxyErr.message || 'Authorization error'}`);
@@ -2197,6 +2348,7 @@ export async function executeUniversalSheetUpdate(
   const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
   let token = getEffectiveGoogleToken(accessToken);
   const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
+  let directErrorDetail: string | null = null;
 
   // 1. Direct Google Sheets API if token available
   if (token) {
@@ -2214,13 +2366,19 @@ export async function executeUniversalSheetUpdate(
         })
       });
       if (res.ok) return;
+      const directErrJson = await res.json().catch(() => ({}));
+      const googleMsg = directErrJson?.error?.message || res.statusText || 'Rejected by Google Sheets API';
+      directErrorDetail = `Direct Google API HTTP ${res.status} (${googleMsg})`;
       if (clearExpiredGoogleTokenIf401(res.status, token)) {
         token = null;
       }
-      console.warn(`Direct Google Sheets update failed (${res.status}), trying server proxy fallback...`);
-    } catch (e) {
+      console.warn(`Direct Google Sheets update failed (${res.status}): ${googleMsg}. Trying server proxy fallback...`);
+    } catch (e: any) {
+      directErrorDetail = `Direct Google API network error (${e?.message || 'Fetch failed'})`;
       console.warn('Direct Google Sheets update error, trying server proxy fallback:', e);
     }
+  } else {
+    directErrorDetail = 'No active Google OAuth access token in current browser session';
   }
 
   // 2. Server proxy fallback
@@ -2240,15 +2398,25 @@ export async function executeUniversalSheetUpdate(
         userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
-    const proxyData = await proxyRes.json().catch(() => ({}));
+    const rawText = await proxyRes.text().catch(() => '');
+    let proxyData: any = {};
+    try {
+      proxyData = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      proxyData = {};
+    }
     if (proxyRes.ok && proxyData.success) {
       return;
     }
+    const cleanTextSnippet = !proxyData.error && rawText
+      ? rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180)
+      : '';
     const defaultErr =
       proxyRes.status === 404 && !proxyData.error
-        ? `Backend API endpoint /api/sheets/update-row returned HTTP 404 (server instance needs restart or app republish, or target spreadsheet "${cleanSpreadsheetId}" was not found).`
-        : `Server proxy returned HTTP ${proxyRes.status} while updating Google Sheets.`;
-    throw new Error(proxyData.error || defaultErr);
+        ? `Backend API endpoint /api/sheets/update-row returned HTTP 404 (app server needs republish/restart or spreadsheet "${cleanSpreadsheetId}" not found).`
+        : `Server proxy returned HTTP ${proxyRes.status} while updating Google Sheets.${cleanTextSnippet ? ` (${cleanTextSnippet})` : ''}`;
+    const baseMsg = proxyData.error || defaultErr;
+    throw new Error(directErrorDetail ? `${baseMsg} [${directErrorDetail}]` : baseMsg);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Update Error]:`, proxyErr);
     throw new Error(`Google Sheets update failed for "${sheetName}" row ${rowIndex}: ${proxyErr.message || 'Authorization error'}`);
@@ -2953,7 +3121,8 @@ export async function batchUpdateSheetRows(
     values: (u.values || []).map(sanitizeRowForSheets)
   }));
   let token = getEffectiveGoogleToken(accessToken);
-  
+  const cleanSpreadsheetId = normalizeSpreadsheetId(spreadsheetId);
+
   // 1. Direct API if token exists
   if (token) {
     try {
@@ -2966,7 +3135,7 @@ export async function batchUpdateSheetRows(
         }))
       };
 
-      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cleanSpreadsheetId)}/values:batchUpdate`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -2976,10 +3145,11 @@ export async function batchUpdateSheetRows(
       });
 
       if (res.ok) return;
+      const errJson = await res.json().catch(() => ({}));
       if (clearExpiredGoogleTokenIf401(res.status, token)) {
         token = null;
       }
-      console.warn(`Direct batch update returned HTTP ${res.status}, falling back to server proxy / per-row update...`);
+      console.warn(`Direct batch update returned HTTP ${res.status} (${errJson?.error?.message || ''}), falling back to server proxy / per-row update...`);
     } catch (e) {
       console.warn('Direct batch update network error, falling back to proxy:', e);
     }
@@ -3001,7 +3171,13 @@ export async function batchUpdateSheetRows(
         userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
-    const proxyData = await proxyRes.json().catch(() => ({}));
+    const rawText = await proxyRes.text().catch(() => '');
+    let proxyData: any = {};
+    try {
+      proxyData = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      proxyData = {};
+    }
     if (proxyRes.ok && proxyData.success) {
       return;
     }

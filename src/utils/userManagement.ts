@@ -1,6 +1,6 @@
 import { PEAUser } from '../types';
 import { auth, db } from './firebaseAuth';
-import { collection, doc, getDocs, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 
 enum OperationType {
   CREATE = 'create',
@@ -49,6 +49,8 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
+export const SOLE_ADMIN_EMAIL = 'pichet.kea@gmail.com';
+
 export const PRESEEDED_USERS: Record<string, PEAUser> = {
   'g51056018@gmail.com': {
     email: 'g51056018@gmail.com',
@@ -78,14 +80,6 @@ export const PRESEEDED_USERS: Record<string, PEAUser> = {
     email: 'pichet.kea@gmail.com',
     name: 'Pichet Kea (Admin)',
     employeeId: 'PEA-10001',
-    status: 'active',
-    role: 'Admin',
-    interestArea: 'ALL'
-  },
-  'admin@pea.co.th': {
-    email: 'admin@pea.co.th',
-    name: 'PEA Executive Admin',
-    employeeId: 'PEA-10002',
     status: 'active',
     role: 'Admin',
     interestArea: 'ALL'
@@ -147,6 +141,11 @@ const ACTIVE_SESSION_META_KEY = 'pea_active_user_session_meta_v1';
 
 function mergeProtectedPreseededUser(base: PEAUser | undefined, incoming: Partial<PEAUser>, normEmail: string): PEAUser {
   const preseeded = PRESEEDED_USERS[normEmail];
+  const incomingSafeRole =
+    normEmail !== SOLE_ADMIN_EMAIL && incoming.role === 'Admin'
+      ? 'Manager'
+      : incoming.role;
+
   if (preseeded && preseeded.status === 'active') {
     const isExplicitlyRejected = incoming.status === 'rejected';
     return {
@@ -154,13 +153,14 @@ function mergeProtectedPreseededUser(base: PEAUser | undefined, incoming: Partia
       ...incoming,
       email: normEmail,
       status: isExplicitlyRejected ? 'rejected' : 'active',
-      role: (incoming.role && incoming.role !== 'User') ? incoming.role : preseeded.role,
+      role: (incomingSafeRole && incomingSafeRole !== 'User') ? incomingSafeRole : preseeded.role,
       interestArea: incoming.interestArea || preseeded.interestArea
     };
   }
   return {
     ...(base || {}),
     ...(incoming as PEAUser),
+    role: (incomingSafeRole || base?.role || 'User') as PEAUser['role'],
     email: normEmail
   };
 }
@@ -178,6 +178,7 @@ export function getRegisteredUsers(): Record<string, PEAUser> {
         for (const [rawEmail, rawData] of Object.entries(parsed)) {
           if (!rawData || typeof rawData !== 'object') continue;
           const normEmail = rawEmail.toLowerCase().trim();
+          if (normEmail === 'admin@pea.co.th') continue;
           users[normEmail] = mergeProtectedPreseededUser(users[normEmail], rawData as Partial<PEAUser>, normEmail);
         }
       }
@@ -189,27 +190,62 @@ export function getRegisteredUsers(): Record<string, PEAUser> {
 }
 
 // Synchronize registered_users collection from Firestore so approvals/rejections propagate across all browsers & devices
-export async function syncRegisteredUsersFromFirestore(): Promise<Record<string, PEAUser>> {
+export async function syncRegisteredUsersFromFirestore(targetEmail?: string): Promise<Record<string, PEAUser>> {
   const merged: Record<string, PEAUser> = getRegisteredUsers();
   const pathForGetDocs = 'registered_users';
+  let collectionLoaded = false;
+
   try {
     const snap = await getDocs(collection(db, pathForGetDocs));
     snap.forEach((docSnap) => {
       const data = docSnap.data() as PEAUser;
       if (data?.email) {
         const normEmail = data.email.toLowerCase().trim();
+        if (normEmail === 'admin@pea.co.th') return;
         merged[normEmail] = mergeProtectedPreseededUser(merged[normEmail], data, normEmail);
       }
     });
-    try {
-      localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(merged));
-    } catch (e) {}
+    collectionLoaded = true;
   } catch (error: any) {
-    if (error?.code === 'permission-denied' || error?.message?.includes('Missing or insufficient permissions')) {
-      handleFirestoreError(error, OperationType.GET, pathForGetDocs);
-    }
-    console.warn('Firestore registered_users sync notice:', error?.message || error);
+    // Firestore rules may allow single-doc GET while denying collection LIST for non-admin sessions;
+    // gracefully fall back to individual document reads for known/active user accounts.
+    console.warn('Firestore registered_users collection read notice (falling back to doc lookup):', error?.message || error);
   }
+
+  if (!collectionLoaded) {
+    const candidateEmails = new Set<string>([
+      ...Object.keys(PRESEEDED_USERS),
+      ...Object.keys(merged)
+    ]);
+    if (targetEmail && targetEmail.trim()) {
+      candidateEmails.add(targetEmail.toLowerCase().trim());
+    }
+    if (auth.currentUser?.email) {
+      candidateEmails.add(auth.currentUser.email.toLowerCase().trim());
+    }
+
+    await Promise.all(
+      Array.from(candidateEmails).map(async (candidateEmail) => {
+        if (!candidateEmail || candidateEmail.startsWith('guest.')) return;
+        try {
+          const safeDocId = candidateEmail.replace(/[^a-z0-9]/gi, '_');
+          const docSnap = await getDoc(doc(db, 'registered_users', safeDocId));
+          if (docSnap.exists()) {
+            const data = docSnap.data() as PEAUser;
+            const normEmail = (data?.email || candidateEmail).toLowerCase().trim();
+            merged[normEmail] = mergeProtectedPreseededUser(merged[normEmail], data, normEmail);
+          }
+        } catch (docErr) {
+          // Ignore individual read error so other accounts/preseeded cache still hydrate cleanly
+        }
+      })
+    );
+  }
+
+  try {
+    localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(merged));
+  } catch (e) {}
+
   return merged;
 }
 
@@ -279,11 +315,7 @@ export function getPendingUsers(): PEAUser[] {
 
 export function isAdminAccount(email: string): boolean {
   if (!email) return false;
-  const normalized = email.toLowerCase().trim();
-  const found = findUserByEmail(normalized);
-  if (found && found.role === 'Admin' && found.status !== 'rejected') return true;
-  if (normalized === 'pichet.kea@gmail.com' || normalized === 'admin@pea.co.th') return true;
-  return false;
+  return email.toLowerCase().trim() === SOLE_ADMIN_EMAIL;
 }
 
 // ==========================================
@@ -348,14 +380,14 @@ export function canUserRegisterAssets(user: PEAUser | null | undefined): boolean
   return effectiveRole === 'Admin' || effectiveRole === 'Manager';
 }
 
-// Submit Log Panel authorization: Active Admin and Active Local Operator ONLY (Managers are restricted here)
+// Submit Log Panel authorization: Active Admin, Active Manager (Natthakorn, 497377, moskmitl50@gmail.com), and Active Local Operator
 export function canUserAccessSubmitLog(user: PEAUser | null | undefined): boolean {
   if (!canUserUploadOrEdit(user)) return false;
   const email = (user?.email || '').toLowerCase().trim();
-  if (isAdminAccount(email) && user?.role !== 'Manager') return true;
+  if (isAdminAccount(email)) return true;
   const registered = findUserByEmail(email) || PRESEEDED_USERS[email];
   const effectiveRole = user?.role || registered?.role;
-  return effectiveRole === 'Admin' || effectiveRole === 'Local Operator';
+  return effectiveRole === 'Admin' || effectiveRole === 'Manager' || effectiveRole === 'Local Operator';
 }
 
 export async function getAuthHeadersForApi(): Promise<Record<string, string>> {

@@ -836,7 +836,7 @@ export default function AssetRecord({
     setSyncStatus('Fetching real-time asset registry...');
     try {
       const activeToken = getEffectiveGoogleToken(googleToken);
-      if (activeToken && spreadsheetId) {
+      if (spreadsheetId) {
         const data = await fetchSheetsData(activeToken, spreadsheetId);
         
         // Calculate dynamic health metrics for each fetched asset
@@ -1190,8 +1190,8 @@ export default function AssetRecord({
 
   // Helper to resolve the correct spreadsheetId and folderId based on an asset's area
   const resolveAssetSpreadsheet = async (asset: CableAsset): Promise<{ spreadsheetId: string | null; folderId: string | null }> => {
-    let targetSpreadsheetId = asset.spreadsheetId || spreadsheetId;
-    let targetFolderId = folderId;
+    let targetSpreadsheetId: string | null = asset.spreadsheetId || null;
+    let targetFolderId: string | null = null;
     const activeToken = getEffectiveGoogleToken(googleToken);
 
     let assetArea = getAssetArea(asset);
@@ -1200,25 +1200,39 @@ export default function AssetRecord({
     }
 
     try {
-      // Fetch sector-specific spreadsheet from Firestore
+      // 1. Fetch sector-specific spreadsheet & folder from Firestore / Central Admin Config first
       const sectorData = await getSectorSpreadsheet(assetArea);
       if (sectorData) {
-        if (!targetSpreadsheetId) targetSpreadsheetId = sectorData.spreadsheetId;
-        if (sectorData.folderId) targetFolderId = sectorData.folderId;
+        if (!targetSpreadsheetId && sectorData.spreadsheetId) {
+          targetSpreadsheetId = sectorData.spreadsheetId;
+        }
+        if (sectorData.folderId) {
+          targetFolderId = sectorData.folderId;
+        }
       }
     } catch (err: any) {
       console.error(`Failed to resolve spreadsheet for area ${assetArea}:`, err);
     }
 
-    if (activeToken && !targetFolderId) {
+    if (!targetSpreadsheetId || !targetFolderId) {
       try {
-        const map = await getMasterSpreadsheetsMap(activeToken);
-        if (map.folders && map.folders[assetArea]) {
+        const map = await getMasterSpreadsheetsMap(activeToken, false);
+        if (!targetSpreadsheetId && map.spreadsheets && map.spreadsheets[assetArea]) {
+          targetSpreadsheetId = map.spreadsheets[assetArea];
+        }
+        if (!targetFolderId && map.folders && map.folders[assetArea]) {
           targetFolderId = map.folders[assetArea];
         }
       } catch (e) {
-        console.warn("Could not retrieve master folders map:", e);
+        console.warn("Could not retrieve master spreadsheets/folders map:", e);
       }
+    }
+
+    if (!targetSpreadsheetId) {
+      targetSpreadsheetId = spreadsheetId || null;
+    }
+    if (!targetFolderId) {
+      targetFolderId = folderId || null;
     }
 
     return { spreadsheetId: targetSpreadsheetId, folderId: targetFolderId };

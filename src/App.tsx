@@ -15,7 +15,7 @@ import {
   clearAllNotifications
 } from "./utils/firestore";
 import { collection, doc, getDocFromServer, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
-import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1, getEffectiveGoogleToken } from './utils/googleSheets';
+import { fetchSheetsData, autoDiscoverAndSync, createSheetsTemplate, migrateAll12GoogleSheetsEquipmentIds, scanRegionalSheetsAssetCounts, syncAll12SheetsTab4FromTab1, getEffectiveGoogleToken, ensureManagersHaveEditorAccess } from './utils/googleSheets';
 import AssetLoadingModal, { RegionalSheetStatus } from './components/AssetLoadingModal';
 import { clearAll12SheetsPdDiagnosticData } from './utils/googleSheets';
 import { getBangkokTimestamp } from './utils/dateUtils';
@@ -437,7 +437,7 @@ export default function App() {
     area: string,
     token?: string | null
   ) => {
-    await syncRegisteredUsersFromFirestore().catch(() => {});
+    await syncRegisteredUsersFromFirestore(email).catch(() => {});
     const registered = findUserByEmail(email);
 
     if (registered?.status === 'pending' && !isAdminAccount(email)) {
@@ -486,6 +486,13 @@ export default function App() {
 
     if (token) {
       setGoogleToken(token);
+    } else {
+      setGoogleToken(null);
+      try {
+        localStorage.removeItem('pea_google_token');
+        localStorage.removeItem('pea_google_token_email');
+        sessionStorage.removeItem('google_access_token');
+      } catch (e) {}
     }
 
     setActiveUserSessionMeta(newUser);
@@ -502,6 +509,12 @@ export default function App() {
           })
         )
         .catch(() => {});
+      try {
+        if (!sessionStorage.getItem('pea_managers_shared_v1')) {
+          sessionStorage.setItem('pea_managers_shared_v1', '1');
+          ensureManagersHaveEditorAccess(token).catch(() => {});
+        }
+      } catch (e) {}
     }
 
     if (effectiveRole === 'Admin' || effectiveRole === 'Manager') {
@@ -556,10 +569,15 @@ export default function App() {
       }
     });
 
-    initAuth(
+    const handleTokenExpired = () => {
+      setGoogleToken(null);
+    };
+    window.addEventListener('pea-google-token-expired', handleTokenExpired);
+
+    const unsubscribeAuth = initAuth(
       async (firebaseUser, token) => {
         const email = firebaseUser.email || 'operator@pea.co.th';
-        await syncRegisteredUsersFromFirestore().catch(() => {});
+        await syncRegisteredUsersFromFirestore(email).catch(() => {});
         const registered = findUserByEmail(email);
 
         if (registered?.status === 'pending' && !isAdminAccount(email)) {
@@ -597,7 +615,7 @@ export default function App() {
 
         const activeArea = (activeRole === 'Admin' || activeRole === 'Manager') ? 'ALL' : (registered ? registered.interestArea : currentSelectedArea);
 
-        setGoogleToken(token);
+        setGoogleToken(token || null);
 
         const sessionUser: PEAUser = {
           uid: firebaseUser.uid,
@@ -620,6 +638,12 @@ export default function App() {
               })
             )
             .catch(() => {});
+          try {
+            if (!sessionStorage.getItem('pea_managers_shared_v1')) {
+              sessionStorage.setItem('pea_managers_shared_v1', '1');
+              ensureManagersHaveEditorAccess(token).catch(() => {});
+            }
+          } catch (e) {}
         }
 
         if (activeRole === 'Admin' || activeRole === 'Manager') {
@@ -631,9 +655,7 @@ export default function App() {
         setNeedsAuth(false);
         setShowGameLoading(false);
 
-        if (token) {
-          await handleAutoDiscovery(token, email, activeArea, activeRole);
-        }
+        await syncCentralDatabase(token || null, email, activeRole, activeArea);
       },
       () => {
         setNeedsAuth(true);
@@ -650,6 +672,11 @@ export default function App() {
         }
       } catch (e) {}
     }
+
+    return () => {
+      window.removeEventListener('pea-google-token-expired', handleTokenExpired);
+      if (typeof unsubscribeAuth === 'function') unsubscribeAuth();
+    };
   }, []);
 
   // Counter to ensure newer sheet fetch sessions supersede older ones
@@ -1109,15 +1136,12 @@ export default function App() {
 
   // Reload an individual offline regional Google Sheet without re-fetching all 12 sheets
   const handleReloadSingleSheet = async (sheetId: string, area: string) => {
-    if (!googleToken) {
-      setErrorMessage('Google OAuth token expired or unavailable. Please sign in again.');
-      return;
-    }
+    const activeToken = getEffectiveGoogleToken(googleToken);
 
     setRegionalSheetStatuses(prev => prev.map(s => s.spreadsheetId === sheetId ? { ...s, status: 'loading', errorMessage: undefined } : s));
 
     try {
-      const sectorData = await fetchSheetsData(googleToken, sheetId);
+      const sectorData = await fetchSheetsData(activeToken, sheetId);
       if (sectorData && sectorData.length > 0) {
         // Merge reloaded assets into the central asset state
         setAssets(prevAssets => {
@@ -1292,9 +1316,9 @@ export default function App() {
         const accessToken = result.accessToken;
 
         // Check if user is registered in database or recognized as Admin
-        await syncRegisteredUsersFromFirestore().catch(() => {});
+        await syncRegisteredUsersFromFirestore(email).catch(() => {});
         const registered = findUserByEmail(email);
-        const isUserAdmin = isAdminAccount(email) || registered?.role === 'Admin';
+        const isUserAdmin = isAdminAccount(email);
 
         if (isUserAdmin) {
           // Open 3-role popup modal for Admin account
@@ -1369,10 +1393,10 @@ export default function App() {
 
   // Skip direct login to test dashboard instantly using mock database (Guest defaults to View-Only)
   const handleGuestLogin = async (customEmail?: string) => {
-    await syncRegisteredUsersFromFirestore().catch(() => {});
     const emailToUse = customEmail || (selectedRole === 'Manager' ? 'moskmitl50@gmail.com' : 'guest.operator@pea.co.th');
+    await syncRegisteredUsersFromFirestore(emailToUse).catch(() => {});
     const registered = findUserByEmail(emailToUse);
-    const isUserAdmin = isAdminAccount(emailToUse) || registered?.role === 'Admin' || (customEmail ? false : selectedRole === 'Admin');
+    const isUserAdmin = isAdminAccount(emailToUse) || (customEmail ? false : selectedRole === 'Admin');
 
     if (isUserAdmin) {
       setPendingAdminUser({
@@ -2042,7 +2066,7 @@ export default function App() {
 
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] font-bold text-gray-500 uppercase">Requested System Role</label>
-                  <div className="grid grid-cols-3 gap-1.5 bg-gray-100 p-1 rounded-xl">
+                  <div className="grid grid-cols-2 gap-1.5 bg-gray-100 p-1 rounded-xl">
                     <button
                       type="button"
                       onClick={() => { setSignUpRole('Local Operator'); if (signUpArea === 'ALL') setSignUpArea('N1'); }}
@@ -2060,15 +2084,6 @@ export default function App() {
                       }`}
                     >
                       Manager
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setSignUpRole('Admin'); setSignUpArea('ALL'); }}
-                      className={`py-1.5 px-1 text-[10px] font-bold rounded-lg transition-all cursor-pointer text-center ${
-                        signUpRole === 'Admin' ? 'bg-purple-900 text-white' : 'text-gray-600'
-                      }`}
-                    >
-                      Admin
                     </button>
                   </div>
                 </div>
@@ -2531,9 +2546,9 @@ export default function App() {
                   </div>
                   <h2 className="text-lg font-extrabold text-gray-900">Submit Log Panel Restricted</h2>
                   <p className="text-xs text-gray-600 leading-relaxed">
-                    Field log entry in the <strong>Submit Log</strong> panel is reserved for approved Local Operators and System Admins.{' '}
+                    Field log entry in the <strong>Submit Log</strong> panel is reserved for approved Local Operators, Managers, and System Admins.{' '}
                     {canUserRegisterAssets(user)
-                      ? 'As an authorized Manager, please use the Asset Registration panel to upload CSVs and register new assets.'
+                      ? 'Please contact an Admin if your session access needs verification.'
                       : 'Your current account has View-Only access.'}
                   </p>
                   {canUserRegisterAssets(user) && (

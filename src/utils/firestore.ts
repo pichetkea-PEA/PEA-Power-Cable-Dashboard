@@ -67,15 +67,15 @@ export async function clearCentralAssetsCache(): Promise<void> {
 
 export async function getSectorSpreadsheet(interestArea: string): Promise<{ spreadsheetId: string, folderId: string } | null> {
   if (!interestArea) return null;
-  // 1. Check local cache first
+  const upperArea = interestArea.toUpperCase().trim();
+  // 1. Check local/central cache first
   const allSectors = await getAllSectorSpreadsheets();
-  if (allSectors && allSectors[interestArea]) {
-    return allSectors[interestArea];
+  if (allSectors && allSectors[upperArea]) {
+    return allSectors[upperArea];
   }
 
-  const path = `sector_spreadsheets/${interestArea}`;
   try {
-    const docRef = doc(db, 'sector_spreadsheets', interestArea);
+    const docRef = doc(db, 'sector_spreadsheets', upperArea);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
       const data = docSnap.data();
@@ -83,26 +83,40 @@ export async function getSectorSpreadsheet(interestArea: string): Promise<{ spre
         spreadsheetId: data.spreadsheetId,
         folderId: data.folderId || ''
       };
-      if (inMemorySectorsCache) inMemorySectorsCache[interestArea] = res;
+      if (inMemorySectorsCache) inMemorySectorsCache[upperArea] = res;
       return res;
     }
-    return null;
   } catch (error) {
-    console.warn(`Firestore getSectorSpreadsheet error for ${interestArea}:`, error);
-    return null;
+    console.warn(`Firestore getSectorSpreadsheet error for ${upperArea}:`, error);
   }
+
+  try {
+    const centralCfg = await getCentralAdminDatabaseConfig();
+    const sId = centralCfg?.spreadsheetsByArea?.[upperArea];
+    if (sId) {
+      const res = {
+        spreadsheetId: sId,
+        folderId: centralCfg?.foldersByArea?.[upperArea] || ''
+      };
+      if (!inMemorySectorsCache) inMemorySectorsCache = {};
+      inMemorySectorsCache[upperArea] = res;
+      return res;
+    }
+  } catch (e) {}
+
+  return null;
 }
 
 export async function getAllSectorSpreadsheets(forceRefresh: boolean = false): Promise<{ [area: string]: { spreadsheetId: string, folderId: string } }> {
   // 1. Memory check
-  if (!forceRefresh && inMemorySectorsCache && Object.keys(inMemorySectorsCache).length > 0) {
+  if (!forceRefresh && inMemorySectorsCache && Object.keys(inMemorySectorsCache).length >= 12) {
     return inMemorySectorsCache;
   }
 
   // 2. IndexedDB check
   if (!forceRefresh) {
     const localSectors = await getLocalIndexedDBItem<{ [area: string]: { spreadsheetId: string, folderId: string } }>('pea_sector_spreadsheets');
-    if (localSectors && Object.keys(localSectors).length > 0) {
+    if (localSectors && Object.keys(localSectors).length >= 12) {
       inMemorySectorsCache = localSectors;
       return localSectors;
     }
@@ -119,24 +133,46 @@ export async function getAllSectorSpreadsheets(forceRefresh: boolean = false): P
     snap.forEach(docSnap => {
       const data = docSnap.data();
       if (data && data.spreadsheetId) {
-        result[docSnap.id] = {
+        result[docSnap.id.toUpperCase()] = {
           spreadsheetId: data.spreadsheetId,
           folderId: data.folderId || ''
         };
       }
     });
-    if (Object.keys(result).length > 0) {
-      inMemorySectorsCache = result;
-      await setLocalIndexedDBItem('pea_sector_spreadsheets', result);
-    }
-    return result;
   } catch (error: any) {
-    console.warn('Failed to fetch all sector spreadsheets from Firestore:', error);
+    console.warn('Sector spreadsheets collection query notice (using central admin config fallback):', error?.message || error);
     if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
       (window as any).firestoreQuotaExceeded = true;
     }
-    return inMemorySectorsCache || result;
   }
+
+  // Always supplement missing areas from central admin_central_db/config (readable across all authenticated/view sessions)
+  if (Object.keys(result).length < 12) {
+    try {
+      const centralCfg = await getCentralAdminDatabaseConfig(forceRefresh);
+      if (centralCfg?.spreadsheetsByArea) {
+        for (const [areaKey, sId] of Object.entries(centralCfg.spreadsheetsByArea)) {
+          const upper = areaKey.toUpperCase().trim();
+          if (sId && !result[upper]) {
+            result[upper] = {
+              spreadsheetId: sId,
+              folderId: centralCfg.foldersByArea?.[areaKey] || centralCfg.foldersByArea?.[upper] || ''
+            };
+          }
+        }
+      }
+    } catch (cfgErr) {
+      console.warn('Central config fallback notice in getAllSectorSpreadsheets:', cfgErr);
+    }
+  }
+
+  if (Object.keys(result).length > 0) {
+    inMemorySectorsCache = result;
+    await setLocalIndexedDBItem('pea_sector_spreadsheets', result);
+    return result;
+  }
+
+  return inMemorySectorsCache || result;
 }
 
 export async function saveSectorSpreadsheet(interestArea: string, spreadsheetId: string, folderId: string): Promise<void> {

@@ -16,7 +16,7 @@ import {
   syncRegisteredUsersFromFirestore,
   getAuthHeadersForApi
 } from '../utils/userManagement';
-import { getEffectiveGoogleToken } from '../utils/googleSheets';
+import { getEffectiveGoogleToken, ensureManagersHaveEditorAccess } from '../utils/googleSheets';
 import { 
   PEA_AREAS, 
   PEA_AREA_NAMES, 
@@ -451,6 +451,15 @@ Focus field teams in regional sectors with the highest density of critical cable
     try {
       const authHeaders = await getAuthHeadersForApi();
       const clientToken = getEffectiveGoogleToken(null);
+      let managerShareNote = '';
+      if (clientToken) {
+        const shareSummary = await ensureManagersHaveEditorAccess(clientToken).catch(() => null);
+        if (shareSummary && shareSummary.sharedCount > 0) {
+          managerShareNote = ` Granted Editor access to Managers on ${shareSummary.sharedCount} file(s)/sheet(s).`;
+        } else if (shareSummary && shareSummary.externalForbiddenCount > 0) {
+          managerShareNote = ` (${shareSummary.externalForbiddenCount} sheet(s) owned externally require manual Drive Editor sharing with Managers).`;
+        }
+      }
       const res = await fetch('/api/drive/harden-permissions', {
         method: 'POST',
         headers: {
@@ -461,12 +470,12 @@ Focus field teams in regional sectors with the highest density of critical cable
       });
       const data = await res.json();
       if (!res.ok || !data?.success) {
-        setHardenResultMsg(`Warning: ${data?.error || 'Could not update folder permissions.'}`);
+        setHardenResultMsg(`Warning: ${data?.error || 'Could not update folder permissions.'}${managerShareNote}`);
       } else {
         setHardenResultMsg(
           `Verified ${data.hardenedCount}/${data.totalFoldersChecked} Area folder(s) as Anyone: View-Only${
             data.removedWritersCount > 0 ? ` (removed ${data.removedWritersCount} public editor link(s))` : ''
-          }.`
+          }.${managerShareNote}`
         );
       }
     } catch (err: any) {

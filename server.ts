@@ -34,13 +34,12 @@ function getFirebaseConfig(): FirebaseClientConfig {
   return cachedFirebaseConfig || {};
 }
 
-const ADMIN_EMAILS = new Set(['pichet.kea@gmail.com', 'admin@pea.co.th']);
+const ADMIN_EMAILS = new Set(['pichet.kea@gmail.com']);
 const PRESEEDED_ACTIVE_USERS: Record<string, { role: string; status: string }> = {
   'g51056018@gmail.com': { role: 'Manager', status: 'active' },
   'natthakorn@rockchatn.com': { role: 'Manager', status: 'active' },
   'moskmitl50@gmail.com': { role: 'Manager', status: 'active' },
   'pichet.kea@gmail.com': { role: 'Admin', status: 'active' },
-  'admin@pea.co.th': { role: 'Admin', status: 'active' },
   'n1powercableunderground@gmail.com': { role: 'Local Operator', status: 'active' }
 };
 
@@ -264,6 +263,11 @@ async function verifyAuthorizedUploader(
     }
   }
 
+  // Only the sole Admin account (pichet.kea@gmail.com) may hold the Admin role
+  if (!ADMIN_EMAILS.has(email) && effectiveRole === 'Admin') {
+    effectiveRole = preseeded?.role || 'Manager';
+  }
+
   if (effectiveStatus !== 'active' && !ADMIN_EMAILS.has(email)) {
     return {
       authorized: false,
@@ -309,11 +313,20 @@ function escapeServerDriveQuery(val: string): string {
 async function ensureDriveViewOnlyPermissions(
   token: string,
   fileId: string,
-  extraWriterEmail?: string | null
+  extraWriterEmail?: string | null,
+  extraWriterEmails: string[] = []
 ): Promise<{ removedPublicWriters: number; ensuredPublicReader: boolean }> {
   let removedPublicWriters = 0;
   let ensuredPublicReader = false;
   if (!token || !fileId) return { removedPublicWriters, ensuredPublicReader };
+
+  const writersToEnsure = Array.from(
+    new Set(
+      [extraWriterEmail, ...extraWriterEmails]
+        .map(e => String(e || '').toLowerCase().trim())
+        .filter(e => e.includes('@'))
+    )
+  );
 
   try {
     const listRes = await fetch(
@@ -322,7 +335,7 @@ async function ensureDriveViewOnlyPermissions(
     );
 
     let hasAnyoneReader = false;
-    let hasServiceWriter = false;
+    const existingWriters = new Set<string>();
 
     if (listRes.ok) {
       const listData: any = await listRes.json();
@@ -342,12 +355,11 @@ async function ensureDriveViewOnlyPermissions(
           hasAnyoneReader = true;
         }
         if (
-          extraWriterEmail &&
           perm.type === 'user' &&
-          perm.emailAddress?.toLowerCase() === extraWriterEmail.toLowerCase() &&
+          perm.emailAddress &&
           (perm.role === 'writer' || perm.role === 'owner')
         ) {
-          hasServiceWriter = true;
+          existingWriters.add(String(perm.emailAddress).toLowerCase().trim());
         }
       }
     }
@@ -369,22 +381,24 @@ async function ensureDriveViewOnlyPermissions(
       ensuredPublicReader = true;
     }
 
-    if (extraWriterEmail && !hasServiceWriter) {
-      await fetch(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            role: 'writer',
-            type: 'user',
-            emailAddress: extraWriterEmail
-          })
-        }
-      ).catch(() => {});
+    for (const writerEmail of writersToEnsure) {
+      if (!existingWriters.has(writerEmail)) {
+        await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              role: 'writer',
+              type: 'user',
+              emailAddress: writerEmail
+            })
+          }
+        ).catch(() => {});
+      }
     }
   } catch (err) {
     console.warn(`[Drive Permissions] Could not harden permissions for ${fileId}:`, err);
@@ -1329,9 +1343,12 @@ function loadPersistedServerGoogleToken() {
     if (fs.existsSync(DELEGATED_TOKEN_CACHE_PATH)) {
       const raw = fs.readFileSync(DELEGATED_TOKEN_CACHE_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed?.token && typeof parsed.token === 'string' && parsed.token.trim()) {
+      const ownerEmail = String(parsed?.owner || '').toLowerCase().trim();
+      if (parsed?.token && typeof parsed.token === 'string' && parsed.token.trim() && ADMIN_EMAILS.has(ownerEmail)) {
         serverGoogleToken = parsed.token.trim();
-        serverGoogleTokenOwner = parsed.owner || null;
+        serverGoogleTokenOwner = ownerEmail;
+      } else if (ownerEmail && !ADMIN_EMAILS.has(ownerEmail)) {
+        fs.unlinkSync(DELEGATED_TOKEN_CACHE_PATH);
       }
     }
   } catch (e) {}
@@ -1355,7 +1372,7 @@ function persistServerGoogleToken(token: string | null, owner: string | null) {
 
 loadPersistedServerGoogleToken();
 
-// Token management endpoint (restricted to active registered Admin/Operator sessions)
+// Token management endpoint (delegated write token cache is reserved strictly for Admin accounts)
 app.post('/api/sheets/token', async (req, res) => {
   const { token, userEmail } = req.body || {};
   const authCheck = await verifyAuthorizedUploader(req, false);
@@ -1365,15 +1382,19 @@ app.post('/api/sheets/token', async (req, res) => {
   }
 
   if (token && typeof token === 'string' && token.trim()) {
-    // Prefer retaining an Admin token over overwriting with a non-admin token
     const incomingIsAdmin = ADMIN_EMAILS.has(authCheck.email) || authCheck.role === 'Admin';
-    const currentIsAdmin = serverGoogleTokenOwner ? ADMIN_EMAILS.has(serverGoogleTokenOwner) : false;
-    if (!serverGoogleToken || incomingIsAdmin || !currentIsAdmin) {
-      serverGoogleToken = token.trim();
-      serverGoogleTokenOwner = authCheck.email;
-      persistServerGoogleToken(serverGoogleToken, serverGoogleTokenOwner);
-      console.log(`[Google Token] Cached delegated token for server operations (owner: ${userEmail || authCheck.email})`);
+    if (!incomingIsAdmin) {
+      res.json({
+        success: true,
+        ignored: true,
+        message: 'Server delegated Google token is reserved for Admin accounts.'
+      });
+      return;
     }
+    serverGoogleToken = token.trim();
+    serverGoogleTokenOwner = authCheck.email;
+    persistServerGoogleToken(serverGoogleToken, serverGoogleTokenOwner);
+    console.log(`[Google Token] Cached Admin delegated token for server operations (owner: ${userEmail || authCheck.email})`);
     res.json({ success: true, message: 'Server Google token updated' });
   } else {
     res.status(400).json({ error: 'Valid token string required' });
@@ -1557,6 +1578,7 @@ app.post('/api/drive/harden-permissions', async (req, res) => {
     }
 
     const folderIdSet = new Set<string>();
+    const spreadsheetIdSet = new Set<string>();
     if (Array.isArray(bodyFolderIds)) {
       bodyFolderIds.forEach((id: any) => {
         if (id && typeof id === 'string' && id.trim()) folderIdSet.add(id.trim());
@@ -1569,14 +1591,28 @@ app.post('/api/drive/harden-permissions', async (req, res) => {
         if (id && typeof id === 'string' && id.trim()) folderIdSet.add(id.trim());
       });
     }
+    if (centralConfig?.spreadsheetsByArea && typeof centralConfig.spreadsheetsByArea === 'object') {
+      Object.values(centralConfig.spreadsheetsByArea).forEach((id: any) => {
+        const clean = normalizeSpreadsheetId(id);
+        if (clean) spreadsheetIdSet.add(clean);
+      });
+    }
+
+    const managerEmails = Object.entries(PRESEEDED_ACTIVE_USERS)
+      .filter(([, meta]) => meta.role === 'Manager' && meta.status === 'active')
+      .map(([email]) => email);
 
     let hardenedCount = 0;
     let removedWritersCount = 0;
 
     for (const fId of folderIdSet) {
-      const result = await ensureDriveViewOnlyPermissions(driveToken, fId, saCreds?.client_email || null);
+      const result = await ensureDriveViewOnlyPermissions(driveToken, fId, saCreds?.client_email || null, managerEmails);
       if (result.ensuredPublicReader) hardenedCount++;
       removedWritersCount += result.removedPublicWriters;
+    }
+
+    for (const sId of spreadsheetIdSet) {
+      await ensureDriveViewOnlyPermissions(driveToken, sId, saCreds?.client_email || null, managerEmails).catch(() => {});
     }
 
     res.json({
@@ -1697,7 +1733,7 @@ async function executeSheetsWriteWithFallback(
       status: 401,
       data: null,
       errorMessage:
-        `Unauthorized: No active Google OAuth token or Service Account available for ${actionLabel}. Please ask an Admin (pichet.kea@gmail.com or admin@pea.co.th) to sign in via Google OAuth once or configure GOOGLE_SERVICE_ACCOUNT_JSON with Editor access on the regional spreadsheets.`
+        `Unauthorized: No active Google OAuth token or Service Account available for ${actionLabel}. Please ask Admin (pichet.kea@gmail.com) to sign in via Google OAuth once or configure GOOGLE_SERVICE_ACCOUNT_JSON with Editor access on the regional spreadsheets.`
     };
   }
 
@@ -1717,9 +1753,10 @@ async function executeSheetsWriteWithFallback(
       lastData = data;
       lastErrorMsg = data?.error?.message || lastErrorMsg;
 
-      // Clear expired delegated token so a fresh Admin token can replace it on next sign-in
-      if (googleRes.status === 401 && source === 'server_delegated') {
-        console.warn('[Sheets Proxy] Server delegated Google token returned 401 (expired). Clearing cached token.');
+      // Clear expired or non-Admin delegated token so a fresh Admin token can replace it cleanly
+      const delegatedIsNonAdmin = serverGoogleTokenOwner ? !ADMIN_EMAILS.has(serverGoogleTokenOwner.toLowerCase()) : false;
+      if (source === 'server_delegated' && (googleRes.status === 401 || (googleRes.status === 403 && delegatedIsNonAdmin))) {
+        console.warn(`[Sheets Proxy] Clearing invalid server delegated token (status ${googleRes.status}, owner: ${serverGoogleTokenOwner || 'unknown'}).`);
         serverGoogleToken = null;
         serverGoogleTokenOwner = null;
         persistServerGoogleToken(null, null);
@@ -1743,7 +1780,7 @@ async function executeSheetsWriteWithFallback(
   }
 
   if (lastStatus === 401 || lastStatus === 403) {
-    lastErrorMsg = `${lastErrorMsg} — Your Google account lacks Editor permission or its session expired. An Admin (pichet.kea@gmail.com / admin@pea.co.th) must sign in with Google OAuth once to refresh the server write token, or grant Editor permission on the regional spreadsheet.`;
+    lastErrorMsg = `${lastErrorMsg} — Your Google account lacks Editor permission on the regional Google Sheet or the Admin write token expired. Ask Admin (pichet.kea@gmail.com) to share all 12 regional Google Sheets as Editor with verified Managers (moskmitl50@gmail.com, g51056018@gmail.com, natthakorn@rockchatn.com) OR sign in with Google OAuth once on this server to refresh the delegated write token.`;
   }
 
   return { ok: false, status: lastStatus, data: lastData, errorMessage: lastErrorMsg };

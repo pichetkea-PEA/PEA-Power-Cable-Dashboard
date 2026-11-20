@@ -60,6 +60,8 @@ export const initAuth = (
         sessionStorage.setItem('google_access_token', credential.accessToken);
         try {
           localStorage.setItem('pea_google_token', credential.accessToken);
+          const email = (result.user?.email || auth.currentUser?.email || '').toLowerCase().trim();
+          if (email) localStorage.setItem('pea_google_token_email', email);
         } catch (e) {}
         sessionStorage.setItem('pea_session_active', 'true');
         if (auth.currentUser && onAuthSuccess) {
@@ -80,12 +82,28 @@ export const initAuth = (
       }
       if (!cachedAccessToken) {
         try {
+          const savedToken = localStorage.getItem('pea_google_token');
+          const savedEmail = (localStorage.getItem('pea_google_token_email') || '').toLowerCase().trim();
+          const currentEmail = (user.email || '').toLowerCase().trim();
+          if (savedToken && savedToken.trim() && (!savedEmail || savedEmail === currentEmail)) {
+            cachedAccessToken = savedToken.trim();
+            sessionStorage.setItem('google_access_token', cachedAccessToken);
+          }
+        } catch (e) {}
+      }
+      if (!cachedAccessToken) {
+        try {
           const result = await getRedirectResult(auth);
           if (result) {
             const credential = GoogleAuthProvider.credentialFromResult(result);
             if (credential?.accessToken) {
               cachedAccessToken = credential.accessToken;
               sessionStorage.setItem('google_access_token', credential.accessToken);
+              try {
+                localStorage.setItem('pea_google_token', credential.accessToken);
+                const email = (result.user?.email || user.email || '').toLowerCase().trim();
+                if (email) localStorage.setItem('pea_google_token_email', email);
+              } catch (e) {}
               sessionStorage.setItem('pea_session_active', 'true');
             }
           }
@@ -115,6 +133,8 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     sessionStorage.setItem('google_access_token', credential.accessToken);
     try {
       localStorage.setItem('pea_google_token', credential.accessToken);
+      const email = (result.user?.email || '').toLowerCase().trim();
+      if (email) localStorage.setItem('pea_google_token_email', email);
     } catch (e) {}
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
@@ -159,8 +179,14 @@ export const googleSignInWithRedirect = async (): Promise<void> => {
 };
 
 export const logout = async () => {
-  await auth.signOut();
+  try {
+    await auth.signOut();
+  } catch (e) {}
   cachedAccessToken = null;
   sessionStorage.removeItem('google_access_token');
   sessionStorage.removeItem('pea_session_active');
+  try {
+    localStorage.removeItem('pea_google_token');
+    localStorage.removeItem('pea_google_token_email');
+  } catch (e) {}
 };

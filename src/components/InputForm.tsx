@@ -820,9 +820,9 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
     try {
       let searchPool = assets || [];
 
-      // If active token is available, attempt to retrieve the latest registered items from regional sheets
+      // Retrieve the latest registered items from regional sheets (direct OAuth or proxy fallback)
       const activeToken = getEffectiveGoogleToken(googleToken);
-      if (activeToken) {
+      if (activeToken || searchPool.length === 0) {
         try {
           const freshSheetsAssets = await fetchFastRegionalIdentifiers(activeToken, searchPool);
           if (freshSheetsAssets && freshSheetsAssets.length > 0) {
@@ -943,8 +943,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         if (sectorData?.folderId) {
           currentFolderId = sectorData.folderId;
         }
-        if (!currentSpreadsheetId || (activeToken && !currentFolderId)) {
-          const masterMap = await getMasterSpreadsheetsMap(activeToken);
+        if (!currentSpreadsheetId || !currentFolderId) {
+          const masterMap = await getMasterSpreadsheetsMap(activeToken, false);
           if (masterMap.spreadsheets?.[selectedArea]) {
             currentSpreadsheetId = masterMap.spreadsheets[selectedArea];
           }
@@ -1031,7 +1031,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
       const timestamp = getBangkokTimestamp();
 
       let rowNum = 1;
-      if (activeToken && currentSpreadsheetId) {
+      if (currentSpreadsheetId) {
         try {
           const lastSheetNum = await fetchLastSheetNumber(activeToken, currentSpreadsheetId);
           if (lastSheetNum > 0) {

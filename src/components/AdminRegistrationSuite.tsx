@@ -1124,8 +1124,17 @@ export default function AdminRegistrationSuite({
         return;
       }
 
-      // Phase 1: Group batch updates by sheet
-      const sheetsToCheck = spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
+      // Phase 1: Group batch updates across all 12 regional sheets
+      let masterSheets: string[] = [];
+      try {
+        const masterMap = await getMasterSpreadsheetsMap(activeToken, false);
+        masterSheets = Object.values(masterMap.spreadsheets || {}).filter(Boolean);
+      } catch (e) {}
+      const sheetsToCheck = Array.from(new Set([
+        ...(spreadsheetIds || []),
+        ...(spreadsheetId ? [spreadsheetId] : []),
+        ...masterSheets
+      ])).filter(Boolean);
       const cachedSheetsData: Record<string, CableAsset[]> = {};
 
       setScenarioSaveStatusMsg('Locating asset records across all 12 regional spreadsheets...');
@@ -2793,7 +2802,7 @@ export default function AdminRegistrationSuite({
     try {
       let spreadsheetsMap: { [area: string]: string } = {};
       try {
-        const syncRes = await getMasterSpreadsheetsMap(activeToken);
+        const syncRes = await getMasterSpreadsheetsMap(activeToken, false);
         spreadsheetsMap = syncRes.spreadsheets || {};
       } catch (e) {
         console.warn("Auto sync spreadsheets error:", e);
@@ -2810,10 +2819,21 @@ export default function AdminRegistrationSuite({
         }
       } = {};
 
+      const hasMappedRegions = Object.keys(spreadsheetsMap).length > 0;
       for (const rec of option1ReviewList) {
-        const targetArea = (rec.area || 'N1').toUpperCase();
-        const targetSpreadsheetId = spreadsheetsMap[targetArea] || (spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds[0] : spreadsheetId) || 'local_sheet';
-        
+        const targetArea = (rec.area || 'N1').toUpperCase().trim();
+        let targetSpreadsheetId = spreadsheetsMap[targetArea] || '';
+        if (!targetSpreadsheetId) {
+          if (!hasMappedRegions) {
+            targetSpreadsheetId = (spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds[0] : spreadsheetId) || 'local_sheet';
+          } else if (spreadsheetIds && spreadsheetIds.length === 1) {
+            targetSpreadsheetId = spreadsheetIds[0];
+          }
+        }
+        if (!targetSpreadsheetId) {
+          throw new Error(`Regional Google Sheet for area "${targetArea}" is not configured in Central Database Config.`);
+        }
+
         if (!groupedBySpreadsheet[targetSpreadsheetId]) {
           groupedBySpreadsheet[targetSpreadsheetId] = { records: [], area: targetArea };
         }
@@ -2976,8 +2996,10 @@ export default function AdminRegistrationSuite({
             equipmentId: rec.equipmentId || '',
             qrDocument: rec.qrDocument || '',
             healthScore: 100,
-            healthStatus: 'Green'
-          };
+            healthStatus: 'Green',
+            spreadsheetId: currentSpId !== 'local_sheet' ? currentSpId : undefined,
+            peaArea: group.area
+          } as CableAsset & { peaArea?: string };
           newlyCreatedAssets.push(newAssetObj);
           totalRegisteredCount++;
         }
@@ -3339,8 +3361,17 @@ export default function AdminRegistrationSuite({
 
       let updatedCount = 0;
 
-      // Pre-cache all spreadsheet data in parallel first to avoid redundant sequential API hits inside the loop
-      const sheetsToCheck = spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
+      // Pre-cache all 12 regional spreadsheets in parallel first to avoid redundant sequential API hits inside the loop
+      let masterSheets: string[] = [];
+      try {
+        const masterMap = await getMasterSpreadsheetsMap(activeToken, false);
+        masterSheets = Object.values(masterMap.spreadsheets || {}).filter(Boolean);
+      } catch (e) {}
+      const sheetsToCheck = Array.from(new Set([
+        ...(spreadsheetIds || []),
+        ...(spreadsheetId ? [spreadsheetId] : []),
+        ...masterSheets
+      ])).filter(Boolean);
       const cachedSheetsData: { [sId: string]: any[] } = {};
 
       if (sheetsToCheck.length > 0) {
@@ -3686,9 +3717,17 @@ export default function AdminRegistrationSuite({
         const survivor = sorted[0];
         const duplicatesToEliminate = sorted.slice(1);
 
+        let masterMapSheets: { [area: string]: string } = {};
+        try {
+          const masterMap = await getMasterSpreadsheetsMap(activeToken, false);
+          masterMapSheets = masterMap.spreadsheets || {};
+        } catch (e) {}
+
         for (const item of duplicatesToEliminate) {
-          if (spreadsheetId) {
-            const mappings = await fetchSheetsRowIndices(activeToken, spreadsheetId, item.equipmentId, item.number);
+          const itemArea = (getAssetArea(item) || '').toUpperCase();
+          const itemSpreadsheetId = item.spreadsheetId || (itemArea ? masterMapSheets[itemArea] : '') || spreadsheetId;
+          if (itemSpreadsheetId) {
+            const mappings = await fetchSheetsRowIndices(activeToken, itemSpreadsheetId, item.equipmentId, item.number);
             if (mappings.genRowIndex > 0) {
               // Update field with a custom cleared tag or rename
               const nullifiedRow = [
@@ -3725,7 +3764,7 @@ export default function AdminRegistrationSuite({
                 item.size || '',
                 `DEL-${item.equipmentId}`
               ];
-              await updateSheetRow(activeToken, spreadsheetId, 'General Information', mappings.genRowIndex, nullifiedRow, 'A:AF');
+              await updateSheetRow(activeToken, itemSpreadsheetId, 'General Information', mappings.genRowIndex, nullifiedRow, 'A:AF');
             }
           } else {
             // Local offline resolution
@@ -3762,7 +3801,17 @@ export default function AdminRegistrationSuite({
     if (!editingAsset) return;
     setSavingAssetId(editingAsset.equipmentId);
     try {
-      const targetSheetId = editingAsset.spreadsheetId || spreadsheetId;
+      let targetSheetId = editingAsset.spreadsheetId;
+      if (!targetSheetId) {
+        try {
+          const masterMap = await getMasterSpreadsheetsMap(activeToken, false);
+          const assetArea = (getAssetArea(editingAsset) || '').toUpperCase();
+          if (assetArea && masterMap.spreadsheets?.[assetArea]) {
+            targetSheetId = masterMap.spreadsheets[assetArea];
+          }
+        } catch (e) {}
+      }
+      if (!targetSheetId) targetSheetId = spreadsheetId || undefined;
       if (targetSheetId) {
         const mappings = await fetchSheetsRowIndices(activeToken, targetSheetId, editingAsset.equipmentId, editingAsset.number);
         if (mappings.genRowIndex > 0) {
