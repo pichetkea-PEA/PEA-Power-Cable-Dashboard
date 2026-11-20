@@ -16,7 +16,7 @@ import {
   Legend 
 } from 'recharts';
 import { exportAssetToPDF } from '../utils/pdfGenerator';
-import { getBangkokTimestamp } from '../utils/dateUtils';
+import { getBangkokTimestamp, parseTimestampMs, formatSubmissionFolderName, getLatestAssetsByEquipmentId } from '../utils/dateUtils';
 import { 
   CableAsset, 
   PEAUser, 
@@ -183,21 +183,7 @@ export default function AssetRecord({
 
   // Derived state: keep only the latest revision of each unique equipment ID for general browsing & search
   const latestAssets = useMemo(() => {
-    const map = new Map<string, CableAsset>();
-    
-    // Sort allAssets chronologically so the latest entry overrides previous ones
-    const sorted = [...allAssets].sort((a, b) => {
-      const aTime = a.timestamp ? new Date(a.timestamp.replace(/-/g, '/')).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp.replace(/-/g, '/')).getTime() : 0;
-      return aTime - bTime;
-    });
-
-    for (const asset of sorted) {
-      if (asset.equipmentId) {
-        map.set(asset.equipmentId, asset);
-      }
-    }
-    return Array.from(map.values());
+    return getLatestAssetsByEquipmentId(allAssets);
   }, [allAssets]);
 
   // Derived state: find all equipment matching the current WBS search query
@@ -213,9 +199,9 @@ export default function AssetRecord({
     return allAssets
       .filter(a => a.equipmentId === selectedAsset.equipmentId)
       .sort((a, b) => {
-        const aTime = a.timestamp ? new Date(a.timestamp.replace(/-/g, '/')).getTime() : 0;
-        const bTime = b.timestamp ? new Date(b.timestamp.replace(/-/g, '/')).getTime() : 0;
-        return aTime - bTime;
+        const timeDiff = parseTimestampMs(a.timestamp) - parseTimestampMs(b.timestamp);
+        if (timeDiff !== 0) return timeDiff;
+        return (Number(a.number) || 0) - (Number(b.number) || 0);
       });
   }, [selectedAsset, allAssets]);
 
@@ -1337,8 +1323,8 @@ export default function AssetRecord({
         insulationResistance: parseFloat(editInsulation) || 15.0,
         tanDelta: editTanDelta,
         tanDeltaAmplitude: parseFloat(editTanDeltaAmplitude) || 0,
-        visualPictureUrl: visualPreview || finalVisualUrl,
-        thermalImageUrl: thermalPreview || finalThermalUrl,
+        visualPictureUrl: finalVisualUrl || visualPreview,
+        thermalImageUrl: finalThermalUrl || thermalPreview,
         qrDocument: (editQrDocument || '').trim()
       };
 
@@ -1454,10 +1440,16 @@ export default function AssetRecord({
       }
 
       // ALWAYS update local React state, Firestore central cache, and local storage backups
+      // Only replace the targeted latest revision row so historical inspection revisions remain intact
       const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
-      const updatedAllAssets = currentList.map(a =>
-        (a.equipmentId === updatedAsset.equipmentId || a.number === updatedAsset.number) ? updatedAsset : a
-      );
+      const eqCount = currentList.filter(a => a.equipmentId === updatedAsset.equipmentId).length;
+      const updatedAllAssets = currentList.map(a => {
+        if (a.equipmentId !== updatedAsset.equipmentId) return a;
+        const matchesSpecificRevision =
+          (a.number === selectedAsset.number && a.timestamp === selectedAsset.timestamp) ||
+          eqCount <= 1;
+        return matchesSpecificRevision ? updatedAsset : a;
+      });
 
       setAllAssets(updatedAllAssets);
       setSelectedAsset(updatedAsset);
@@ -1542,16 +1534,18 @@ export default function AssetRecord({
       
       let finalVisualUrl = editVisualUrl;
       let finalThermalUrl = editThermalUrl;
+      const submissionFolder = formatSubmissionFolderName(selectedAsset.equipmentId, timestamp);
       const uploadHierarchy = {
         area: getAssetArea(selectedAsset) || deriveAssetArea(selectedAsset),
         city: editCity || selectedAsset.city || 'Unassigned',
-        equipmentId: selectedAsset.equipmentId
+        equipmentId: selectedAsset.equipmentId,
+        submissionFolder
       };
 
-      // 1. Photo uploads to Google Drive (Area -> City -> Equipment ID) or server fallback
+      // 1. Photo uploads to Google Drive (Area -> City -> Equipment ID -> Timestamped Revision Folder) or server fallback
       if (visualFile) {
-        setSyncStatus('Uploading new general photos (Area → City → Asset folder)...');
-        setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: 'Uploading visual photos...' }));
+        setSyncStatus(`Uploading new general photos (${uploadHierarchy.equipmentId}/${submissionFolder})...`);
+        setProgressModal(prev => ({ ...prev, percent: 45, stepMessage: `Uploading visual photos to ${submissionFolder}...` }));
         try {
           finalVisualUrl = await uploadImageToDrive(activeToken, targetFolderId || '', visualFile, uploadHierarchy);
         } catch (uploadErr: any) {
@@ -1564,8 +1558,8 @@ export default function AssetRecord({
       }
 
       if (thermalFile) {
-        setSyncStatus('Uploading new thermographic snaps (Area → City → Asset folder)...');
-        setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: 'Uploading thermographic images...' }));
+        setSyncStatus(`Uploading new thermographic snaps (${uploadHierarchy.equipmentId}/${submissionFolder})...`);
+        setProgressModal(prev => ({ ...prev, percent: 55, stepMessage: `Uploading thermographic images to ${submissionFolder}...` }));
         try {
           finalThermalUrl = await uploadImageToDrive(activeToken, targetFolderId || '', thermalFile, uploadHierarchy);
         } catch (uploadErr: any) {
@@ -1616,6 +1610,8 @@ export default function AssetRecord({
         ...selectedAsset,
         number: rowNum,
         timestamp,
+        latestUpdatedAt: timestamp,
+        latestUpdatedBy: user.name,
         operatorName: user.name,
         voltageLevel: editVoltage,
         city: editCity,
@@ -1630,16 +1626,34 @@ export default function AssetRecord({
         peaNumber: finalPeaNumber,
         assetNumber: finalAssetNumber,
         adsNumber: finalAdsNumber,
+        productionMonth: editProductionMonth,
+        installationDate: editInstallationDate,
+        wbs: editWbs,
+        businessType: editBusinessType,
+        costCenter: editCostCenter,
+        gistag: editGistag,
+        class: editClass,
+        contractNumber: editContractNumber,
+        feeder: editFeeder,
+        substationId: editSubstationId,
+        operateId: editOperateId,
+        serialNumber: editSerialNumber,
+        model: editModel,
+        workOrder: editWorkOrder,
+        size: editSize,
+        assetValue: editAssetValue,
         equipmentId: selectedAsset.equipmentId,
         loadCurrent: parseFloat(editLoadCurrent) || 120,
         sheathCurrent: parseFloat(editSheathCurrent) || 8,
         surfaceTemperature: parseFloat(editTemp) || 35,
         externalDischarge: parseFloat(editDischarge) || 5,
         pdResult: editPdResult,
+        onlinePdAmplitude: parseFloat(editOnlinePdAmplitude) || 0,
         insulationResistance: parseFloat(editInsulation) || 15.0,
         tanDelta: editTanDelta,
-        visualPictureUrl: visualPreview || finalVisualUrl,
-        thermalImageUrl: thermalPreview || finalThermalUrl,
+        tanDeltaAmplitude: parseFloat(editTanDeltaAmplitude) || 0,
+        visualPictureUrl: finalVisualUrl || visualPreview,
+        thermalImageUrl: finalThermalUrl || thermalPreview,
         qrDocument: (editQrDocument || '').trim()
       };
 
@@ -3510,7 +3524,14 @@ export default function AssetRecord({
           onSaveSuccess={async (updatedAsset) => {
             setSelectedAsset(updatedAsset);
             const currentList = allAssets && allAssets.length > 0 ? allAssets : latestAssets;
-            const updatedAllAssets = currentList.map(a => a.equipmentId === updatedAsset.equipmentId ? updatedAsset : a);
+            const eqCount = currentList.filter(a => a.equipmentId === updatedAsset.equipmentId).length;
+            const updatedAllAssets = currentList.map(a => {
+              if (a.equipmentId !== updatedAsset.equipmentId) return a;
+              const matchesSpecificRevision =
+                (a.number === selectedAsset.number && a.timestamp === selectedAsset.timestamp) ||
+                eqCount <= 1;
+              return matchesSpecificRevision ? updatedAsset : a;
+            });
             setAllAssets(updatedAllAssets);
             try {
               await saveCentralAssetsCache(updatedAllAssets, true);
@@ -3669,7 +3690,7 @@ export default function AssetRecord({
                 <FilePenLine className="w-4 h-4" />
               </div>
               <h3 className="text-xs font-black text-gray-900 uppercase tracking-wider">
-                Database Write Target Selection
+                Save Changes: Choose Revision Mode
               </h3>
             </div>
             <button
@@ -3681,35 +3702,35 @@ export default function AssetRecord({
           </div>
 
           <p className="text-xs text-gray-600 leading-relaxed">
-            Choose how you would like to persist your telemetry edits back to the system sheet database:
+            Would you like to save your edits as a <strong>new revision</strong> or <strong>overwrite the latest version</strong> in Google Sheets?
           </p>
 
           <div className="space-y-3">
-            {/* Choice A: Save as New Record (Append) */}
+            {/* Choice A: Save as New Revision (Append + Timestamped Subfolder) */}
             <button
               onClick={handleSaveAsNewRecord}
-              className="w-full text-left bg-purple-50 hover:bg-purple-100 border border-purple-150 p-4 rounded-xl space-y-1 transition-all flex flex-col cursor-pointer"
+              className="w-full text-left bg-purple-50 hover:bg-purple-100 border border-purple-200 p-4 rounded-xl space-y-1 transition-all flex flex-col cursor-pointer"
             >
               <span className="text-xs font-black text-purple-900 uppercase tracking-tight flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-yellow-500" />
-                Save as New Record (Audit Entry)
+                Save as New Revision
               </span>
               <span className="text-[10px] text-purple-700 leading-normal">
-                This keeps the original record intact and appends a new inspection entry under the same **Equipment ID** (`{selectedAsset.equipmentId}`). Your operator name (**{user.name}**) and the current timestamp will be logged for this moment.
+                Keeps all prior versions intact and appends a new latest inspection row under <strong>{selectedAsset.equipmentId}</strong> logged by <strong>{user.name}</strong>. Newly uploaded photos are stored in a new timestamped subfolder ({selectedAsset.equipmentId}_YYYY-MM-DD_HH-mm-ss).
               </span>
             </button>
 
-            {/* Choice B: Overwrite (Modify Row) */}
+            {/* Choice B: Overwrite Latest Version (Modify Existing Latest Row) */}
             <button
               onClick={handleSaveOverwrite}
               className="w-full text-left bg-gray-50 hover:bg-gray-100 border border-gray-200 p-4 rounded-xl space-y-1 transition-all flex flex-col cursor-pointer"
             >
               <span className="text-xs font-black text-gray-900 uppercase tracking-tight flex items-center gap-1.5">
                 <Check className="w-3.5 h-3.5 text-emerald-600" />
-                Overwrite Existing Record
+                Overwrite Latest Version
               </span>
               <span className="text-[10px] text-gray-600 leading-normal">
-                This replaces the existing values in the specific spreadsheet row for this asset in Google Sheets. It updates the core asset parameters directly.
+                Updates the current latest record row directly in Google Sheets without adding a new revision entry or creating a new timestamped subfolder.
               </span>
             </button>
           </div>

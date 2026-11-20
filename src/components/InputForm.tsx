@@ -41,7 +41,7 @@ import {
   parseEquipmentIdDetails,
   CITY_ABBREVIATION_TO_NAME
 } from '../utils/peaData';
-import { getBangkokTimestamp } from '../utils/dateUtils';
+import { getBangkokTimestamp, formatSubmissionFolderName, getLatestAssetsByEquipmentId } from '../utils/dateUtils';
 import { 
   uploadImageToDrive,
   uploadFileToDrive,
@@ -111,6 +111,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
   const [step, setStep] = useState<number>(1);
   const [loading, setLoading] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const latestUniqueAssets = useMemo(() => getLatestAssetsByEquipmentId(assets || [], true), [assets]);
 
   // --- Search Gatekeeper State ---
   const [searchPeaNumber, setSearchPeaNumber] = useState<string>('');
@@ -833,6 +834,9 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         }
       }
 
+      // Deduplicate by Equipment ID so Gatekeeper always loads the latest revision
+      searchPool = getLatestAssetsByEquipmentId(searchPool, true);
+
       // Exact match check
       const found = searchPool.find(a => {
         const matchPea = termPea && a.peaNumber && a.peaNumber.trim().toLowerCase() === termPea;
@@ -969,17 +973,20 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         return;
       }
 
+      const submissionTimestamp = getBangkokTimestamp();
+      const submissionFolder = formatSubmissionFolderName(finalEquipmentId || 'ASSET', submissionTimestamp);
       const uploadHierarchy = {
         area: selectedArea,
         city: city || 'Unassigned',
-        equipmentId: finalEquipmentId || 'ASSET'
+        equipmentId: finalEquipmentId || 'ASSET',
+        submissionFolder
       };
 
-      setStatusMessage('Uploading inspection photos, PRPD & PDF reports to Area/City/Equipment folder...');
+      setStatusMessage('Uploading inspection photos, PRPD & PDF reports to individual timestamped submission folder...');
       setProgressModal(prev => ({
         ...prev,
         percent: 20,
-        stepMessage: `Uploading attachments to ${uploadHierarchy.area}/${uploadHierarchy.city}/${uploadHierarchy.equipmentId}...`
+        stepMessage: `Uploading attachments to ${uploadHierarchy.area}/${uploadHierarchy.city}/${uploadHierarchy.equipmentId}/${submissionFolder}...`
       }));
 
       let visualUrl = 'https://images.unsplash.com/photo-1544724569-5f546fd6f2b5?w=400';
@@ -1028,7 +1035,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         stepMessage: 'Calculating sequential index & validating PEA registration fields...'
       }));
 
-      const timestamp = getBangkokTimestamp();
+      const timestamp = submissionTimestamp;
 
       let rowNum = 1;
       if (currentSpreadsheetId) {
@@ -1283,24 +1290,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
 
       try {
         const currentList = assets || [];
-        // Check if the asset already exists in local list by equipmentId or peaNumber
-        const existingIdx = currentList.findIndex(a => 
-          (a.equipmentId && a.equipmentId === finalEquipmentId) ||
-          (a.peaNumber && finalPeaNumber && a.peaNumber === finalPeaNumber)
-        );
-
-        let updatedList: CableAsset[];
-        if (existingIdx >= 0) {
-          // Update the existing asset record in-place to prevent unnecessary extra duplicate assets
-          updatedList = [...currentList];
-          updatedList[existingIdx] = {
-            ...updatedList[existingIdx],
-            ...combinedAsset,
-            number: updatedList[existingIdx].number || combinedAsset.number
-          };
-        } else {
-          updatedList = [combinedAsset, ...currentList];
-        }
+        // Preserve full routine inspection history by appending the new submission record
+        const updatedList: CableAsset[] = [...currentList, combinedAsset];
 
         localStorage.setItem('local_cable_assets', JSON.stringify(updatedList));
         localStorage.setItem('pea_central_assets_backup', JSON.stringify(updatedList));
@@ -1315,8 +1306,8 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
           area: selectedArea,
           operatorName: combinedAsset.operatorName || user.name || 'Local Operator',
           userEmail: user.email,
-          timestamp: getBangkokTimestamp(),
-          details: `Logged Diagnostic Record for ${combinedAsset.equipmentType} ${finalEquipmentId} in ${combinedAsset.substationName || 'Substation'} (${selectedArea})`,
+          timestamp,
+          details: `Logged Diagnostic Record for ${combinedAsset.equipmentType} ${finalEquipmentId} in ${combinedAsset.substationName || 'Substation'} (${selectedArea}) [Folder: ${submissionFolder}]`,
           gps: combinedAsset.gps,
           substationName: combinedAsset.substationName,
           landmark: combinedAsset.landmark,
@@ -1327,12 +1318,12 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
         await sendAdminNotification({
           type: 'submit_log',
           title: 'New Diagnostic Log Submitted',
-          message: `Local operator ${user.name} submitted a new diagnostic log for asset ${finalEquipmentId} (${selectedArea}).`,
+          message: `User ${user.name} submitted a new diagnostic log for asset ${finalEquipmentId} (${selectedArea}).`,
           equipmentId: finalEquipmentId,
           operatorName: user.name,
           userEmail: user.email,
-          timestamp: getBangkokTimestamp(),
-          details: `Submitted diagnostic log with visual photo, thermogram scan, PRPD picture, and offline PDF report. Severity classification: ${combinedAsset.pdDiagnostics?.onlinePrpdSeverity || 'Critical'}.`,
+          timestamp,
+          details: `Submitted diagnostic log into subfolder ${submissionFolder}. Severity classification: ${combinedAsset.pdDiagnostics?.onlinePrpdSeverity || 'Critical'}.`,
           area: selectedArea
         });
       } catch (e) {
@@ -1486,17 +1477,17 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
             </button>
           </div>
 
-          {assets && assets.length > 0 && (
+          {latestUniqueAssets.length > 0 && (
             <div className="mt-6 pt-4 border-t border-gray-100">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2 block">
-                Or Choose Directly from Registered Equipment List ({assets.length}):
+                Or Choose Directly from Registered Equipment List ({latestUniqueAssets.length}):
               </label>
               <select
                 defaultValue=""
                 onChange={(e) => {
                   const selectedVal = e.target.value;
                   if (!selectedVal) return;
-                  const match = assets.find(a => (a.equipmentId || a.peaNumber) === selectedVal);
+                  const match = latestUniqueAssets.find(a => (a.equipmentId || a.peaNumber) === selectedVal);
                   if (match) {
                     loadAssetDataIntoForm(match);
                     setSelectedAsset(match);
@@ -1506,7 +1497,7 @@ export default function InputForm({ user, spreadsheetId, googleToken, folderId, 
                 className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-mono text-gray-700"
               >
                 <option value="">-- Choose registered equipment from list --</option>
-                {assets.map((a, idx) => (
+                {latestUniqueAssets.map((a, idx) => (
                   <option key={idx} value={a.equipmentId || a.peaNumber}>
                     {a.equipmentId || a.peaNumber} | PEA: {a.peaNumber || 'N/A'} | ADS: {a.adsNumber || 'N/A'} | AA: {a.assetNumber || 'N/A'} ({a.substationName || a.city || 'Regional'})
                   </option>

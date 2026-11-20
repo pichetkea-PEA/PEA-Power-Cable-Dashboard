@@ -520,7 +520,7 @@ app.post('/api/files/upload', async (req, res) => {
       return;
     }
 
-    const { fileName, mimeType, base64Data, area, city, equipmentId } = req.body || {};
+    const { fileName, mimeType, base64Data, area, city, equipmentId, submissionFolder } = req.body || {};
     if (!fileName || !base64Data) {
       res.status(400).json({ success: false, error: 'fileName and base64Data are required.' });
       return;
@@ -529,9 +529,13 @@ app.post('/api/files/upload', async (req, res) => {
     const safeArea = sanitizePathSegment(area, 'GENERAL');
     const safeCity = sanitizePathSegment(city, 'Unassigned');
     const safeEqId = sanitizePathSegment(equipmentId, 'ASSET');
+    const rawSubFolder = submissionFolder ? String(submissionFolder).trim() : '';
+    const safeSubFolder = rawSubFolder ? sanitizePathSegment(rawSubFolder, '') : '';
     const safeFileName = `${Date.now()}_${sanitizePathSegment(fileName, 'attachment.bin')}`;
 
-    const targetDir = path.join(UPLOADS_ROOT, safeArea, safeCity, safeEqId);
+    const targetDir = safeSubFolder
+      ? path.join(UPLOADS_ROOT, safeArea, safeCity, safeEqId, safeSubFolder)
+      : path.join(UPLOADS_ROOT, safeArea, safeCity, safeEqId);
     fs.mkdirSync(targetDir, { recursive: true });
 
     const rawBase64 = String(base64Data).includes(',') ? String(base64Data).split(',')[1] : String(base64Data);
@@ -539,7 +543,9 @@ app.post('/api/files/upload', async (req, res) => {
     const targetPath = path.join(targetDir, safeFileName);
     fs.writeFileSync(targetPath, buffer);
 
-    const relativeUrl = `/api/files/${encodeURIComponent(safeArea)}/${encodeURIComponent(safeCity)}/${encodeURIComponent(safeEqId)}/${encodeURIComponent(safeFileName)}`;
+    const relativeUrl = safeSubFolder
+      ? `/api/files/${encodeURIComponent(safeArea)}/${encodeURIComponent(safeCity)}/${encodeURIComponent(safeEqId)}/${encodeURIComponent(safeSubFolder)}/${encodeURIComponent(safeFileName)}`
+      : `/api/files/${encodeURIComponent(safeArea)}/${encodeURIComponent(safeCity)}/${encodeURIComponent(safeEqId)}/${encodeURIComponent(safeFileName)}`;
     res.json({
       success: true,
       url: relativeUrl,
@@ -1429,7 +1435,7 @@ app.post('/api/drive/upload', async (req, res) => {
       return;
     }
 
-    const { fileName, mimeType, base64Data, area, city, equipmentId, baseAreaFolderId } = req.body || {};
+    const { fileName, mimeType, base64Data, area, city, equipmentId, submissionFolder, baseAreaFolderId } = req.body || {};
     if (!fileName || !base64Data) {
       res.status(400).json({ success: false, error: 'fileName and base64Data are required.' });
       return;
@@ -1454,6 +1460,8 @@ app.post('/api/drive/upload', async (req, res) => {
     const cleanArea = String(area || 'GENERAL').trim().toUpperCase();
     const cleanCity = sanitizePathSegment(city, 'Unassigned_City');
     const cleanEqId = sanitizePathSegment(equipmentId, `ASSET_${Date.now()}`);
+    const rawSubFolder = submissionFolder ? String(submissionFolder).trim() : '';
+    const cleanSubFolder = rawSubFolder ? sanitizePathSegment(rawSubFolder, '') : '';
     const resolvedMime = String(mimeType || 'application/octet-stream');
     const isPdf = resolvedMime === 'application/pdf' || String(fileName).toLowerCase().endsWith('.pdf');
 
@@ -1468,9 +1476,12 @@ app.post('/api/drive/upload', async (req, res) => {
       ensureDriveViewOnlyPermissions(driveToken, areaFolderId).catch(() => {});
     }
 
-    // 2. City Sub-folder -> Equipment ID Sub-folder (all strictly View-Only for Anyone)
+    // 2. City Sub-folder -> Equipment ID Sub-folder -> [Optional Timestamped Submission Folder] (all strictly View-Only for Anyone)
     const cityFolderId = await findOrCreateServerDriveFolder(driveToken, cleanCity, areaFolderId);
     const assetFolderId = await findOrCreateServerDriveFolder(driveToken, cleanEqId, cityFolderId);
+    const targetFolderId = cleanSubFolder
+      ? await findOrCreateServerDriveFolder(driveToken, cleanSubFolder, assetFolderId)
+      : assetFolderId;
 
     const rawBase64 = String(base64Data).includes(',') ? String(base64Data).split(',')[1] : String(base64Data);
     const fileBuffer = Buffer.from(rawBase64, 'base64');
@@ -1478,7 +1489,7 @@ app.post('/api/drive/upload', async (req, res) => {
     const metadata = {
       name: `${Date.now()}_${sanitizePathSegment(fileName, 'upload.bin')}`,
       mimeType: resolvedMime,
-      parents: [assetFolderId]
+      parents: [targetFolderId]
     };
 
     const boundary = `pea_drive_boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;

@@ -28,6 +28,7 @@ import {
   formatShortUrl,
   getAssetArea
 } from '../utils/peaData';
+import { getLatestAssetsByEquipmentId } from '../utils/dateUtils';
 import MapChart from './MapChart';
 import WorldMapChart from './WorldMapChart';
 import { exportAssetToPDF } from '../utils/pdfGenerator';
@@ -116,16 +117,7 @@ export default function AdminDashboard({ assets, spreadsheetId, onRefresh, onMig
 
   // Deduplicate assets to only keep the latest entry per equipmentId
   const uniqueAssets = useMemo(() => {
-    const latestMap = new Map<string, CableAsset>();
-    assets.forEach(asset => {
-      if (!asset.equipmentId) return;
-      const existing = latestMap.get(asset.equipmentId);
-      // Keep the one with the highest running number or latest timestamp
-      if (!existing || (Number(asset.number) || 0) > (Number(existing.number) || 0)) {
-        latestMap.set(asset.equipmentId, asset);
-      }
-    });
-    return Array.from(latestMap.values());
+    return getLatestAssetsByEquipmentId(assets);
   }, [assets]);
 
   // Filter Assets

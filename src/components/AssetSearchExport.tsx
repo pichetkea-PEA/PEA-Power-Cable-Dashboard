@@ -28,6 +28,7 @@ import {
   getAvailableEquipmentTypes,
   getAssetArea 
 } from '../utils/peaData';
+import { getLatestAssetsByEquipmentId } from '../utils/dateUtils';
 import { 
   estimateSF6ForAsset, 
   fetchAIEstimatedSF6, 
@@ -99,18 +100,7 @@ export default function AssetSearchExport({
 
   // Unique latest assets deduplication
   const uniqueAssets = useMemo(() => {
-    const map = new Map<string, CableAsset>();
-    const sorted = [...assets].sort((a, b) => {
-      const aTime = a.timestamp ? new Date(a.timestamp.replace(/-/g, '/')).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp.replace(/-/g, '/')).getTime() : 0;
-      return aTime - bTime;
-    });
-    for (const asset of sorted) {
-      if (asset.equipmentId) {
-        map.set(asset.equipmentId, asset);
-      }
-    }
-    return Array.from(map.values());
+    return getLatestAssetsByEquipmentId(assets);
   }, [assets]);
 
   // Filtered Assets based on user criteria

@@ -935,19 +935,24 @@ export async function findOrCreateDriveFolder(
   return createdId;
 }
 
-// Resolve 3-level Drive Hierarchy: Area Root Folder -> City Sub-folder -> Equipment ID Sub-folder
+// Resolve 3-level (or 4-level with submissionFolder) Drive Hierarchy:
+// Area Root Folder -> City Sub-folder -> Equipment ID Sub-folder -> [Optional Individual Submission Timestamp Folder]
 export async function resolveAssetDriveFolderHierarchy(
   accessToken: string,
   options: {
     area?: string;
     city?: string;
     equipmentId?: string;
+    submissionFolder?: string;
     baseAreaFolderId?: string;
   }
-): Promise<{ areaFolderId: string; cityFolderId: string; assetFolderId: string }> {
+): Promise<{ areaFolderId: string; cityFolderId: string; assetFolderId: string; submissionFolderId?: string }> {
   const cleanArea = (options.area || 'GENERAL').trim().toUpperCase();
   const cleanCity = (options.city || 'Unassigned_City').trim().replace(/[<>:"/\\|?*]/g, '_');
   const cleanEqId = (options.equipmentId || `ASSET_${Date.now()}`).trim().replace(/[<>:"/\\|?*]/g, '_');
+  const cleanSubFolder = options.submissionFolder
+    ? options.submissionFolder.trim().replace(/[<>:"/\\|?*]/g, '_')
+    : '';
 
   // Level 1: Area Main Folder ("PEA Cable Asset Images - {AREA}")
   let areaFolderId = options.baseAreaFolderId ? String(options.baseAreaFolderId).trim() : '';
@@ -970,13 +975,19 @@ export async function resolveAssetDriveFolderHierarchy(
   // Level 3: Asset Sub-folder (named by Equipment ID) inside the City Folder
   const assetFolderId = await findOrCreateDriveFolder(accessToken, cleanEqId, cityFolderId);
 
-  return { areaFolderId, cityFolderId, assetFolderId };
+  // Level 4 (Optional): Individual timestamped submission folder inside the Equipment ID Folder
+  let submissionFolderId: string | undefined;
+  if (cleanSubFolder) {
+    submissionFolderId = await findOrCreateDriveFolder(accessToken, cleanSubFolder, assetFolderId);
+  }
+
+  return { areaFolderId, cityFolderId, assetFolderId, submissionFolderId };
 }
 
 // Persistent backend file repository upload fallback (when no Google Drive proxy token is active yet)
 export async function uploadFileToServerFallback(
   file: File,
-  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+  hierarchy?: { area?: string; city?: string; equipmentId?: string; submissionFolder?: string }
 ): Promise<string> {
   const base64Data: string = await new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1002,7 +1013,8 @@ export async function uploadFileToServerFallback(
       base64Data,
       area: hierarchy?.area || 'GENERAL',
       city: hierarchy?.city || 'Unassigned',
-      equipmentId: hierarchy?.equipmentId || 'ASSET'
+      equipmentId: hierarchy?.equipmentId || 'ASSET',
+      submissionFolder: hierarchy?.submissionFolder || undefined
     })
   });
 
@@ -1073,13 +1085,13 @@ export function sanitizeRowForSheets(row: any[]): any[] {
   return (row || []).map(sanitizeCellForSheets);
 }
 
-// Upload file to Google Drive via Option 1 Central Admin Drive Proxy (Area -> City -> Equipment ID, strictly View-Only for Anyone)
+// Upload file to Google Drive via Option 1 Central Admin Drive Proxy (Area -> City -> Equipment ID -> [Submission Folder], strictly View-Only for Anyone)
 // Only approved registered users are authorized by backend /api/drive/upload; new/unregistered/guest users are rejected with 403.
 export async function uploadFileToDrive(
   accessToken: string | null | undefined,
   folderId: string,
   file: File,
-  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+  hierarchy?: { area?: string; city?: string; equipmentId?: string; submissionFolder?: string }
 ): Promise<string> {
   if (!file) {
     throw new Error('Missing file for upload');
@@ -1113,6 +1125,7 @@ export async function uploadFileToDrive(
           area: hierarchy?.area || 'GENERAL',
           city: hierarchy?.city || 'Unassigned',
           equipmentId: hierarchy?.equipmentId || 'ASSET',
+          submissionFolder: hierarchy?.submissionFolder || undefined,
           baseAreaFolderId: cleanFolderId || undefined
         })
       });
@@ -1158,20 +1171,23 @@ export async function uploadFileToDrive(
     }
   }
 
-  // Automatically resolve 3-level Drive folder hierarchy: Area -> City -> Equipment ID
-  if (hierarchy && (hierarchy.area || hierarchy.city || hierarchy.equipmentId)) {
+  // Automatically resolve 3-level (or 4-level with submissionFolder) Drive folder hierarchy: Area -> City -> Equipment ID -> [Submission Folder]
+  if (hierarchy && (hierarchy.area || hierarchy.city || hierarchy.equipmentId || hierarchy.submissionFolder)) {
     try {
       const resolvedHierarchy = await resolveAssetDriveFolderHierarchy(token, {
         area: hierarchy.area,
         city: hierarchy.city,
         equipmentId: hierarchy.equipmentId,
+        submissionFolder: hierarchy.submissionFolder,
         baseAreaFolderId: cleanFolderId || undefined
       });
-      if (resolvedHierarchy.assetFolderId) {
+      if (resolvedHierarchy.submissionFolderId) {
+        cleanFolderId = resolvedHierarchy.submissionFolderId;
+      } else if (resolvedHierarchy.assetFolderId) {
         cleanFolderId = resolvedHierarchy.assetFolderId;
       }
     } catch (hierErr) {
-      console.warn('Could not build 3-level Drive folder hierarchy (Area/City/Asset), continuing with base folder:', hierErr);
+      console.warn('Could not build Drive folder hierarchy (Area/City/Asset/Submission), continuing with base folder:', hierErr);
     }
   }
 
@@ -1249,7 +1265,7 @@ export async function uploadImageToDrive(
   accessToken: string | null | undefined,
   folderId: string,
   file: File,
-  hierarchy?: { area?: string; city?: string; equipmentId?: string }
+  hierarchy?: { area?: string; city?: string; equipmentId?: string; submissionFolder?: string }
 ): Promise<string> {
   return uploadFileToDrive(accessToken, folderId, file, hierarchy);
 }
@@ -3297,65 +3313,71 @@ export async function fetchSheetsRowIndices(
   const visEqIdIdx = getColIdxOfEqId(visHeaders);
   const pdEqIdIdx = getColIdxOfEqId(pdHeaders);
 
-  // Find index in General Information
+  const findLastMatchingIndex = (rows: any[][], predicate: (row: any[]) => boolean): number => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (predicate(rows[i])) return i;
+    }
+    return -1;
+  };
+
+  // Find index in General Information (prefer exact recordNumber + equipmentId match, otherwise latest matching row)
+  const matchesGenEq = (row: any[]) => {
+    if (genEqIdIdx !== -1 && row.length > genEqIdIdx && cleanStr(row[genEqIdIdx]).toLowerCase() === searchId) return true;
+    if (row.length > 32 && cleanStr(row[32]).toLowerCase() === searchId) return true;
+    if (row.length > 31 && cleanStr(row[31]).toLowerCase() === searchId) return true;
+    return false;
+  };
   let genIndex = -1;
   if (recordNumber) {
-    genIndex = genDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+    genIndex = findLastMatchingIndex(genDataRows, row => parseInt(row[0]) === recordNumber && matchesGenEq(row));
+    if (genIndex === -1) {
+      genIndex = findLastMatchingIndex(genDataRows, row => parseInt(row[0]) === recordNumber);
+    }
   }
   if (genIndex === -1) {
-    genIndex = genDataRows.findIndex((row: any[]) => {
-      if (genEqIdIdx !== -1 && row.length > genEqIdIdx) {
-        if (cleanStr(row[genEqIdIdx]).toLowerCase() === searchId) return true;
-      }
-      if (row.length > 32 && cleanStr(row[32]).toLowerCase() === searchId) return true;
-      if (row.length > 31 && cleanStr(row[31]).toLowerCase() === searchId) return true;
-      return false;
-    });
+    genIndex = findLastMatchingIndex(genDataRows, matchesGenEq);
   }
 
   // Find index in Engineering Information
+  const engTargetIdx = engEqIdIdx !== -1 ? engEqIdIdx : 3;
+  const matchesEngEq = (row: any[]) => row.length > engTargetIdx && cleanStr(row[engTargetIdx]).toLowerCase() === searchId;
   let engIndex = -1;
   if (recordNumber) {
-    engIndex = engDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+    engIndex = findLastMatchingIndex(engDataRows, row => parseInt(row[0]) === recordNumber && matchesEngEq(row));
+    if (engIndex === -1) {
+      engIndex = findLastMatchingIndex(engDataRows, row => parseInt(row[0]) === recordNumber);
+    }
   }
   if (engIndex === -1) {
-    const targetIdx = engEqIdIdx !== -1 ? engEqIdIdx : 3; // fallback to D
-    engIndex = engDataRows.findIndex((row: any[]) => {
-      if (row.length > targetIdx) {
-        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
-      }
-      return false;
-    });
+    engIndex = findLastMatchingIndex(engDataRows, matchesEngEq);
   }
 
   // Find index in Visual & Thermal Images
+  const visTargetIdx = visEqIdIdx !== -1 ? visEqIdIdx : 3;
+  const matchesVisEq = (row: any[]) => row.length > visTargetIdx && cleanStr(row[visTargetIdx]).toLowerCase() === searchId;
   let visIndex = -1;
   if (recordNumber) {
-    visIndex = visDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+    visIndex = findLastMatchingIndex(visDataRows, row => parseInt(row[0]) === recordNumber && matchesVisEq(row));
+    if (visIndex === -1) {
+      visIndex = findLastMatchingIndex(visDataRows, row => parseInt(row[0]) === recordNumber);
+    }
   }
   if (visIndex === -1) {
-    const targetIdx = visEqIdIdx !== -1 ? visEqIdIdx : 3; // fallback to D
-    visIndex = visDataRows.findIndex((row: any[]) => {
-      if (row.length > targetIdx) {
-        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
-      }
-      return false;
-    });
+    visIndex = findLastMatchingIndex(visDataRows, matchesVisEq);
   }
 
   // Find index in PD & Diagnostic Data
+  const pdTargetIdx = pdEqIdIdx !== -1 ? pdEqIdIdx : 3;
+  const matchesPdEq = (row: any[]) => row.length > pdTargetIdx && cleanStr(row[pdTargetIdx]).toLowerCase() === searchId;
   let pdIndex = -1;
   if (recordNumber) {
-    pdIndex = pdDataRows.findIndex((row: any[]) => parseInt(row[0]) === recordNumber);
+    pdIndex = findLastMatchingIndex(pdDataRows, row => parseInt(row[0]) === recordNumber && matchesPdEq(row));
+    if (pdIndex === -1) {
+      pdIndex = findLastMatchingIndex(pdDataRows, row => parseInt(row[0]) === recordNumber);
+    }
   }
   if (pdIndex === -1) {
-    const targetIdx = pdEqIdIdx !== -1 ? pdEqIdIdx : 3; // fallback to D
-    pdIndex = pdDataRows.findIndex((row: any[]) => {
-      if (row.length > targetIdx) {
-        return cleanStr(row[targetIdx]).toLowerCase() === searchId;
-      }
-      return false;
-    });
+    pdIndex = findLastMatchingIndex(pdDataRows, matchesPdEq);
   }
 
   return {

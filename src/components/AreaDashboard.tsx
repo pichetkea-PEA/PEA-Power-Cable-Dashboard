@@ -17,6 +17,7 @@ import {
   formatShortUrl,
   getAssetArea
 } from '../utils/peaData';
+import { getLatestAssetsByEquipmentId } from '../utils/dateUtils';
 import MapChart from './MapChart';
 import RiskMatrix from './RiskMatrix';
 import TelemetryAlerts from './TelemetryAlerts';
@@ -104,16 +105,7 @@ export default function AreaDashboard({ assets, userArea, userEmail, isAdmin, on
 
   // Deduplicate assets to only keep the latest entry per equipmentId
   const uniqueAssets = useMemo(() => {
-    const latestMap = new Map<string, CableAsset>();
-    assets.forEach(asset => {
-      if (!asset.equipmentId) return;
-      const existing = latestMap.get(asset.equipmentId);
-      // Keep the one with the highest running number or latest timestamp
-      if (!existing || (Number(asset.number) || 0) > (Number(existing.number) || 0)) {
-        latestMap.set(asset.equipmentId, asset);
-      }
-    });
-    return Array.from(latestMap.values());
+    return getLatestAssetsByEquipmentId(assets);
   }, [assets]);
 
   // Filter Assets specifically for user's selected area first
