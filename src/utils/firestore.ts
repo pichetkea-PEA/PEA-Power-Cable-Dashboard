@@ -2,6 +2,7 @@ import { db, auth } from './firebaseAuth';
 import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { setLocalIndexedDBItem, getLocalIndexedDBItem, generateAssetsHash } from './localCache';
 import { AdminNotification, UserOnlineStatus } from '../types';
+import { getAuthHeadersForApi } from './userManagement';
 
 export enum OperationType {
   CREATE = 'create',
@@ -389,9 +390,13 @@ export async function saveDelegatedGoogleToken(token: string, userEmail?: string
 
   // Sync to Express backend memory
   try {
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
     fetch('/api/sheets/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
       body: JSON.stringify({ token: trimmed, userEmail: userEmail || 'unknown' })
     }).catch(e => console.warn('Backend token sync notice:', e));
   } catch (e) {}

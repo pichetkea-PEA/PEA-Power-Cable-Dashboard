@@ -81,14 +81,17 @@ function getServiceAccountCreds(): ServiceAccountCreds | null {
   return null;
 }
 
-let cachedServiceAccountToken: { token: string; expiresAt: number } | null = null;
+const cachedServiceAccountTokens: Record<string, { token: string; expiresAt: number }> = {};
 
-async function getServiceAccountDriveToken(): Promise<string | null> {
+async function getServiceAccountToken(
+  scope: string = 'https://www.googleapis.com/auth/drive'
+): Promise<string | null> {
   const creds = getServiceAccountCreds();
   if (!creds) return null;
 
-  if (cachedServiceAccountToken && Date.now() < cachedServiceAccountToken.expiresAt - 60_000) {
-    return cachedServiceAccountToken.token;
+  const cached = cachedServiceAccountTokens[scope];
+  if (cached && Date.now() < cached.expiresAt - 60_000) {
+    return cached.token;
   }
 
   try {
@@ -97,7 +100,7 @@ async function getServiceAccountDriveToken(): Promise<string | null> {
     const claimSet = Buffer.from(
       JSON.stringify({
         iss: creds.client_email,
-        scope: 'https://www.googleapis.com/auth/drive',
+        scope,
         aud: 'https://oauth2.googleapis.com/token',
         exp: nowSec + 3600,
         iat: nowSec
@@ -121,23 +124,31 @@ async function getServiceAccountDriveToken(): Promise<string | null> {
 
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
-      console.warn('[Drive SA] Token exchange failed:', tokenRes.status, errText);
+      console.warn(`[Google SA] Token exchange failed (${scope}):`, tokenRes.status, errText);
       return null;
     }
 
     const tokenData: any = await tokenRes.json();
     if (tokenData?.access_token) {
       const expiresInMs = (Number(tokenData.expires_in) || 3500) * 1000;
-      cachedServiceAccountToken = {
+      cachedServiceAccountTokens[scope] = {
         token: tokenData.access_token,
         expiresAt: Date.now() + expiresInMs
       };
       return tokenData.access_token;
     }
   } catch (err) {
-    console.warn('[Drive SA] Error exchanging Service Account JWT:', err);
+    console.warn('[Google SA] Error exchanging Service Account JWT:', err);
   }
   return null;
+}
+
+async function getServiceAccountDriveToken(): Promise<string | null> {
+  return getServiceAccountToken('https://www.googleapis.com/auth/drive');
+}
+
+async function getServiceAccountSheetsToken(): Promise<string | null> {
+  return getServiceAccountToken('https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive');
 }
 
 async function verifyFirebaseIdTokenEmail(idToken: string): Promise<string | null> {
@@ -242,8 +253,16 @@ async function verifyAuthorizedUploader(
   const fsUser = await fetchFirestoreDocument('registered_users', safeDocId);
   const preseeded = PRESEEDED_ACTIVE_USERS[email];
 
-  const effectiveStatus = fsUser?.status || preseeded?.status || 'unregistered';
-  const effectiveRole = fsUser?.role || preseeded?.role || (ADMIN_EMAILS.has(email) ? 'Admin' : 'User');
+  let effectiveStatus = fsUser?.status || preseeded?.status || 'unregistered';
+  let effectiveRole = fsUser?.role || preseeded?.role || (ADMIN_EMAILS.has(email) ? 'Admin' : 'User');
+
+  // Protect preseeded active accounts (e.g., authorized Managers like Natthakorn) from stale pending/User Firestore docs
+  if (preseeded && preseeded.status === 'active' && fsUser?.status !== 'rejected') {
+    effectiveStatus = 'active';
+    if (!fsUser?.role || fsUser.role === 'User') {
+      effectiveRole = preseeded.role;
+    }
+  }
 
   if (effectiveStatus !== 'active' && !ADMIN_EMAILS.has(email)) {
     return {
@@ -1299,9 +1318,42 @@ async function fetchSheetCsvTab(spreadsheetId: string, tabNames: string[]): Prom
   return [];
 }
 
-// In-memory token store for Admin-delegated Google API operations
+// In-memory + local server disk cache for Admin-delegated Google API operations
+const DELEGATED_TOKEN_CACHE_PATH = '/tmp/pea-delegated-google-auth.json';
 let serverGoogleToken: string | null = process.env.GOOGLE_OAUTH_ACCESS_TOKEN || null;
 let serverGoogleTokenOwner: string | null = null;
+
+function loadPersistedServerGoogleToken() {
+  if (serverGoogleToken) return;
+  try {
+    if (fs.existsSync(DELEGATED_TOKEN_CACHE_PATH)) {
+      const raw = fs.readFileSync(DELEGATED_TOKEN_CACHE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.token && typeof parsed.token === 'string' && parsed.token.trim()) {
+        serverGoogleToken = parsed.token.trim();
+        serverGoogleTokenOwner = parsed.owner || null;
+      }
+    }
+  } catch (e) {}
+}
+
+function persistServerGoogleToken(token: string | null, owner: string | null) {
+  try {
+    if (!token) {
+      if (fs.existsSync(DELEGATED_TOKEN_CACHE_PATH)) {
+        fs.unlinkSync(DELEGATED_TOKEN_CACHE_PATH);
+      }
+      return;
+    }
+    fs.writeFileSync(
+      DELEGATED_TOKEN_CACHE_PATH,
+      JSON.stringify({ token, owner, updatedAt: new Date().toISOString() }),
+      { mode: 0o600 }
+    );
+  } catch (e) {}
+}
+
+loadPersistedServerGoogleToken();
 
 // Token management endpoint (restricted to active registered Admin/Operator sessions)
 app.post('/api/sheets/token', async (req, res) => {
@@ -1319,6 +1371,7 @@ app.post('/api/sheets/token', async (req, res) => {
     if (!serverGoogleToken || incomingIsAdmin || !currentIsAdmin) {
       serverGoogleToken = token.trim();
       serverGoogleTokenOwner = authCheck.email;
+      persistServerGoogleToken(serverGoogleToken, serverGoogleTokenOwner);
       console.log(`[Google Token] Cached delegated token for server operations (owner: ${userEmail || authCheck.email})`);
     }
     res.json({ success: true, message: 'Server Google token updated' });
@@ -1601,67 +1654,156 @@ async function autoHealSheetGrid(spreadsheetId: string, token: string, minCols: 
   return { titleMap };
 }
 
+// Build prioritized deduplicated candidate tokens for Sheets write fallback:
+// 1. clientToken (if provided) -> 2. Admin delegated serverGoogleToken -> 3. Service Account Sheets token
+async function getSheetsCandidateTokens(clientToken?: string | null): Promise<{ token: string; source: 'client' | 'server_delegated' | 'service_account' }[]> {
+  loadPersistedServerGoogleToken();
+  const candidates: { token: string; source: 'client' | 'server_delegated' | 'service_account' }[] = [];
+  const seen = new Set<string>();
+
+  const pushCandidate = (t: string | null | undefined, source: 'client' | 'server_delegated' | 'service_account') => {
+    if (t && typeof t === 'string' && t.trim() && !seen.has(t.trim())) {
+      seen.add(t.trim());
+      candidates.push({ token: t.trim(), source });
+    }
+  };
+
+  pushCandidate(clientToken, 'client');
+  pushCandidate(serverGoogleToken, 'server_delegated');
+
+  const saToken = await getServiceAccountSheetsToken();
+  pushCandidate(saToken, 'service_account');
+
+  return candidates;
+}
+
+async function executeSheetsWriteWithFallback(
+  clientToken: string | undefined,
+  actionLabel: string,
+  executor: (token: string) => Promise<{ googleRes: Response; data: any }>
+): Promise<{ ok: boolean; status: number; data: any; errorMessage?: string }> {
+  const candidates = await getSheetsCandidateTokens(clientToken);
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      status: 401,
+      data: null,
+      errorMessage:
+        `Unauthorized: No active Google OAuth token or Service Account available for ${actionLabel}. Please ask an Admin (pichet.kea@gmail.com or admin@pea.co.th) to sign in via Google OAuth once or configure GOOGLE_SERVICE_ACCOUNT_JSON with Editor access on the regional spreadsheets.`
+    };
+  }
+
+  let lastStatus = 500;
+  let lastData: any = null;
+  let lastErrorMsg = `Failed to ${actionLabel}`;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const { token, source } = candidates[i];
+    try {
+      const { googleRes, data } = await executor(token);
+      if (googleRes.ok) {
+        return { ok: true, status: googleRes.status, data };
+      }
+
+      lastStatus = googleRes.status;
+      lastData = data;
+      lastErrorMsg = data?.error?.message || lastErrorMsg;
+
+      // Clear expired delegated token so a fresh Admin token can replace it on next sign-in
+      if (googleRes.status === 401 && source === 'server_delegated') {
+        console.warn('[Sheets Proxy] Server delegated Google token returned 401 (expired). Clearing cached token.');
+        serverGoogleToken = null;
+        serverGoogleTokenOwner = null;
+        persistServerGoogleToken(null, null);
+      }
+
+      // If unauthorized (401) or permission denied (403, e.g. Manager View-Only token), try next fallback token
+      if ((googleRes.status === 401 || googleRes.status === 403) && i < candidates.length - 1) {
+        console.warn(`[Sheets Proxy] Token source "${source}" rejected with HTTP ${googleRes.status} for ${actionLabel}; trying fallback token (${candidates[i + 1].source})...`);
+        continue;
+      }
+
+      // Non-auth error (e.g. 400 invalid payload/range) or no remaining fallback tokens
+      break;
+    } catch (err: any) {
+      lastErrorMsg = err?.message || lastErrorMsg;
+      if (i < candidates.length - 1) {
+        console.warn(`[Sheets Proxy] Exception with "${source}" for ${actionLabel}, trying fallback token:`, lastErrorMsg);
+        continue;
+      }
+    }
+  }
+
+  if (lastStatus === 401 || lastStatus === 403) {
+    lastErrorMsg = `${lastErrorMsg} — Your Google account lacks Editor permission or its session expired. An Admin (pichet.kea@gmail.com / admin@pea.co.th) must sign in with Google OAuth once to refresh the server write token, or grant Editor permission on the regional spreadsheet.`;
+  }
+
+  return { ok: false, status: lastStatus, data: lastData, errorMessage: lastErrorMsg };
+}
+
 // Google Sheets Write/Update Row Proxy
 app.post('/api/sheets/update-row', async (req, res) => {
+  if (req.headers['x-pea-user-email'] || req.body?.userEmail) {
+    const authCheck = await verifyAuthorizedUploader(req, false);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+  }
   const { spreadsheetId, range, values, token: clientToken } = req.body;
   if (!spreadsheetId || !range || !values) {
     res.status(400).json({ error: 'spreadsheetId, range, and values are required.' });
     return;
   }
 
-  const effectiveToken = clientToken || serverGoogleToken;
-  if (!effectiveToken) {
-    res.status(401).json({
-      error: 'Unauthorized: No active Google OAuth token available for writing to Google Sheets. Please log in with Google OAuth (e.g. g51056018@gmail.com or pichet.kea@gmail.com) to authorize sheet updates.'
-    });
-    return;
-  }
-
   try {
-    let targetRange = range;
-    const sendUpdate = async (rng: string) => {
-      const encodedRange = encodeURIComponent(rng);
-      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${effectiveToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          range: rng,
-          majorDimension: 'ROWS',
-          values: Array.isArray(values[0]) ? values : [values]
-        })
-      });
-    };
+    const result = await executeSheetsWriteWithFallback(clientToken, 'update Google Sheets row', async (effectiveToken) => {
+      let targetRange = range;
+      const sendUpdate = async (rng: string) => {
+        const encodedRange = encodeURIComponent(rng);
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${effectiveToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            range: rng,
+            majorDimension: 'ROWS',
+            values: Array.isArray(values[0]) ? values : [values]
+          })
+        });
+      };
 
-    let googleRes = await sendUpdate(targetRange);
-    let data = await googleRes.json();
+      let googleRes = await sendUpdate(targetRange);
+      let data = await googleRes.json().catch(() => ({}));
 
-    // If failed due to grid limit or tab name, auto-heal and retry
-    if (!googleRes.ok) {
-      console.warn('[Sheets Update Proxy Notice] Initial update failed, auto-healing grid...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
-      
-      // Attempt with mapped title
-      for (const [standardTitle, realTitle] of Object.entries(titleMap)) {
-        if (targetRange.includes(`'${standardTitle}'`) || targetRange.startsWith(standardTitle)) {
-          targetRange = targetRange.replace(standardTitle, realTitle);
-          break;
+      // Only auto-heal grid dimensions/tab names if auth succeeded (not 401/403)
+      if (!googleRes.ok && googleRes.status !== 401 && googleRes.status !== 403) {
+        console.warn('[Sheets Update Proxy Notice] Initial update failed, auto-healing grid...', data?.error?.message);
+        const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
+
+        for (const [standardTitle, realTitle] of Object.entries(titleMap)) {
+          if (targetRange.includes(`'${standardTitle}'`) || targetRange.startsWith(standardTitle)) {
+            targetRange = targetRange.replace(standardTitle, realTitle);
+            break;
+          }
         }
+
+        googleRes = await sendUpdate(targetRange);
+        data = await googleRes.json().catch(() => ({}));
       }
 
-      googleRes = await sendUpdate(targetRange);
-      data = await googleRes.json();
-    }
+      return { googleRes, data };
+    });
 
-    if (!googleRes.ok) {
-      console.error('[Sheets Update Proxy Error]:', data);
-      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to update sheet row' });
+    if (!result.ok) {
+      console.error('[Sheets Update Proxy Error]:', result.data || result.errorMessage);
+      res.status(result.status).json({ success: false, error: result.errorMessage || 'Failed to update sheet row' });
       return;
     }
 
-    res.json({ success: true, data });
+    res.json({ success: true, data: result.data });
   } catch (err: any) {
     console.error('[Sheets Update Exception]:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -1670,59 +1812,63 @@ app.post('/api/sheets/update-row', async (req, res) => {
 
 // Google Sheets Append Row Proxy
 app.post('/api/sheets/append-row', async (req, res) => {
+  if (req.headers['x-pea-user-email'] || req.body?.userEmail) {
+    const authCheck = await verifyAuthorizedUploader(req, false);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+  }
   const { spreadsheetId, sheetName, values, token: clientToken } = req.body;
   if (!spreadsheetId || !sheetName || !values) {
     res.status(400).json({ error: 'spreadsheetId, sheetName, and values are required.' });
     return;
   }
 
-  const effectiveToken = clientToken || serverGoogleToken;
-  if (!effectiveToken) {
-    res.status(401).json({
-      error: 'Unauthorized: No active Google OAuth token available for appending to Google Sheets. Please log in with Google OAuth to authorize sheet writes.'
-    });
-    return;
-  }
-
   try {
-    let targetSheetName = sheetName;
-    const sendAppend = async (sName: string) => {
-      const range = `'${sName}'!A1`;
-      const encodedRange = encodeURIComponent(range);
-      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${effectiveToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          range,
-          majorDimension: 'ROWS',
-          values: Array.isArray(values[0]) ? values : [values]
-        })
-      });
-    };
+    const result = await executeSheetsWriteWithFallback(clientToken, 'append Google Sheets row', async (effectiveToken) => {
+      let targetSheetName = sheetName;
+      const sendAppend = async (sName: string) => {
+        const range = `'${sName}'!A1`;
+        const encodedRange = encodeURIComponent(range);
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${effectiveToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            range,
+            majorDimension: 'ROWS',
+            values: Array.isArray(values[0]) ? values : [values]
+          })
+        });
+      };
 
-    let googleRes = await sendAppend(targetSheetName);
-    let data = await googleRes.json();
+      let googleRes = await sendAppend(targetSheetName);
+      let data = await googleRes.json().catch(() => ({}));
 
-    if (!googleRes.ok) {
-      console.warn('[Sheets Append Proxy Notice] Initial append failed, auto-healing grid...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
-      if (titleMap[targetSheetName]) {
-        targetSheetName = titleMap[targetSheetName];
+      // Only auto-heal grid dimensions/tab names if auth succeeded (not 401/403)
+      if (!googleRes.ok && googleRes.status !== 401 && googleRes.status !== 403) {
+        console.warn('[Sheets Append Proxy Notice] Initial append failed, auto-healing grid...', data?.error?.message);
+        const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
+        if (titleMap[targetSheetName]) {
+          targetSheetName = titleMap[targetSheetName];
+        }
+        googleRes = await sendAppend(targetSheetName);
+        data = await googleRes.json().catch(() => ({}));
       }
-      googleRes = await sendAppend(targetSheetName);
-      data = await googleRes.json();
-    }
 
-    if (!googleRes.ok) {
-      console.error('[Sheets Append Proxy Error]:', data);
-      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to append sheet row' });
+      return { googleRes, data };
+    });
+
+    if (!result.ok) {
+      console.error('[Sheets Append Proxy Error]:', result.data || result.errorMessage);
+      res.status(result.status).json({ success: false, error: result.errorMessage || 'Failed to append sheet row' });
       return;
     }
 
-    res.json({ success: true, data });
+    res.json({ success: true, data: result.data });
   } catch (err: any) {
     console.error('[Sheets Append Exception]:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -1731,71 +1877,74 @@ app.post('/api/sheets/append-row', async (req, res) => {
 
 // Google Sheets Batch Update Proxy
 app.post('/api/sheets/batch-update', async (req, res) => {
+  if (req.headers['x-pea-user-email'] || req.body?.userEmail) {
+    const authCheck = await verifyAuthorizedUploader(req, false);
+    if (!authCheck.authorized) {
+      res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      return;
+    }
+  }
   const { spreadsheetId, updates, token: clientToken } = req.body;
   if (!spreadsheetId || !Array.isArray(updates) || updates.length === 0) {
     res.status(400).json({ error: 'spreadsheetId and updates array are required.' });
     return;
   }
 
-  const effectiveToken = clientToken || serverGoogleToken;
-  if (!effectiveToken) {
-    res.status(401).json({
-      error: 'Unauthorized: No active Google OAuth token available for batch updates.'
-    });
-    return;
-  }
-
   try {
-    let currentUpdates = updates;
-    const sendBatch = async (upds: any[]) => {
-      const body = {
-        valueInputOption: 'USER_ENTERED',
-        data: upds.map((u: any) => ({
-          range: u.range,
-          majorDimension: 'ROWS',
-          values: u.values
-        }))
+    const result = await executeSheetsWriteWithFallback(clientToken, 'batch update Google Sheets rows', async (effectiveToken) => {
+      let currentUpdates = updates;
+      const sendBatch = async (upds: any[]) => {
+        const body = {
+          valueInputOption: 'USER_ENTERED',
+          data: upds.map((u: any) => ({
+            range: u.range,
+            majorDimension: 'ROWS',
+            values: u.values
+          }))
+        };
+
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${effectiveToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
       };
 
-      return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${effectiveToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(body)
-      });
-    };
+      let googleRes = await sendBatch(currentUpdates);
+      let data = await googleRes.json().catch(() => ({}));
 
-    let googleRes = await sendBatch(currentUpdates);
-    let data = await googleRes.json();
+      // Auto-heal grid dimensions and tab names if failed (not 401/403)
+      if (!googleRes.ok && googleRes.status !== 401 && googleRes.status !== 403) {
+        console.warn('[Sheets Batch Update Notice] Initial batchUpdate failed, attempting auto-heal...', data?.error?.message);
+        const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
 
-    // Auto-heal grid dimensions and tab names if failed
-    if (!googleRes.ok) {
-      console.warn('[Sheets Batch Update Notice] Initial batchUpdate failed, attempting auto-heal...', data?.error?.message);
-      const { titleMap } = await autoHealSheetGrid(spreadsheetId, effectiveToken, 46);
-
-      currentUpdates = updates.map((u: any) => {
-        let rng = u.range;
-        for (const [stdTitle, realTitle] of Object.entries(titleMap)) {
-          if (rng.includes(stdTitle)) {
-            rng = rng.replace(stdTitle, realTitle);
+        currentUpdates = updates.map((u: any) => {
+          let rng = u.range;
+          for (const [stdTitle, realTitle] of Object.entries(titleMap)) {
+            if (rng.includes(stdTitle)) {
+              rng = rng.replace(stdTitle, realTitle);
+            }
           }
-        }
-        return { ...u, range: rng };
-      });
+          return { ...u, range: rng };
+        });
 
-      googleRes = await sendBatch(currentUpdates);
-      data = await googleRes.json();
-    }
+        googleRes = await sendBatch(currentUpdates);
+        data = await googleRes.json().catch(() => ({}));
+      }
 
-    if (!googleRes.ok) {
-      console.error('[Sheets Batch Update Proxy Error]:', data);
-      res.status(googleRes.status).json({ success: false, error: data?.error?.message || 'Failed to batch update sheet' });
+      return { googleRes, data };
+    });
+
+    if (!result.ok) {
+      console.error('[Sheets Batch Update Proxy Error]:', result.data || result.errorMessage);
+      res.status(result.status).json({ success: false, error: result.errorMessage || 'Failed to batch update sheet' });
       return;
     }
 
-    res.json({ success: true, data });
+    res.json({ success: true, data: result.data });
   } catch (err: any) {
     console.error('[Sheets Batch Update Exception]:', err);
     res.status(500).json({ success: false, error: err.message });

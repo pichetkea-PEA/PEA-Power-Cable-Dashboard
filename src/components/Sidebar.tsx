@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import PeaLogo from './PeaLogo';
 import { PEAUser } from '../types';
 import { PEA_AREA_NAMES } from '../utils/peaData';
-import { canUserUploadOrEdit } from '../utils/userManagement';
+import { canUserRegisterAssets, canUserAccessSubmitLog } from '../utils/userManagement';
 import { 
   Globe, 
   Layers, 
@@ -50,19 +50,21 @@ export default function Sidebar({
 }: SidebarProps) {
   const [isHovered, setIsHovered] = useState(false);
 
-  const canAccessAdminSuite = user.role === 'Admin' || user.role === 'Manager';
+  const canAccessBoardPortfolio = user.role === 'Admin' || user.role === 'Manager';
+  const canAccessRegistration = canUserRegisterAssets(user);
   const isSystemAdmin = user.role === 'Admin';
-  const canAccessSubmitLog = user.role === 'Admin' || (user.role === 'Local Operator' && canUserUploadOrEdit(user));
+  const canAccessSubmitLog = canUserAccessSubmitLog(user);
   const canDisconnectDb = user.role === 'Admin';
 
   const navigationItems = [
-    ...(canAccessAdminSuite ? [{
+    ...(canAccessBoardPortfolio ? [{
       id: 'admin' as const,
       label: 'Board Portfolio',
       subtitle: 'National Aggregate Overview',
       icon: Globe,
       badge: user.role
-    }, {
+    }] : []),
+    ...(canAccessRegistration ? [{
       id: 'registration' as const,
       label: 'Asset Registration',
       subtitle: 'Register & Integrity Checks',

@@ -83,6 +83,7 @@ import { ChevronDown } from 'lucide-react';
 import { RegistrationProgressModal } from './RegistrationProgressModal';
 import { CsvDuplicateConflictModal, CsvDuplicateConflict } from './CsvDuplicateConflictModal';
 import { logAssetActivity } from '../utils/auditLogger';
+import { canUserRegisterAssets } from '../utils/userManagement';
 
 interface AdminRegistrationSuiteProps {
   assets: CableAsset[];
@@ -1128,7 +1129,7 @@ export default function AdminRegistrationSuite({
       const cachedSheetsData: Record<string, CableAsset[]> = {};
 
       setScenarioSaveStatusMsg('Locating asset records across all 12 regional spreadsheets...');
-      if (activeToken && sheetsToCheck.length > 0) {
+      if (sheetsToCheck.length > 0) {
         await Promise.all(
           sheetsToCheck.map(async (sId) => {
             try {
@@ -2761,6 +2762,18 @@ export default function AdminRegistrationSuite({
 
   const commitOption1Assets = async (downloadMode: 'both' | 'csv' | 'txt' | 'none' | boolean = 'none') => {
     if (option1ReviewList.length === 0) return;
+    if (user && !canUserRegisterAssets(user)) {
+      setProgressModal({
+        isOpen: true,
+        title: 'Registration Not Authorized',
+        stepMessage: 'Your account does not have asset registration permissions.',
+        percent: 0,
+        isError: true,
+        errorMessage: 'Asset Registration is restricted to active PEA Admin and authorized Manager accounts.',
+        isComplete: false
+      });
+      return;
+    }
 
     const shouldDownloadCsv = downloadMode === true || downloadMode === 'both' || downloadMode === 'csv';
     const shouldDownloadTxt = downloadMode === 'both' || downloadMode === 'txt';
@@ -2780,7 +2793,7 @@ export default function AdminRegistrationSuite({
     try {
       let spreadsheetsMap: { [area: string]: string } = {};
       try {
-        const syncRes = await getMasterSpreadsheetsMap(googleToken);
+        const syncRes = await getMasterSpreadsheetsMap(activeToken);
         spreadsheetsMap = syncRes.spreadsheets || {};
       } catch (e) {
         console.warn("Auto sync spreadsheets error:", e);
@@ -2818,21 +2831,20 @@ export default function AdminRegistrationSuite({
         const groupRecords = group.records;
 
         let sheetLastNum = 0;
-        if (activeToken && currentSpId && currentSpId !== 'local_sheet') {
+        if (currentSpId && currentSpId !== 'local_sheet') {
           try {
             sheetLastNum = await fetchLastSheetNumber(activeToken, currentSpId);
           } catch (e) {
             console.warn("Error fetching last sheet number for batch:", e);
           }
         }
-        if (sheetLastNum === 0) {
-          const areaAssets = assets ? assets.filter(a => {
-            const aArea = getAssetArea(a);
-            return !aArea || aArea === group.area;
-          }) : [];
-          const areaNums = areaAssets.map(a => Number(a.number) || 0).filter(n => !isNaN(n) && n > 0 && n < 50000);
-          sheetLastNum = areaNums.length > 0 ? Math.max(...areaNums) : 0;
-        }
+        const areaAssets = assets ? assets.filter(a => {
+          const aArea = getAssetArea(a);
+          return !aArea || aArea === group.area;
+        }) : [];
+        const areaNums = areaAssets.map(a => Number(a.number) || 0).filter(n => !isNaN(n) && n > 0 && n < 50000);
+        const areaMaxNum = areaNums.length > 0 ? Math.max(...areaNums) : 0;
+        sheetLastNum = Math.max(sheetLastNum, areaMaxNum);
 
         const generalRowsBatch: any[][] = [];
         const engineeringRowsBatch: any[][] = [];
@@ -2927,13 +2939,13 @@ export default function AdminRegistrationSuite({
             number: nextIdx,
             timestamp,
             operatorName: registeredBy,
-            voltageLevel: rec.voltageLevel,
-            city: rec.city || rec.area,
-            equipmentType: rec.equipmentType,
-            manufacturer: rec.manufacturer,
-            country: rec.country,
-            locationType: rec.locationType,
-            substationName: rec.substationName,
+            voltageLevel: rec.voltageLevel || '',
+            city: rec.city || rec.area || '',
+            equipmentType: rec.equipmentType || 'Underground Cable',
+            manufacturer: rec.manufacturer || '',
+            country: rec.country || '',
+            locationType: rec.locationType || 'Distribution Line',
+            substationName: rec.substationName || '',
             landmark: rec.landmark || 'Primary Feeder Line',
             gps: (() => {
               const parts = String(rec.gps || '').split(',').map((s: string) => parseFloat(s.trim()));
@@ -2942,25 +2954,26 @@ export default function AdminRegistrationSuite({
                 : { lat: 13.7563, lng: 100.5018 };
             })(),
             yearOfRegistration: rec.yearOfRegistration || new Date().getFullYear(),
-            peaNumber: rec.peaNumber,
+            peaNumber: rec.peaNumber || '',
             assetNumber: rec.adsNumber || '',
             adsNumber: rec.assetNumber || '',
-            productionMonth: rec.productionMonth,
-            installationDate: rec.installationDate,
-            wbs: rec.wbs,
-            businessType: rec.businessType,
-            costCenter: rec.costCenter,
-            gistag: rec.gistag,
-            class: rec.class,
-            contractNumber: rec.contractNumber,
-            feeder: rec.feeder,
-            substationId: rec.substationId,
-            operateId: rec.operateId,
-            serialNumber: rec.serialNumber,
-            model: rec.model,
-            workOrder: rec.workOrder,
-            size: rec.size,
-            equipmentId: rec.equipmentId,
+            productionMonth: rec.productionMonth || '',
+            installationDate: rec.installationDate || '',
+            wbs: rec.wbs || '',
+            businessType: rec.businessType || '',
+            costCenter: rec.costCenter || '',
+            gistag: rec.gistag || '',
+            class: rec.class || '',
+            contractNumber: rec.contractNumber || '',
+            feeder: rec.feeder || '',
+            substationId: rec.substationId || '',
+            operateId: rec.operateId || '',
+            serialNumber: rec.serialNumber || '',
+            model: rec.model || '',
+            workOrder: rec.workOrder || '',
+            size: rec.size || '',
+            assetValue: rec.assetValue || '',
+            equipmentId: rec.equipmentId || '',
             qrDocument: rec.qrDocument || '',
             healthScore: 100,
             healthStatus: 'Green'
@@ -2969,8 +2982,8 @@ export default function AdminRegistrationSuite({
           totalRegisteredCount++;
         }
 
-        // Execute batch API requests per spreadsheet
-        if (activeToken && currentSpId && currentSpId !== 'local_sheet') {
+        // Execute batch API requests per spreadsheet (works with OAuth OR backend delegated/SA proxy)
+        if (currentSpId && currentSpId !== 'local_sheet') {
           setProgressModal({
             isOpen: true,
             title: 'Registering New Assets',
@@ -3236,6 +3249,10 @@ export default function AdminRegistrationSuite({
 
   const commitOption2Assets = async (downloadMode: 'both' | 'csv' | 'txt' | 'none' | boolean = 'none') => {
     if (csvParsedRows.length <= 1 && option2ReviewList.length === 0) return;
+    if (user && !canUserRegisterAssets(user)) {
+      alert('Asset update is restricted to active PEA Admin and authorized Manager accounts.');
+      return;
+    }
 
     const shouldDownloadCsv = downloadMode === true || downloadMode === 'both' || downloadMode === 'csv';
     const shouldDownloadTxt = downloadMode === 'both' || downloadMode === 'txt';
@@ -3326,7 +3343,7 @@ export default function AdminRegistrationSuite({
       const sheetsToCheck = spreadsheetIds && spreadsheetIds.length > 0 ? spreadsheetIds : (spreadsheetId ? [spreadsheetId] : []);
       const cachedSheetsData: { [sId: string]: any[] } = {};
 
-      if (activeToken) {
+      if (sheetsToCheck.length > 0) {
         await Promise.all(
           sheetsToCheck.map(async (sId) => {
             try {
@@ -3432,7 +3449,7 @@ export default function AdminRegistrationSuite({
         const match = foundLocations[0];
         const existing = match.rowData;
 
-        if (activeToken && match.spreadsheetId !== 'local') {
+        if (match.spreadsheetId !== 'local') {
           const updatedAds = newAds ? newAds : (existing.assetNumber || '');
           const updatedAa = newAa ? newAa : (existing.adsNumber || '');
           const updatedQr = newQr ? newQr : (existing.qrDocument || '');
@@ -3489,7 +3506,7 @@ export default function AdminRegistrationSuite({
       // Phase 2: Execute batch updates grouped by spreadsheetId
       const sheetsToUpdateList = Object.keys(batchUpdatesBySheet);
       
-      if (activeToken && sheetsToUpdateList.length > 0) {
+      if (sheetsToUpdateList.length > 0) {
         setOption2TotalToUpdate(sheetsToUpdateList.length);
         setOption2CurrentIndex(0);
 

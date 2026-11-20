@@ -19,6 +19,17 @@ export function getEffectiveGoogleToken(token?: string | null): string | null {
   return null;
 }
 
+function clearExpiredGoogleTokenIf401(status: number, usedToken: string | null): boolean {
+  if (status !== 401 || !usedToken) return false;
+  try {
+    const saved = localStorage.getItem('pea_google_token');
+    if (saved && saved.trim() === usedToken.trim()) {
+      localStorage.removeItem('pea_google_token');
+    }
+  } catch (e) {}
+  return true;
+}
+
 // Helper to enforce strict public View-Only (anyone: reader) permissions and remove any legacy public writer permissions
 export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
   if (!accessToken || !fileId) return;
@@ -65,7 +76,10 @@ export async function makeFileReadableByAnyone(accessToken: string, fileId: stri
 }
 
 // Master Spreadsheet mapping retriever combining Firestore Central DB config and Drive discovery
-export async function getMasterSpreadsheetsMap(accessToken?: string | null): Promise<{
+export async function getMasterSpreadsheetsMap(
+  accessToken?: string | null,
+  allowMutations: boolean = false
+): Promise<{
   spreadsheets: { [area: string]: string };
   folders: { [area: string]: string };
 }> {
@@ -96,15 +110,26 @@ export async function getMasterSpreadsheetsMap(accessToken?: string | null): Pro
     console.warn("Error getting sector spreadsheets from Firestore:", e);
   }
 
-  // 3. Auto discover from Drive if token is available
-  if (accessToken) {
+  // 3. Auto discover from Drive ONLY for areas not yet mapped from Firestore central config
+  const mappedAreaCount = PEA_AREAS.filter(a => Boolean(spreadsheets[a])).length;
+  if (accessToken && mappedAreaCount < PEA_AREAS.length) {
     try {
-      const discovered = await autoDiscoverAndSync(accessToken);
+      const discovered = await autoDiscoverAndSync(accessToken, allowMutations);
       if (discovered.spreadsheets) {
-        Object.assign(spreadsheets, discovered.spreadsheets);
+        for (const [areaKey, sheetId] of Object.entries(discovered.spreadsheets)) {
+          const upper = areaKey.toUpperCase();
+          if (sheetId && !spreadsheets[upper]) {
+            spreadsheets[upper] = sheetId;
+          }
+        }
       }
       if (discovered.folders) {
-        Object.assign(folders, discovered.folders);
+        for (const [areaKey, fId] of Object.entries(discovered.folders)) {
+          const upper = areaKey.toUpperCase();
+          if (fId && !folders[upper]) {
+            folders[upper] = fId;
+          }
+        }
       }
     } catch (e) {
       console.warn("Auto discover spreadsheets error:", e);
@@ -155,18 +180,108 @@ export async function fetchFastRegionalIdentifiers(
     });
   }
 
-  // 2. Fetch Tab 1 'General Information'!A2:AG in parallel across all 12 regional sheets if token is available
-  const token = getEffectiveGoogleToken(accessToken);
-  if (token) {
-    try {
-      const { spreadsheets } = await getMasterSpreadsheetsMap(token);
-      const entries = Object.entries(spreadsheets);
+  // 2. Fetch Tab 1 'General Information'!A2:AH in parallel across all 12 regional sheets (direct OAuth + backend proxy fallback)
+  let token = getEffectiveGoogleToken(accessToken);
+  const parseGeneralRowsToAssets = (area: string, rows: any[][]): CableAsset[] => {
+    const parsed: CableAsset[] = [];
+    rows.forEach((row, idx) => {
+      if (!row || row.length === 0 || !row.some(c => c && String(c).trim() !== '')) return;
 
-      if (entries.length > 0) {
-        const results = await Promise.all(
-          entries.map(async ([area, sheetId]) => {
+      const peaNumber = (row[13] || '').toString().trim();
+      const assetNumber = (row[14] || '').toString().trim(); // Equipment Number ADS
+      const adsNumber = (row[15] || '').toString().trim();   // Account Asset Number AA
+      const productionMonth = (row[16] || '').toString().trim(); // Column Q
+      const installationDate = formatToDDMMYYYY((row[17] || '').toString().trim()); // Column R
+      const wbs = (row[18] || '').toString().trim(); // Column S
+      const businessType = (row[19] || '').toString().trim(); // Column T
+      const costCenter = (row[20] || '').toString().trim(); // Column U
+      const gistag = (row[21] || '').toString().trim(); // Column V
+      const contractNumber = (row[23] || '').toString().trim(); // Column X
+      const feeder = (row[24] || '').toString().trim(); // Column Y
+      const substationId = (row[25] || '').toString().trim(); // Column Z
+      const operateId = (row[26] || '').toString().trim(); // Column AA
+      const serialNumber = (row[27] || '').toString().trim(); // Column AB
+      const model = (row[28] || '').toString().trim(); // Column AC
+      const workOrder = (row[29] || '').toString().trim(); // Column AD
+      const size = (row[30] || '').toString().trim(); // Column AE
+      const assetValue = (row[31] || '').toString().trim(); // Column AF
+      const equipmentId = (row[32] || row[30] || '').toString().trim(); // Column AG
+      const qrDocument = (row[33] || '').toString().trim(); // Column AH
+
+      const parsedEq = equipmentId ? parseEquipmentIdDetails(equipmentId) : {};
+
+      const rawArea = (area && PEA_AREAS.includes(area.toUpperCase() as any))
+        ? area.toUpperCase()
+        : (parsedEq.area || (row[4] ? getAreaFromCity((row[4] || '').toString().trim()) : null) || 'S2');
+
+      const rawCity = (row[4] || '').toString().trim();
+      const resolvedCity = (rawCity && rawCity !== area)
+        ? (CITY_ABBREVIATION_TO_NAME[rawCity.toUpperCase()] || rawCity)
+        : (parsedEq.city || (PEA_AREA_CITIES[rawArea]?.[0] || ''));
+
+      const rawVolt = (row[3] || '').toString().trim();
+      const resolvedVolt = (rawVolt ? String(rawVolt).replace(/[^0-9.]/g, '') : '') || parsedEq.voltageLevel || (rawArea === 'S2' || rawArea === 'S3' ? '33' : '115');
+
+      const resolvedLocType = ((row[8] || '').toString().trim() || parsedEq.locationType || 'Distribution Line') as LocationType;
+      const resolvedEqType = ((row[5] || '').toString().trim() || parsedEq.equipmentType || 'Cold Shrink Termination') as EquipmentType;
+      const resolvedYear = parseInt(row[12], 10) || parsedEq.year || new Date().getFullYear();
+
+      let cls = (row[22] || '').toString().trim(); // Column W
+      if (cls === 'Z_RU' || !cls) {
+        cls = getDefaultClassForEquipmentType(resolvedEqType);
+      }
+
+      parsed.push({
+        number: parseInt(row[0], 10) || idx + 1,
+        timestamp: (row[1] || '').toString().trim(),
+        operatorName: (row[2] || '').toString().trim(),
+        voltageLevel: resolvedVolt,
+        city: resolvedCity,
+        area: rawArea,
+        equipmentType: resolvedEqType,
+        manufacturer: (row[6] || '').toString().trim(),
+        country: (row[7] || '').toString().trim(),
+        locationType: resolvedLocType,
+        substationName: (row[9] || '').toString().trim(),
+        landmark: (row[10] || '').toString().trim(),
+        gps: { lat: 0, lng: 0 },
+        yearOfRegistration: resolvedYear,
+        peaNumber,
+        assetNumber,
+        adsNumber,
+        productionMonth,
+        installationDate,
+        wbs,
+        businessType,
+        costCenter,
+        gistag,
+        class: cls,
+        contractNumber,
+        feeder,
+        substationId,
+        operateId,
+        serialNumber,
+        model,
+        workOrder,
+        size,
+        assetValue,
+        equipmentId: equipmentId || `PEA-${rawArea}-${idx + 1}`,
+        qrDocument
+      } as any);
+    });
+    return parsed;
+  };
+
+  try {
+    const { spreadsheets } = await getMasterSpreadsheetsMap(token, false);
+    const entries = Object.entries(spreadsheets);
+
+    if (entries.length > 0) {
+      const results = await Promise.all(
+        entries.map(async ([area, sheetId]) => {
+          // Try direct Google Sheets API when OAuth token is present
+          if (token) {
             try {
-              // Fetch Tab 1 General Information rows A to AH
               const range = encodeURIComponent("'General Information'!A2:AH");
               const res = await fetchWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?majorDimension=ROWS`,
@@ -178,117 +293,47 @@ export async function fetchFastRegionalIdentifiers(
               if (res.ok) {
                 const data = await res.json();
                 const rows: any[][] = data.values || [];
-                const parsed: CableAsset[] = [];
-
-                rows.forEach((row, idx) => {
-                  if (!row || row.length === 0 || !row.some(c => c && String(c).trim() !== '')) return;
-
-                  const peaNumber = (row[13] || '').toString().trim();
-                  const assetNumber = (row[14] || '').toString().trim(); // Equipment Number ADS
-                  const adsNumber = (row[15] || '').toString().trim();   // Account Asset Number AA
-                  const productionMonth = (row[16] || '').toString().trim(); // Column Q
-                  const installationDate = formatToDDMMYYYY((row[17] || '').toString().trim()); // Column R
-                  const wbs = (row[18] || '').toString().trim(); // Column S
-                  const businessType = (row[19] || '').toString().trim(); // Column T
-                  const costCenter = (row[20] || '').toString().trim(); // Column U
-                  const gistag = (row[21] || '').toString().trim(); // Column V
-                  const contractNumber = (row[23] || '').toString().trim(); // Column X
-                  const feeder = (row[24] || '').toString().trim(); // Column Y
-                  const substationId = (row[25] || '').toString().trim(); // Column Z
-                  const operateId = (row[26] || '').toString().trim(); // Column AA
-                  const serialNumber = (row[27] || '').toString().trim(); // Column AB
-                  const model = (row[28] || '').toString().trim(); // Column AC
-                  const workOrder = (row[29] || '').toString().trim(); // Column AD
-                  const size = (row[30] || '').toString().trim(); // Column AE
-                  const assetValue = (row[31] || '').toString().trim(); // Column AF
-                  const equipmentId = (row[32] || row[30] || '').toString().trim(); // Column AG
-                  const qrDocument = (row[33] || '').toString().trim(); // Column AH
-
-                  // Parse equipmentId to ensure complete fidelity if fields are missing or coded
-                  const parsedEq = equipmentId ? parseEquipmentIdDetails(equipmentId) : {};
-                  
-                  const rawArea = (area && PEA_AREAS.includes(area.toUpperCase() as any))
-                    ? area.toUpperCase()
-                    : (parsedEq.area || (row[4] ? getAreaFromCity((row[4] || '').toString().trim()) : null) || 'S2');
-                  
-                  const rawCity = (row[4] || '').toString().trim();
-                  const resolvedCity = (rawCity && rawCity !== area)
-                    ? (CITY_ABBREVIATION_TO_NAME[rawCity.toUpperCase()] || rawCity)
-                    : (parsedEq.city || (PEA_AREA_CITIES[rawArea]?.[0] || ''));
-
-                  const rawVolt = (row[3] || '').toString().trim();
-                  const resolvedVolt = (rawVolt ? String(rawVolt).replace(/[^0-9.]/g, '') : '') || parsedEq.voltageLevel || (rawArea === 'S2' || rawArea === 'S3' ? '33' : '115');
-
-                  const resolvedLocType = ((row[8] || '').toString().trim() || parsedEq.locationType || 'Distribution Line') as LocationType;
-                  const resolvedEqType = ((row[5] || '').toString().trim() || parsedEq.equipmentType || 'Cold Shrink Termination') as EquipmentType;
-                  const resolvedYear = parseInt(row[12], 10) || parsedEq.year || new Date().getFullYear();
-
-                  let cls = (row[22] || '').toString().trim(); // Column W
-                  if (cls === 'Z_RU' || !cls) {
-                    cls = getDefaultClassForEquipmentType(resolvedEqType);
-                  }
-
-                  parsed.push({
-                    number: parseInt(row[0], 10) || idx + 1,
-                    timestamp: (row[1] || '').toString().trim(),
-                    operatorName: (row[2] || '').toString().trim(),
-                    voltageLevel: resolvedVolt,
-                    city: resolvedCity,
-                    area: rawArea,
-                    equipmentType: resolvedEqType,
-                    manufacturer: (row[6] || '').toString().trim(),
-                    country: (row[7] || '').toString().trim(),
-                    locationType: resolvedLocType,
-                    substationName: (row[9] || '').toString().trim(),
-                    landmark: (row[10] || '').toString().trim(),
-                    gps: { lat: 0, lng: 0 },
-                    yearOfRegistration: resolvedYear,
-                    peaNumber,
-                    assetNumber,
-                    adsNumber,
-                    productionMonth,
-                    installationDate,
-                    wbs,
-                    businessType,
-                    costCenter,
-                    gistag,
-                    class: cls,
-                    contractNumber,
-                    feeder,
-                    substationId,
-                    operateId,
-                    serialNumber,
-                    model,
-                    workOrder,
-                    size,
-                    assetValue,
-                    equipmentId: equipmentId || `PEA-${rawArea}-${idx + 1}`,
-                    qrDocument
-                  } as any);
-                });
-                return parsed;
+                return parseGeneralRowsToAssets(area, rows);
+              }
+              if (clearExpiredGoogleTokenIf401(res.status, token)) {
+                token = null;
               }
             } catch (sheetErr) {
-              console.warn(`Fast regional identifier query for ${area} fallback:`, sheetErr);
+              console.warn(`Fast regional identifier direct query for ${area} falling back to proxy:`, sheetErr);
             }
-            return [];
-          })
-        );
-
-        results.flat().forEach(a => {
-          const pea = (a.peaNumber || '').trim().toUpperCase();
-          const ads = (a.assetNumber || a.adsNumber || '').trim().toUpperCase();
-          const aa = (a.adsNumber || a.assetNumber || '').trim().toUpperCase();
-          const key = a.equipmentId || `${pea}_${ads}_${aa}_${a.number}`;
-          if (key && !seenKeys.has(key)) {
-            seenKeys.add(key);
-            collected.push(a);
           }
-        });
-      }
-    } catch (err) {
-      console.warn("Failed fast regional identifier scan:", err);
+
+          // Fallback to /api/sheets/data CSV proxy for credential users or when OAuth token lacks access
+          try {
+            const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${encodeURIComponent(sheetId)}`);
+            if (proxyRes.ok) {
+              const proxyData = await proxyRes.json().catch(() => ({}));
+              const genRows: any[][] = proxyData?.valueRanges?.[0]?.values || [];
+              if (genRows.length > 1) {
+                return parseGeneralRowsToAssets(area, genRows.slice(1));
+              }
+            }
+          } catch (proxyErr) {
+            console.warn(`Fast regional identifier proxy fallback for ${area}:`, proxyErr);
+          }
+
+          return [];
+        })
+      );
+
+      results.flat().forEach(a => {
+        const pea = (a.peaNumber || '').trim().toUpperCase();
+        const ads = (a.assetNumber || a.adsNumber || '').trim().toUpperCase();
+        const aa = (a.adsNumber || a.assetNumber || '').trim().toUpperCase();
+        const key = a.equipmentId || `${pea}_${ads}_${aa}_${a.number}`;
+        if (key && !seenKeys.has(key)) {
+          seenKeys.add(key);
+          collected.push(a);
+        }
+      });
     }
+  } catch (err) {
+    console.warn("Failed fast regional identifier scan:", err);
   }
 
   // 3. Absorbed local storage backup if empty
@@ -333,7 +378,10 @@ export async function listSpreadsheets(accessToken: string): Promise<{ name: str
 }
 
 // Helper to automatically discover all existing spreadsheets and image folders in Google Drive
-export async function autoDiscoverAndSync(accessToken: string): Promise<{
+export async function autoDiscoverAndSync(
+  accessToken: string,
+  allowMutations: boolean = false
+): Promise<{
   spreadsheets: { [area: string]: string };
   folders: { [area: string]: string };
 }> {
@@ -355,7 +403,9 @@ export async function autoDiscoverAndSync(accessToken: string): Promise<{
         if (match) {
           const area = match[1].trim().toUpperCase();
           spreadsheets[area] = file.id;
-          makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
+          if (allowMutations) {
+            makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
+          }
         }
       });
     }
@@ -369,54 +419,58 @@ export async function autoDiscoverAndSync(accessToken: string): Promise<{
       const folderData = await folderRes.json();
       const files = folderData.files || [];
       files.forEach((file: any) => {
-        const match = file.name.match(/PEA\s+Cable\s+Asset\s+Images\s*-\s*([A-Za-z0-9]+)/i) ||
+        const match = file.name.match(/PEA\s+Cable\s+Asset\s+Images\s*-\s*([A-Za-z0-9]+)/i) || 
                       file.name.match(/PEA\s+Cable\s+Asset\s+Images\s+([A-Za-z0-9]+)/i);
         if (match) {
           const area = match[1].trim().toUpperCase();
           folders[area] = file.id;
-          makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
+          if (allowMutations) {
+            makeFileReadableByAnyone(accessToken, file.id).catch(() => {});
+          }
         }
       });
     }
 
-    // Create folder on-demand for any mapped spreadsheet if a folder is missing
-    const areas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
-    for (const area of areas) {
-      const sheetId = spreadsheets[area];
-      if (sheetId && !folders[area]) {
-        try {
-          const folderMetadata = {
-            name: `PEA Cable Asset Images - ${area}`,
-            mimeType: 'application/vnd.google-apps.folder'
-          };
-          const fRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(folderMetadata)
-          });
-          if (fRes.ok) {
-            const fData = await fRes.json();
-            const folderId = fData.id;
-            folders[area] = folderId;
-            
-            // Set Folder Permission to public reader
-            await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}/permissions`, {
+    // Create folder on-demand for any mapped spreadsheet ONLY when Admin mutations are allowed
+    if (allowMutations) {
+      const areas = ['N1', 'N2', 'N3', 'C1', 'C2', 'C3', 'S1', 'S2', 'S3', 'NE1', 'NE2', 'NE3'];
+      for (const area of areas) {
+        const sheetId = spreadsheets[area];
+        if (sheetId && !folders[area]) {
+          try {
+            const folderMetadata = {
+              name: `PEA Cable Asset Images - ${area}`,
+              mimeType: 'application/vnd.google-apps.folder'
+            };
+            const fRes = await fetch('https://www.googleapis.com/drive/v3/files', {
               method: 'POST',
               headers: {
                 Authorization: `Bearer ${accessToken}`,
                 'Content-Type': 'application/json'
               },
-              body: JSON.stringify({
-                role: 'reader',
-                type: 'anyone'
-              })
+              body: JSON.stringify(folderMetadata)
             });
+            if (fRes.ok) {
+              const fData = await fRes.json();
+              const folderId = fData.id;
+              folders[area] = folderId;
+
+              // Set Folder Permission to public reader
+              await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}/permissions`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  role: 'reader',
+                  type: 'anyone'
+                })
+              });
+            }
+          } catch (err) {
+            console.error(`Failed to create missing image folder for ${area}:`, err);
           }
-        } catch (err) {
-          console.error(`Failed to create missing image folder for ${area}:`, err);
         }
       }
     }
@@ -2055,8 +2109,9 @@ export async function executeUniversalSheetAppend(
   sheetName: string,
   values: any[][]
 ): Promise<void> {
-  const token = getEffectiveGoogleToken(accessToken);
-  
+  const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
+  let token = getEffectiveGoogleToken(accessToken);
+
   // 1. If client token is available, attempt direct Google Sheets API write
   if (token) {
     try {
@@ -2070,33 +2125,40 @@ export async function executeUniversalSheetAppend(
         body: JSON.stringify({
           range,
           majorDimension: 'ROWS',
-          values
+          values: sanitizedValues
         })
       });
       if (res.ok) return;
+      if (clearExpiredGoogleTokenIf401(res.status, token)) {
+        token = null;
+      }
       console.warn(`Direct Google Sheets append failed (${res.status}), trying server proxy fallback...`);
     } catch (e) {
       console.warn('Direct Google Sheets append error, trying server proxy fallback:', e);
     }
   }
 
-  // 2. Fallback to Express backend proxy
+  // 2. Fallback to Express backend proxy (server falls back to Admin delegated token / Service Account on 401/403)
   try {
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
     const proxyRes = await fetch('/api/sheets/append-row', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
       body: JSON.stringify({
         spreadsheetId,
         sheetName,
-        values,
+        values: sanitizedValues,
         token: token || undefined
       })
     });
-    const proxyData = await proxyRes.json();
+    const proxyData = await proxyRes.json().catch(() => ({}));
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    throw new Error(proxyData.error || 'Server proxy could not append row to Google Sheets.');
+    throw new Error(proxyData.error || `Server proxy returned HTTP ${proxyRes.status} while appending to Google Sheets.`);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Append Error]:`, proxyErr);
     throw new Error(`Google Sheets append failed for "${sheetName}": ${proxyErr.message || 'Authorization error'}`);
@@ -2111,7 +2173,8 @@ export async function executeUniversalSheetUpdate(
   values: any[][],
   maxColLetter: string = 'AH'
 ): Promise<void> {
-  const token = getEffectiveGoogleToken(accessToken);
+  const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
+  let token = getEffectiveGoogleToken(accessToken);
   const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
 
   // 1. Direct Google Sheets API if token available
@@ -2126,10 +2189,13 @@ export async function executeUniversalSheetUpdate(
         body: JSON.stringify({
           range,
           majorDimension: 'ROWS',
-          values
+          values: sanitizedValues
         })
       });
       if (res.ok) return;
+      if (clearExpiredGoogleTokenIf401(res.status, token)) {
+        token = null;
+      }
       console.warn(`Direct Google Sheets update failed (${res.status}), trying server proxy fallback...`);
     } catch (e) {
       console.warn('Direct Google Sheets update error, trying server proxy fallback:', e);
@@ -2138,21 +2204,25 @@ export async function executeUniversalSheetUpdate(
 
   // 2. Server proxy fallback
   try {
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
     const proxyRes = await fetch('/api/sheets/update-row', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
       body: JSON.stringify({
         spreadsheetId,
         range,
-        values,
+        values: sanitizedValues,
         token: token || undefined
       })
     });
-    const proxyData = await proxyRes.json();
+    const proxyData = await proxyRes.json().catch(() => ({}));
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    throw new Error(proxyData.error || 'Server proxy could not update row in Google Sheets.');
+    throw new Error(proxyData.error || `Server proxy returned HTTP ${proxyRes.status} while updating Google Sheets.`);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Update Error]:`, proxyErr);
     throw new Error(`Google Sheets update failed for "${sheetName}" row ${rowIndex}: ${proxyErr.message || 'Authorization error'}`);
@@ -2200,9 +2270,10 @@ export async function appendGeneralRow(
 // Append multiple general rows in a SINGLE API call (Batch Append to avoid 60 requests/min rate limit)
 export async function appendGeneralRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-  const token = getEffectiveGoogleToken(accessToken);
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', rowsValues);
+  const sanitizedRows = rowsValues.map(sanitizeRowForSheets);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'General Information', sanitizedRows);
 
+  const token = getEffectiveGoogleToken(accessToken);
   if (token) {
     syncSingleSpreadsheetTab4FromTab1(token, spreadsheetId).catch(err => {
       console.warn(`[Auto-Link Tab 4] Post-batch append sync notice for spreadsheet ${spreadsheetId}:`, err);
@@ -2212,15 +2283,7 @@ export async function appendGeneralRowsBatch(accessToken: string | null | undefi
 
 // Fetch highest number in Column A of General Information sheet
 export async function fetchLastSheetNumber(accessToken: string | null | undefined, spreadsheetId: string): Promise<number> {
-  const token = getEffectiveGoogleToken(accessToken);
-  if (!token) return 0;
-  try {
-    const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!res.ok) return 0;
-    const data = await res.json();
-    const rows = data.values || [];
+  const parseMaxFromRows = (rows: any[][]): number => {
     let maxNum = 0;
     for (const r of rows) {
       if (r && r[0] !== undefined && r[0] !== null) {
@@ -2231,10 +2294,38 @@ export async function fetchLastSheetNumber(accessToken: string | null | undefine
       }
     }
     return maxNum;
-  } catch (err) {
-    console.warn("Failed to fetch last sheet number:", err);
-    return 0;
+  };
+
+  let token = getEffectiveGoogleToken(accessToken);
+  if (token) {
+    try {
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/%27General%20Information%27%21A2:A`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return parseMaxFromRows(data.values || []);
+      }
+      clearExpiredGoogleTokenIf401(res.status, token);
+    } catch (err) {
+      console.warn("Direct fetchLastSheetNumber error, trying proxy:", err);
+    }
   }
+
+  // Fallback to backend read proxy when token is absent or rejected
+  try {
+    const proxyRes = await fetch(`/api/sheets/data?spreadsheetId=${encodeURIComponent(spreadsheetId)}`);
+    if (proxyRes.ok) {
+      const proxyData = await proxyRes.json().catch(() => ({}));
+      const genRows: any[][] = proxyData?.valueRanges?.[0]?.values || [];
+      if (genRows.length > 1) {
+        return parseMaxFromRows(genRows.slice(1));
+      }
+    }
+  } catch (err) {
+    console.warn("Proxy fetchLastSheetNumber fallback error:", err);
+  }
+  return 0;
 }
 
 // Append new engineering row
@@ -2259,24 +2350,24 @@ export async function appendEngineeringRow(accessToken: string | null | undefine
     rowValues = alignRowWithHeaders(headers, rowOrData);
   }
 
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', [rowValues]);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', [sanitizeRowForSheets(rowValues)]);
 }
 
 // Append multiple engineering rows in a SINGLE API call
 export async function appendEngineeringRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', rowsValues);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Engineering Information', rowsValues.map(sanitizeRowForSheets));
 }
 
 // Append new visual images row
 export async function appendVisualRow(accessToken: string | null | undefined, spreadsheetId: string, row: any[]) {
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', [row]);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', [sanitizeRowForSheets(row)]);
 }
 
 // Append multiple visual rows in a SINGLE API call
 export async function appendVisualRowsBatch(accessToken: string | null | undefined, spreadsheetId: string, rowsValues: any[][]) {
   if (!rowsValues || rowsValues.length === 0) return;
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', rowsValues);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'Visual & Thermal Images', rowsValues.map(sanitizeRowForSheets));
 }
 
 // Ensure 'PD & Diagnostic Data' sheet exists on the spreadsheet, creating it, formatting headers, and backfilling rows if missing
@@ -2767,7 +2858,7 @@ export async function appendPdDiagnosticRowsBatch(accessToken: string | null | u
   if (token) {
     await ensurePdDiagnosticsSheetExists(token, spreadsheetId);
   }
-  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', rowsValues);
+  await executeUniversalSheetAppend(accessToken, spreadsheetId, 'PD & Diagnostic Data', rowsValues.map(sanitizeRowForSheets));
 }
 
 // Update specific spreadsheet row
@@ -2831,14 +2922,18 @@ export async function batchUpdateSheetRows(
   updates: { range: string; values: any[][] }[]
 ) {
   if (updates.length === 0) return;
-  const token = getEffectiveGoogleToken(accessToken);
+  const sanitizedUpdates = updates.map(u => ({
+    range: u.range,
+    values: (u.values || []).map(sanitizeRowForSheets)
+  }));
+  let token = getEffectiveGoogleToken(accessToken);
   
   // 1. Direct API if token exists
   if (token) {
     try {
       const body = {
         valueInputOption: 'USER_ENTERED',
-        data: updates.map(u => ({
+        data: sanitizedUpdates.map(u => ({
           range: u.range,
           majorDimension: 'ROWS',
           values: u.values
@@ -2855,7 +2950,10 @@ export async function batchUpdateSheetRows(
       });
 
       if (res.ok) return;
-      console.warn('Direct batch update returned non-200 status, falling back to server proxy / per-row update...');
+      if (clearExpiredGoogleTokenIf401(res.status, token)) {
+        token = null;
+      }
+      console.warn(`Direct batch update returned HTTP ${res.status}, falling back to server proxy / per-row update...`);
     } catch (e) {
       console.warn('Direct batch update network error, falling back to proxy:', e);
     }
@@ -2863,20 +2961,24 @@ export async function batchUpdateSheetRows(
 
   // 2. Server proxy fallback
   try {
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
     const proxyRes = await fetch('/api/sheets/batch-update', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
       body: JSON.stringify({
         spreadsheetId,
-        updates,
+        updates: sanitizedUpdates,
         token: token || undefined
       })
     });
-    const proxyData = await proxyRes.json();
+    const proxyData = await proxyRes.json().catch(() => ({}));
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    console.warn(`[Batch Update Proxy Notice] Server proxy returned: ${proxyData.error}. Executing robust row-by-row update fallback...`);
+    console.warn(`[Batch Update Proxy Notice] Server proxy returned (${proxyRes.status}): ${proxyData.error || 'Unavailable'}. Executing robust row-by-row update fallback...`);
   } catch (proxyErr: any) {
     console.warn(`[Batch Update Exception] Proxy call error: ${proxyErr.message}. Executing row-by-row fallback...`);
   }

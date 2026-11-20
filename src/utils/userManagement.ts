@@ -145,16 +145,42 @@ export function verifyUsernamePassword(username: string, password: string): PEAU
 const REGISTERED_USERS_KEY = 'pea_registered_users_list_v1';
 const ACTIVE_SESSION_META_KEY = 'pea_active_user_session_meta_v1';
 
+function mergeProtectedPreseededUser(base: PEAUser | undefined, incoming: Partial<PEAUser>, normEmail: string): PEAUser {
+  const preseeded = PRESEEDED_USERS[normEmail];
+  if (preseeded && preseeded.status === 'active') {
+    const isExplicitlyRejected = incoming.status === 'rejected';
+    return {
+      ...preseeded,
+      ...incoming,
+      email: normEmail,
+      status: isExplicitlyRejected ? 'rejected' : 'active',
+      role: (incoming.role && incoming.role !== 'User') ? incoming.role : preseeded.role,
+      interestArea: incoming.interestArea || preseeded.interestArea
+    };
+  }
+  return {
+    ...(base || {}),
+    ...(incoming as PEAUser),
+    email: normEmail
+  };
+}
+
 export function getRegisteredUsers(): Record<string, PEAUser> {
   let localSaved: string | null = null;
   try {
     localSaved = localStorage.getItem(REGISTERED_USERS_KEY);
   } catch (e) {}
-  let users: Record<string, PEAUser> = { ...PRESEEDED_USERS };
+  const users: Record<string, PEAUser> = { ...PRESEEDED_USERS };
   if (localSaved) {
     try {
       const parsed = JSON.parse(localSaved);
-      users = { ...users, ...parsed };
+      if (parsed && typeof parsed === 'object') {
+        for (const [rawEmail, rawData] of Object.entries(parsed)) {
+          if (!rawData || typeof rawData !== 'object') continue;
+          const normEmail = rawEmail.toLowerCase().trim();
+          users[normEmail] = mergeProtectedPreseededUser(users[normEmail], rawData as Partial<PEAUser>, normEmail);
+        }
+      }
     } catch (e) {
       console.error('Failed to parse registered users from local cache', e);
     }
@@ -172,11 +198,7 @@ export async function syncRegisteredUsersFromFirestore(): Promise<Record<string,
       const data = docSnap.data() as PEAUser;
       if (data?.email) {
         const normEmail = data.email.toLowerCase().trim();
-        merged[normEmail] = {
-          ...merged[normEmail],
-          ...data,
-          email: normEmail
-        };
+        merged[normEmail] = mergeProtectedPreseededUser(merged[normEmail], data, normEmail);
       }
     });
     try {
@@ -304,12 +326,36 @@ export function canUserUploadOrEdit(user: PEAUser | null | undefined): boolean {
   if (!user || !user.email) return false;
   const email = user.email.toLowerCase().trim();
   if (!email || email === 'guest.operator@pea.co.th' || email.startsWith('guest.')) return false;
-  if (user.role === 'User') return false;
   if (isAdminAccount(email)) return true;
 
-  const registered = findUserByEmail(email);
-  const effectiveStatus = user.status || registered?.status;
+  const registered = findUserByEmail(email) || PRESEEDED_USERS[email];
+  const effectiveRole = user.role || registered?.role;
+  if (effectiveRole === 'User') return false;
+
+  const effectiveStatus = (registered?.status === 'rejected' || user.status === 'rejected')
+    ? 'rejected'
+    : (user.status === 'active' || registered?.status === 'active' ? 'active' : (user.status || registered?.status));
   return effectiveStatus === 'active';
+}
+
+// Asset Registration Panel authorization: Active Admin and Active Manager (e.g. Natthakorn)
+export function canUserRegisterAssets(user: PEAUser | null | undefined): boolean {
+  if (!canUserUploadOrEdit(user)) return false;
+  const email = (user?.email || '').toLowerCase().trim();
+  if (isAdminAccount(email)) return true;
+  const registered = findUserByEmail(email) || PRESEEDED_USERS[email];
+  const effectiveRole = user?.role || registered?.role;
+  return effectiveRole === 'Admin' || effectiveRole === 'Manager';
+}
+
+// Submit Log Panel authorization: Active Admin and Active Local Operator ONLY (Managers are restricted here)
+export function canUserAccessSubmitLog(user: PEAUser | null | undefined): boolean {
+  if (!canUserUploadOrEdit(user)) return false;
+  const email = (user?.email || '').toLowerCase().trim();
+  if (isAdminAccount(email) && user?.role !== 'Manager') return true;
+  const registered = findUserByEmail(email) || PRESEEDED_USERS[email];
+  const effectiveRole = user?.role || registered?.role;
+  return effectiveRole === 'Admin' || effectiveRole === 'Local Operator';
 }
 
 export async function getAuthHeadersForApi(): Promise<Record<string, string>> {

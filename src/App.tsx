@@ -28,6 +28,8 @@ import {
   setActiveUserSessionMeta,
   clearActiveUserSessionMeta,
   canUserUploadOrEdit,
+  canUserRegisterAssets,
+  canUserAccessSubmitLog,
   getAuthHeadersForApi
 } from './utils/userManagement';
 import AdminDashboard from './components/AdminDashboard';
@@ -675,7 +677,7 @@ export default function App() {
       if (isRegionalOnly && targetArea) {
         if (uniqueIds.length === 0) {
           try {
-            const discovered = await autoDiscoverAndSync(activeToken);
+            const discovered = await autoDiscoverAndSync(activeToken, isAdminUser);
             if (discovered.spreadsheets && discovered.spreadsheets[targetArea]) {
               uniqueIds = [discovered.spreadsheets[targetArea]];
               setSpreadsheetId(discovered.spreadsheets[targetArea]);
@@ -687,7 +689,7 @@ export default function App() {
         }
       } else if (!isRegionalOnly && uniqueIds.length < 12) {
         try {
-          const discovered = await autoDiscoverAndSync(activeToken);
+          const discovered = await autoDiscoverAndSync(activeToken, isAdminUser);
           if (discovered.spreadsheets) {
             const discoveredIds = Object.values(discovered.spreadsheets).filter(Boolean);
             uniqueIds = Array.from(new Set([...uniqueIds, ...discoveredIds]));
@@ -1009,7 +1011,7 @@ export default function App() {
         }
         updateLastFetchedTimestamp();
 
-        if (activeToken && !isRegionalOnly) {
+        if (activeToken && isAdminUser && !isRegionalOnly) {
           syncAll12SheetsTab4FromTab1(activeToken).catch(err => {
             console.warn("Background Tab 4 auto-sync notice:", err);
           });
@@ -1255,9 +1257,21 @@ export default function App() {
     }
   }, [googleToken, spreadsheetId, spreadsheetIds, user?.role, user?.interestArea, user?.email]);
 
-  // Handle tab switching with page transition loading screen
-  const handleTabChange = (newTab: 'admin' | 'area' | 'input' | 'records' | 'registration') => {
+  // Handle tab switching with page transition loading screen & role-based guards
+  const handleTabChange = (newTab: 'admin' | 'area' | 'input' | 'records' | 'registration' | 'monitor') => {
     if (newTab === activeTab) return;
+    if (newTab === 'input' && !canUserAccessSubmitLog(user)) {
+      setErrorMessage('Submit Log Restricted: Manager and View-Only accounts cannot access the Submit Log panel. Use Asset Registration to register new assets.');
+      return;
+    }
+    if (newTab === 'registration' && !canUserRegisterAssets(user)) {
+      setErrorMessage('Asset Registration is restricted to authorized PEA Admin and Manager accounts.');
+      return;
+    }
+    if (newTab === 'monitor' && user?.role !== 'Admin') {
+      setErrorMessage('Asset Change & Registration Audit Monitor is reserved for Admin accounts.');
+      return;
+    }
     setIsPageSwitching(true);
     setActiveTab(newTab);
     setTimeout(() => {
@@ -2496,7 +2510,7 @@ export default function App() {
               )}
 
               {/* VIEW 3: INPUT DATA ENTRY FORM (Approved Local Operator & Admin only; New/Unregistered/View-Only & Manager restricted) */}
-              {activeTab === 'input' && (user.role === 'Admin' || (user.role === 'Local Operator' && canUserUploadOrEdit(user))) && (
+              {activeTab === 'input' && canUserAccessSubmitLog(user) && (
                 <InputForm 
                   user={user} 
                   spreadsheetId={spreadsheetId} 
@@ -2508,6 +2522,31 @@ export default function App() {
                     handleTabChange('area');
                   }} 
                 />
+              )}
+
+              {activeTab === 'input' && !canUserAccessSubmitLog(user) && (
+                <div className="max-w-xl mx-auto my-12 bg-white border border-amber-200 rounded-3xl p-8 shadow-sm text-center space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-100">
+                    <Lock className="w-6 h-6" />
+                  </div>
+                  <h2 className="text-lg font-extrabold text-gray-900">Submit Log Panel Restricted</h2>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    Field log entry in the <strong>Submit Log</strong> panel is reserved for approved Local Operators and System Admins.{' '}
+                    {canUserRegisterAssets(user)
+                      ? 'As an authorized Manager, please use the Asset Registration panel to upload CSVs and register new assets.'
+                      : 'Your current account has View-Only access.'}
+                  </p>
+                  {canUserRegisterAssets(user) && (
+                    <button
+                      type="button"
+                      onClick={() => handleTabChange('registration')}
+                      className="inline-flex items-center gap-2 bg-purple-900 hover:bg-purple-800 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-sm"
+                    >
+                      Go to Asset Registration Panel
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               )}
 
               {/* VIEW 4: ASSET DATABASE & ADVISORY SYSTEM */}
@@ -2529,7 +2568,7 @@ export default function App() {
               )}
 
               {/* VIEW 5: ADMIN ASSET REGISTRATION & INTEGRITY CHECKS SUITE */}
-              {activeTab === 'registration' && (user.role === 'Admin' || user.role === 'Manager') && (
+              {activeTab === 'registration' && canUserRegisterAssets(user) && (
                 <AdminRegistrationSuite
                   assets={assets}
                   googleToken={googleToken}
