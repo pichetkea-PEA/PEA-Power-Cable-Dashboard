@@ -361,12 +361,13 @@ export function canUserAccessSubmitLog(user: PEAUser | null | undefined): boolea
 export async function getAuthHeadersForApi(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   const meta = getActiveUserSessionMeta();
-  const email = (auth.currentUser?.email || meta?.email || '').toLowerCase().trim();
+  const firebaseEmail = (auth.currentUser?.email || '').toLowerCase().trim();
+  const email = (meta?.email || firebaseEmail || '').toLowerCase().trim();
   if (email) {
     headers['x-pea-user-email'] = email;
   }
   try {
-    if (auth.currentUser) {
+    if (auth.currentUser && (!email || firebaseEmail === email)) {
       const idToken = await auth.currentUser.getIdToken();
       if (idToken) {
         headers['x-firebase-id-token'] = idToken;

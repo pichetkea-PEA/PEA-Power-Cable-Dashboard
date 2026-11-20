@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -1592,6 +1592,14 @@ app.post('/api/drive/harden-permissions', async (req, res) => {
   }
 });
 
+function normalizeSpreadsheetId(rawId: any): string {
+  const val = String(rawId || '').trim();
+  if (!val) return '';
+  const urlMatch = val.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/i);
+  if (urlMatch && urlMatch[1]) return urlMatch[1].trim();
+  return val;
+}
+
 // Helper to ensure spreadsheet sheet has enough columns and valid tab name
 async function autoHealSheetGrid(spreadsheetId: string, token: string, minCols: number = 46): Promise<{ titleMap: Record<string, string> }> {
   const titleMap: Record<string, string> = {};
@@ -1750,7 +1758,8 @@ app.post('/api/sheets/update-row', async (req, res) => {
       return;
     }
   }
-  const { spreadsheetId, range, values, token: clientToken } = req.body;
+  const { spreadsheetId: rawSpreadsheetId, range, values, token: clientToken } = req.body;
+  const spreadsheetId = normalizeSpreadsheetId(rawSpreadsheetId);
   if (!spreadsheetId || !range || !values) {
     res.status(400).json({ error: 'spreadsheetId, range, and values are required.' });
     return;
@@ -1761,7 +1770,7 @@ app.post('/api/sheets/update-row', async (req, res) => {
       let targetRange = range;
       const sendUpdate = async (rng: string) => {
         const encodedRange = encodeURIComponent(rng);
-        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodedRange}?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
           headers: {
             Authorization: `Bearer ${effectiveToken}`,
@@ -1819,7 +1828,8 @@ app.post('/api/sheets/append-row', async (req, res) => {
       return;
     }
   }
-  const { spreadsheetId, sheetName, values, token: clientToken } = req.body;
+  const { spreadsheetId: rawSpreadsheetId, sheetName, values, token: clientToken } = req.body;
+  const spreadsheetId = normalizeSpreadsheetId(rawSpreadsheetId);
   if (!spreadsheetId || !sheetName || !values) {
     res.status(400).json({ error: 'spreadsheetId, sheetName, and values are required.' });
     return;
@@ -1831,7 +1841,7 @@ app.post('/api/sheets/append-row', async (req, res) => {
       const sendAppend = async (sName: string) => {
         const range = `'${sName}'!A1`;
         const encodedRange = encodeURIComponent(range);
-        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodedRange}:append?valueInputOption=USER_ENTERED`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${effectiveToken}`,
@@ -1884,7 +1894,8 @@ app.post('/api/sheets/batch-update', async (req, res) => {
       return;
     }
   }
-  const { spreadsheetId, updates, token: clientToken } = req.body;
+  const { spreadsheetId: rawSpreadsheetId, updates, token: clientToken } = req.body;
+  const spreadsheetId = normalizeSpreadsheetId(rawSpreadsheetId);
   if (!spreadsheetId || !Array.isArray(updates) || updates.length === 0) {
     res.status(400).json({ error: 'spreadsheetId and updates array are required.' });
     return;
@@ -1903,7 +1914,7 @@ app.post('/api/sheets/batch-update', async (req, res) => {
           }))
         };
 
-        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+        return await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${effectiveToken}`,
@@ -1953,7 +1964,7 @@ app.post('/api/sheets/batch-update', async (req, res) => {
 
 // Google Sheets Data Proxy endpoint (for credential login & unauthenticated fetch)
 app.get('/api/sheets/data', async (req, res) => {
-  const spreadsheetId = req.query.spreadsheetId as string;
+  const spreadsheetId = normalizeSpreadsheetId(req.query.spreadsheetId as string);
   if (!spreadsheetId) {
     res.status(400).json({ error: 'spreadsheetId query param is required.' });
     return;
@@ -2204,6 +2215,14 @@ process.on('unhandledRejection', (reason) => {
 
 // Vite Middleware integration for development / Static Serving for Production
 async function startServer() {
+  // Structured JSON 404 for any unmatched /api/* route (prevents falling through to Vite/static 404)
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      success: false,
+      error: `API endpoint not found: ${req.method} ${req.originalUrl}`
+    });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vitePromise = createViteServer({
       server: {

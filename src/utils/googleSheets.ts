@@ -30,6 +30,14 @@ function clearExpiredGoogleTokenIf401(status: number, usedToken: string | null):
   return true;
 }
 
+function normalizeSpreadsheetId(rawId?: string | null): string {
+  const val = String(rawId || '').trim();
+  if (!val) return '';
+  const urlMatch = val.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/i);
+  if (urlMatch && urlMatch[1]) return urlMatch[1].trim();
+  return val;
+}
+
 // Helper to enforce strict public View-Only (anyone: reader) permissions and remove any legacy public writer permissions
 export async function makeFileReadableByAnyone(accessToken: string, fileId: string): Promise<void> {
   if (!accessToken || !fileId) return;
@@ -2109,6 +2117,10 @@ export async function executeUniversalSheetAppend(
   sheetName: string,
   values: any[][]
 ): Promise<void> {
+  const cleanSpreadsheetId = normalizeSpreadsheetId(spreadsheetId);
+  if (!cleanSpreadsheetId) {
+    throw new Error(`Google Sheets append failed for "${sheetName}": Target Spreadsheet ID is missing or empty.`);
+  }
   const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
   let token = getEffectiveGoogleToken(accessToken);
 
@@ -2116,7 +2128,7 @@ export async function executeUniversalSheetAppend(
   if (token) {
     try {
       const range = `'${sheetName}'!A1`;
-      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`, {
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cleanSpreadsheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -2140,7 +2152,7 @@ export async function executeUniversalSheetAppend(
 
   // 2. Fallback to Express backend proxy (server falls back to Admin delegated token / Service Account on 401/403)
   try {
-    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({} as Record<string, string>));
     const proxyRes = await fetch('/api/sheets/append-row', {
       method: 'POST',
       headers: {
@@ -2148,17 +2160,22 @@ export async function executeUniversalSheetAppend(
         ...authHeaders
       },
       body: JSON.stringify({
-        spreadsheetId,
+        spreadsheetId: cleanSpreadsheetId,
         sheetName,
         values: sanitizedValues,
-        token: token || undefined
+        token: token || undefined,
+        userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
     const proxyData = await proxyRes.json().catch(() => ({}));
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    throw new Error(proxyData.error || `Server proxy returned HTTP ${proxyRes.status} while appending to Google Sheets.`);
+    const defaultErr =
+      proxyRes.status === 404 && !proxyData.error
+        ? `Backend API endpoint /api/sheets/append-row returned HTTP 404 (server instance needs restart or app republish, or target spreadsheet "${cleanSpreadsheetId}" was not found).`
+        : `Server proxy returned HTTP ${proxyRes.status} while appending to Google Sheets.`;
+    throw new Error(proxyData.error || defaultErr);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Append Error]:`, proxyErr);
     throw new Error(`Google Sheets append failed for "${sheetName}": ${proxyErr.message || 'Authorization error'}`);
@@ -2173,6 +2190,10 @@ export async function executeUniversalSheetUpdate(
   values: any[][],
   maxColLetter: string = 'AH'
 ): Promise<void> {
+  const cleanSpreadsheetId = normalizeSpreadsheetId(spreadsheetId);
+  if (!cleanSpreadsheetId) {
+    throw new Error(`Google Sheets update failed for "${sheetName}" row ${rowIndex}: Target Spreadsheet ID is missing or empty.`);
+  }
   const sanitizedValues = (values || []).map(row => sanitizeRowForSheets(row));
   let token = getEffectiveGoogleToken(accessToken);
   const range = `'${sheetName}'!A${rowIndex}:${maxColLetter}${rowIndex}`;
@@ -2180,7 +2201,7 @@ export async function executeUniversalSheetUpdate(
   // 1. Direct Google Sheets API if token available
   if (token) {
     try {
-      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+      const res = await fetchWithBackoff(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(cleanSpreadsheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -2204,7 +2225,7 @@ export async function executeUniversalSheetUpdate(
 
   // 2. Server proxy fallback
   try {
-    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({} as Record<string, string>));
     const proxyRes = await fetch('/api/sheets/update-row', {
       method: 'POST',
       headers: {
@@ -2212,17 +2233,22 @@ export async function executeUniversalSheetUpdate(
         ...authHeaders
       },
       body: JSON.stringify({
-        spreadsheetId,
+        spreadsheetId: cleanSpreadsheetId,
         range,
         values: sanitizedValues,
-        token: token || undefined
+        token: token || undefined,
+        userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
     const proxyData = await proxyRes.json().catch(() => ({}));
     if (proxyRes.ok && proxyData.success) {
       return;
     }
-    throw new Error(proxyData.error || `Server proxy returned HTTP ${proxyRes.status} while updating Google Sheets.`);
+    const defaultErr =
+      proxyRes.status === 404 && !proxyData.error
+        ? `Backend API endpoint /api/sheets/update-row returned HTTP 404 (server instance needs restart or app republish, or target spreadsheet "${cleanSpreadsheetId}" was not found).`
+        : `Server proxy returned HTTP ${proxyRes.status} while updating Google Sheets.`;
+    throw new Error(proxyData.error || defaultErr);
   } catch (proxyErr: any) {
     console.error(`[Universal Sheet Update Error]:`, proxyErr);
     throw new Error(`Google Sheets update failed for "${sheetName}" row ${rowIndex}: ${proxyErr.message || 'Authorization error'}`);
@@ -2961,7 +2987,7 @@ export async function batchUpdateSheetRows(
 
   // 2. Server proxy fallback
   try {
-    const authHeaders = await getAuthHeadersForApi().catch(() => ({}));
+    const authHeaders = await getAuthHeadersForApi().catch(() => ({} as Record<string, string>));
     const proxyRes = await fetch('/api/sheets/batch-update', {
       method: 'POST',
       headers: {
@@ -2969,9 +2995,10 @@ export async function batchUpdateSheetRows(
         ...authHeaders
       },
       body: JSON.stringify({
-        spreadsheetId,
+        spreadsheetId: normalizeSpreadsheetId(spreadsheetId),
         updates: sanitizedUpdates,
-        token: token || undefined
+        token: token || undefined,
+        userEmail: authHeaders['x-pea-user-email'] || undefined
       })
     });
     const proxyData = await proxyRes.json().catch(() => ({}));
